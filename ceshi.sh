@@ -1,73 +1,35 @@
 #!/bin/bash
 
-# 函数：检查并安装依赖
-install_dependency() {
-    if ! dpkg -l | grep -q $1; then
-        echo "$1 没有安装，正在安装..."
-        sudo apt install -y $1
-    else
-        echo "$1 已安装"
-    fi
-}
+# 询问用户域名
+read -p "请输入您的域名 (如 vps.1373737.xyz): " DOMAIN
 
-# 更新系统
-echo "更新系统..."
-sudo apt update -y
-sudo apt upgrade -y
+# 检查并安装必要的依赖
+echo "检查并安装必要的依赖..."
+apt update && apt upgrade -y
 
-# 安装必要的依赖
-echo "安装必要的依赖..."
-
-# 检查并安装 Nginx
-install_dependency "nginx"
-
-# 检查并安装 Python 和 pip
-install_dependency "python3"
-install_dependency "python3-pip"
-
-# 检查并安装 Git
-install_dependency "git"
-
-# 检查并安装 Certbot 和 Nginx 插件
-install_dependency "certbot"
-install_dependency "python3-certbot-nginx"
+# 安装 Nginx 和 Certbot
+echo "安装 Nginx 和 Certbot..."
+apt install -y nginx python3-certbot-nginx git python3-pip
 
 # 安装 Python 依赖
 echo "安装 Python 依赖..."
-sudo pip3 install -r requirements.txt
+if [ ! -f "requirements.txt" ]; then
+    echo "没有找到 requirements.txt 文件，跳过安装 Python 依赖"
+else
+    pip3 install -r requirements.txt
+fi
 
 # 克隆 nekonekostatus 仓库
 echo "克隆 nekonekostatus 仓库..."
 cd /opt
-if [ ! -d "/opt/nekonekostatus" ]; then
-    sudo git clone https://github.com/nkeonkeo/nekonekostatus.git
-else
-    echo "nekonekostatus 已存在，跳过克隆"
-fi
-cd nekonekostatus
-
-# 询问用户输入域名
-read -p "请输入您的域名 (如 vps.1373737.xyz): " DOMAIN
-
-# 确保域名输入不为空
-if [ -z "$DOMAIN" ]; then
-    echo "域名不能为空，脚本退出..."
-    exit 1
-fi
-
-# 获取服务器的公网 IP
-PUBLIC_IP=$(curl -s ifconfig.me)
+git clone https://github.com/sinian-liu/nekonekostatus.git
 
 # 配置 Nginx 和 HTTPS
 echo "配置 Nginx 和 HTTPS..."
-
-NGINX_CONF="/etc/nginx/sites-available/$DOMAIN"
-
-# 创建 Nginx 配置文件
-sudo tee $NGINX_CONF <<EOF
+cat <<EOF > /etc/nginx/sites-available/nekonekostatus
 server {
     listen 80;
-    server_name $DOMAIN $PUBLIC_IP;
+    server_name $DOMAIN;
 
     location / {
         proxy_pass http://localhost:5555;
@@ -79,31 +41,24 @@ server {
 }
 EOF
 
-# 启用 Nginx 配置
-sudo ln -s $NGINX_CONF /etc/nginx/sites-enabled/
-sudo nginx -t
-sudo systemctl reload nginx
+# 创建符号链接到 sites-enabled
+ln -s /etc/nginx/sites-available/nekonekostatus /etc/nginx/sites-enabled/
 
 # 获取 SSL 证书
 echo "获取 SSL 证书..."
-sudo certbot --nginx -d $DOMAIN --non-interactive --agree-tos --email your-email@example.com
+certbot --nginx -d $DOMAIN
 
-# 配置自动续期
-sudo systemctl enable certbot.timer
-sudo systemctl start certbot.timer
-
-# 配置 Nginx 重定向到 HTTPS
-echo "配置 HTTP 到 HTTPS 重定向..."
-sudo tee /etc/nginx/sites-available/$DOMAIN <<EOF
+# 配置 HTTP 到 HTTPS 重定向
+cat <<EOF > /etc/nginx/sites-available/nekonekostatus
 server {
     listen 80;
-    server_name $DOMAIN $PUBLIC_IP;
+    server_name $DOMAIN;
     return 301 https://\$host\$request_uri;
 }
 
 server {
     listen 443 ssl;
-    server_name $DOMAIN $PUBLIC_IP;
+    server_name $DOMAIN;
 
     ssl_certificate /etc/letsencrypt/live/$DOMAIN/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/$DOMAIN/privkey.pem;
@@ -118,13 +73,13 @@ server {
 }
 EOF
 
-# 启动 Nginx 配置
-sudo nginx -t
-sudo systemctl reload nginx
+# 重启 Nginx 以应用配置
+echo "重启 Nginx 服务..."
+systemctl restart nginx
 
 # 创建 systemd 服务文件
 echo "创建 systemd 服务文件..."
-sudo tee /etc/systemd/system/nekonekostatus.service <<EOF
+cat <<EOF > /etc/systemd/system/nekonekostatus.service
 [Unit]
 Description=Neko Status Monitor
 After=network.target
@@ -141,18 +96,13 @@ User=root
 WantedBy=multi-user.target
 EOF
 
-# 重新加载 systemd 配置并启动服务
-sudo systemctl daemon-reload
-sudo systemctl enable nekonekostatus
-sudo systemctl start nekonekostatus
+# 启用并启动 Nekonekostatus 服务
+echo "启用并启动 Nekonekostatus 服务..."
+systemctl enable nekonekostatus
+systemctl start nekonekostatus
 
-# 启动 Nginx 服务并确保开机启动
-sudo systemctl enable nginx
-sudo systemctl start nginx
+# 输出服务状态
+echo "Nekonekostatus 服务状态:"
+systemctl status nekonekostatus
 
-# 验证服务是否启动
-sudo systemctl status nekonekostatus
-sudo systemctl status nginx
-
-# 显示 SSL 证书信息
-echo "配置完成，访问 https://$DOMAIN 查看 nekonekostatus 页面。"
+echo "安装和配置完成！您可以通过 https://$DOMAIN 访问 Nekonekostatus 监控页面。"
