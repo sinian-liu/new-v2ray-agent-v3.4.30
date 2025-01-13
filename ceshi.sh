@@ -1,108 +1,83 @@
 #!/bin/bash
 
-# 询问用户域名
-read -p "请输入您的域名 (如 vps.1373737.xyz): " DOMAIN
+# 定义测试节点
+declare -A nodes=(
+  ["广州电信"]="183.47.126.35"
+  ["广州联通"]="157.148.58.29"
+  ["广州移动"]="120.233.18.250"
+  ["广州教育"]="202.116.64.8"
+  ["上海电信"]="101.226.94.124"
+  ["上海联通"]="140.207.122.197"
+  ["上海移动"]="117.185.253.224"
+  ["上海教育"]="202.120.2.119"
+  ["北京电信"]="49.7.37.74"
+  ["北京联通"]="111.206.209.44"
+  ["北京移动"]="112.34.111.194"
+  ["北京教育"]="166.111.4.100"
+)
 
-# 检查并安装必要的依赖
-echo "检查并安装必要的依赖..."
-apt update && apt upgrade -y
+# 检查并安装依赖
+check_dependencies() {
+  echo "检查依赖..."
+  
+  # 检测 jq
+  if ! command -v jq &>/dev/null; then
+    echo "未检测到 jq，正在安装..."
+    sudo apt update && sudo apt install -y jq
+  else
+    echo "jq 已安装"
+  fi
 
-# 安装 Nginx 和 Certbot
-echo "安装 Nginx 和 Certbot..."
-apt install -y nginx python3-certbot-nginx git python3-pip
-
-# 安装 Python 依赖
-echo "安装 Python 依赖..."
-if [ ! -f "requirements.txt" ]; then
-    echo "没有找到 requirements.txt 文件，跳过安装 Python 依赖"
-else
-    pip3 install -r requirements.txt
-fi
-
-# 克隆 nekonekostatus 仓库
-echo "克隆 nekonekostatus 仓库..."
-cd /opt
-git clone https://github.com/sinian-liu/nekonekostatus.git
-
-# 配置 Nginx 和 HTTPS
-echo "配置 Nginx 和 HTTPS..."
-cat <<EOF > /etc/nginx/sites-available/nekonekostatus
-server {
-    listen 80;
-    server_name $DOMAIN;
-
-    location / {
-        proxy_pass http://localhost:5555;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-    }
-}
-EOF
-
-# 创建符号链接到 sites-enabled
-ln -s /etc/nginx/sites-available/nekonekostatus /etc/nginx/sites-enabled/
-
-# 获取 SSL 证书
-echo "获取 SSL 证书..."
-certbot --nginx -d $DOMAIN
-
-# 配置 HTTP 到 HTTPS 重定向
-cat <<EOF > /etc/nginx/sites-available/nekonekostatus
-server {
-    listen 80;
-    server_name $DOMAIN;
-    return 301 https://\$host\$request_uri;
+  # 检测 speedtest
+  if ! command -v speedtest &>/dev/null; then
+    echo "未检测到 Speedtest CLI，正在安装..."
+    curl -s https://install.speedtest.net/app/cli/install.deb.sh | sudo bash
+    sudo apt install -y speedtest
+  else
+    echo "Speedtest CLI 已安装"
+  fi
 }
 
-server {
-    listen 443 ssl;
-    server_name $DOMAIN;
-
-    ssl_certificate /etc/letsencrypt/live/$DOMAIN/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/$DOMAIN/privkey.pem;
-
-    location / {
-        proxy_pass http://localhost:5555;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-    }
+# 打印表头
+print_header() {
+  echo -e "地区/运营商\t下载速度/Mbps\t上传速度/Mbps\t延迟/ms\t抖动/ms"
 }
-EOF
 
-# 重启 Nginx 以应用配置
-echo "重启 Nginx 服务..."
-systemctl restart nginx
+# 测速函数
+speed_test() {
+  local name=$1
+  local ip=$2
 
-# 创建 systemd 服务文件
-echo "创建 systemd 服务文件..."
-cat <<EOF > /etc/systemd/system/nekonekostatus.service
-[Unit]
-Description=Neko Status Monitor
-After=network.target
+  # 使用 speedtest CLI 测试
+  result=$(speedtest --server-id "$ip" --format=json)
+  if [[ $? -ne 0 ]]; then
+    echo -e "$name\t测试失败\t测试失败\t测试失败\t测试失败"
+    return
+  fi
 
-[Service]
-ExecStart=/usr/bin/python3 /opt/nekonekostatus/main.py
-WorkingDirectory=/opt/nekonekostatus
-StandardOutput=inherit
-StandardError=inherit
-Restart=always
-User=root
+  # 解析 JSON 结果
+  download=$(echo "$result" | jq -r '.download.bandwidth' | awk '{printf "%.2f", $1 / 125000}')
+  upload=$(echo "$result" | jq -r '.upload.bandwidth' | awk '{printf "%.2f", $1 / 125000}')
+  latency=$(echo "$result" | jq -r '.ping.latency')
+  jitter=$(echo "$result" | jq -r '.ping.jitter')
 
-[Install]
-WantedBy=multi-user.target
-EOF
+  # 输出结果
+  echo -e "$name\t$download\t$upload\t$latency\t$jitter"
+}
 
-# 启用并启动 Nekonekostatus 服务
-echo "启用并启动 Nekonekostatus 服务..."
-systemctl enable nekonekostatus
-systemctl start nekonekostatus
+# 主函数
+main() {
+  # 检查依赖
+  check_dependencies
 
-# 输出服务状态
-echo "Nekonekostatus 服务状态:"
-systemctl status nekonekostatus
+  # 打印表头
+  print_header
 
-echo "安装和配置完成！您可以通过 https://$DOMAIN 访问 Nekonekostatus 监控页面。"
+  # 遍历所有节点并测试
+  for key in "${!nodes[@]}"; do
+    speed_test "$key" "${nodes[$key]}"
+  done
+}
+
+# 运行主函数
+main
