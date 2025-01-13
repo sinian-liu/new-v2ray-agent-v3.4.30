@@ -20,21 +20,15 @@ declare -A nodes=(
 check_dependencies() {
   echo "检查依赖..."
   
-  # 检测 jq
-  if ! command -v jq &>/dev/null; then
-    echo "未检测到 jq，正在安装..."
-    sudo apt update && sudo apt install -y jq
-  else
-    echo "jq 已安装"
-  fi
-
-  # 检测 speedtest
+  # 检测 Speedtest CLI
   if ! command -v speedtest &>/dev/null; then
     echo "未检测到 Speedtest CLI，正在安装..."
     curl -s https://install.speedtest.net/app/cli/install.deb.sh | sudo bash
-    sudo apt install -y speedtest
-  else
-    echo "Speedtest CLI 已安装"
+    sudo apt update && sudo apt install -y speedtest
+    if ! command -v speedtest &>/dev/null; then
+      echo "Speedtest CLI 安装失败，请手动检查后重试！"
+      exit 1
+    fi
   fi
 }
 
@@ -49,8 +43,8 @@ speed_test() {
   local ip=$2
 
   # 使用 speedtest CLI 测试
-  result=$(speedtest --server-id "$ip" --format=json)
-  if [[ $? -ne 0 ]]; then
+  result=$(speedtest --server-id "$ip" --format=json 2>/dev/null)
+  if [[ $? -ne 0 || -z "$result" ]]; then
     echo -e "$name\t测试失败\t测试失败\t测试失败\t测试失败"
     return
   fi
