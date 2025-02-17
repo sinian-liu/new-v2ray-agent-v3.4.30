@@ -6,19 +6,6 @@ RED="\033[31m"
 YELLOW="\033[33m"
 RESET="\033[0m"
 
-# 系统检测函数
-check_system() {
-    if [ -f /etc/lsb-release ]; then
-        SYSTEM="ubuntu"
-    elif [ -f /etc/redhat-release ]; then
-        SYSTEM="centos"
-    elif [ -f /etc/fedora-release ]; then
-        SYSTEM="fedora"
-    else
-        SYSTEM="unknown"
-    fi
-}
-
 # 显示菜单函数
 show_menu() {
     clear
@@ -157,14 +144,16 @@ execute_option() {
         6)
             # 系统更新命令
             update_system() {
-                check_system
-                if [ "$SYSTEM" == "ubuntu" ] || [ "$SYSTEM" == "debian" ]; then
+                if [ -f /etc/lsb-release ]; then
+                    # Ubuntu 或 Debian 系统
                     echo -e "${GREEN}正在更新 Debian/Ubuntu 系统...${RESET}"
                     sudo apt update && sudo apt upgrade -y && sudo apt autoremove -y && sudo apt clean
-                elif [ "$SYSTEM" == "centos" ]; then
+                elif [ -f /etc/redhat-release ]; then
+                    # CentOS 系统
                     echo -e "${GREEN}正在更新 CentOS 系统...${RESET}"
                     sudo yum update -y && sudo yum clean all
-                elif [ "$SYSTEM" == "fedora" ]; then
+                elif [ -f /etc/fedora-release ]; then
+                    # Fedora 系统
                     echo -e "${GREEN}正在更新 Fedora 系统...${RESET}"
                     sudo dnf update -y && sudo dnf clean all
                 else
@@ -689,12 +678,14 @@ EOF
             # 安装 curl
             if ! command -v curl &> /dev/null; then
                 echo -e "${YELLOW}检测到 curl 缺失，正在安装...${RESET}"
-                check_system
-                if [ "$SYSTEM" == "ubuntu" ] || [ "$SYSTEM" == "debian" ]; then
+                if [ -f /etc/lsb-release ]; then
+                    # Ubuntu 或 Debian 系统
                     sudo apt update && sudo apt install -y curl
-                elif [ "$SYSTEM" == "centos" ]; then
+                elif [ -f /etc/redhat-release ]; then
+                    # CentOS 系统
                     sudo yum install -y curl
-                elif [ "$SYSTEM" == "fedora" ]; then
+                elif [ -f /etc/fedora-release ]; then
+                    # Fedora 系统
                     sudo dnf install -y curl
                 else
                     echo -e "${RED}无法识别系统，无法安装 curl。${RESET}"
@@ -713,12 +704,14 @@ EOF
             # 安装 wget
             if ! command -v wget &> /dev/null; then
                 echo -e "${YELLOW}检测到 wget 缺失，正在安装...${RESET}"
-                check_system
-                if [ "$SYSTEM" == "ubuntu" ] || [ "$SYSTEM" == "debian" ]; then
+                if [ -f /etc/lsb-release ]; then
+                    # Ubuntu 或 Debian 系统
                     sudo apt update && sudo apt install -y wget
-                elif [ "$SYSTEM" == "centos" ]; then
+                elif [ -f /etc/redhat-release ]; then
+                    # CentOS 系统
                     sudo yum install -y wget
-                elif [ "$SYSTEM" == "fedora" ]; then
+                elif [ -f /etc/fedora-release ]; then
+                    # Fedora 系统
                     sudo dnf install -y wget
                 else
                     echo -e "${RED}无法识别系统，无法安装 wget。${RESET}"
@@ -740,17 +733,19 @@ EOF
             echo -e "${GREEN}正在安装 Docker ...${RESET}"
             if ! command -v docker &> /dev/null; then
                 echo -e "${YELLOW}检测到 Docker 缺失，正在安装...${RESET}"
-                check_system
-                if [ "$SYSTEM" == "ubuntu" ] || [ "$SYSTEM" == "debian" ]; then
-                    sudo apt update
-                    sudo apt install -y docker.io
-                elif [ "$SYSTEM" == "centos" ]; then
+                if [ -f /etc/lsb-release ]; then
+                    # Ubuntu 或 Debian 系统
+                    sudo apt-get update
+                    sudo apt-get install -y docker.io
+                elif [ -f /etc/redhat-release ]; then
+                    # CentOS 系统
                     sudo yum install -y docker
-                elif [ "$SYSTEM" == "fedora" ]; then
+                elif [ -f /etc/fedora-release ]; then
+                    # Fedora 系统
                     sudo dnf install -y docker
                 else
                     echo -e "${RED}无法识别系统，无法安装 Docker。${RESET}"
                 fi
 
                 # 检查是否安装成功
-                if command
+                if command -v docker &> /dev/null; then
