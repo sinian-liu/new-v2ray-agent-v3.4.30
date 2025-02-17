@@ -742,21 +742,12 @@ EOF
                 echo -e "${YELLOW}检测到 Docker 缺失，正在安装...${RESET}"
                 check_system
                 if [ "$SYSTEM" == "ubuntu" ] || [ "$SYSTEM" == "debian" ]; then
-                    sudo apt update
-                    sudo apt install -y docker.io
+                    sudo apt-get update
+                    sudo apt-get install -y apt-transport-https ca-certificates curl software-properties-common
+                    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo apt-key add -
+                    sudo add-apt-repository "deb [arch=amd64] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable"
+                    sudo apt-get update
+                    sudo apt-get install -y docker-ce
                 elif [ "$SYSTEM" == "centos" ]; then
-                    sudo yum install -y docker
-                elif [ "$SYSTEM" == "fedora" ]; then
-                    sudo dnf install -y docker
-                else
-                    echo -e "${RED}无法识别系统，无法安装 Docker。${RESET}"
-                fi
-
-                # 启动 Docker 服务
-                sudo systemctl start docker
-                sudo systemctl enable docker
-
-                # 将当前用户添加到 docker 组
-                sudo usermod -aG docker $USER
-
-                # 检查是否安装成功
+                    sudo yum install -y yum-utils device-mapper-persistent-data lvm2
+                    sudo yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
