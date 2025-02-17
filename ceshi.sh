@@ -760,4 +760,3 @@ EOF
                 sudo usermod -aG docker $USER
 
                 # 检查是否安装成功
-                if command -v docker &> /dev/null && sudo systemctl is-active
