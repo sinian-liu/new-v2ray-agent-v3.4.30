@@ -769,8 +769,8 @@ main() {
             else
                 echo -e "${YELLOW}Docker 已经安装，跳过安装步骤。${RESET}"
             fi
-    19)
-        # 安装SSH防暴力破解防护系统
+19)
+            # 安装SSH防暴力破解防护系统
         echo -e "${GREEN}正在配置SSH防暴力破解防护系统...${RESET}"
         
         # 加载配置文件
