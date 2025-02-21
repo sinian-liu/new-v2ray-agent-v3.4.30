@@ -777,8 +777,26 @@ main() {
         echo -e "${GREEN}[可疑IP统计]"
         echo -e "----------------------------------------${RESET}"
         
+        # 日志文件路径
+        LOG_DIR="/var/log/sshshield"
+        LOG_FILE="$LOG_DIR/sshshield.log"
+        
+        # 检查日志目录是否存在
+        if [ ! -d "$LOG_DIR" ]; then
+            echo -e "${YELLOW}日志目录不存在，正在创建...${RESET}"
+            sudo mkdir -p "$LOG_DIR"
+            sudo chmod 700 "$LOG_DIR"
+        fi
+        
+        # 检查日志文件是否存在
+        if [ ! -f "$LOG_FILE" ]; then
+            echo -e "${YELLOW}日志文件不存在，正在创建...${RESET}"
+            sudo touch "$LOG_FILE"
+            sudo chmod 600 "$LOG_FILE"
+        fi
+        
         # 从日志文件中提取统计信息
-        if [ -f /var/log/sshshield.log ]; then
+        if [ -f "$LOG_FILE" ]; then
             # 使用更严格的日志解析逻辑
             awk '
             /封禁IP:/ {
@@ -812,9 +830,9 @@ main() {
                 for (ip in ips) {
                     printf "IP: %-15s 尝试攻击次数: %-5d 最近攻击时间: %s\n", ip, ips[ip], last_time[ip]
                 }
-            }' /var/log/sshshield.log
+            }' "$LOG_FILE"
         else
-            echo -e "${YELLOW}未找到日志文件 /var/log/sshshield.log${RESET}"
+            echo -e "${YELLOW}未找到日志文件 $LOG_FILE${RESET}"
         fi
         
         echo -e "${GREEN}----------------------------------------"
@@ -852,6 +870,14 @@ SCAN_INTERVAL_HIGH=$SCAN_INTERVAL_HIGH" | sudo tee /etc/sshshield.conf >/dev/nul
 
         # 安装函数
         install_sshshield() {
+            # 创建日志目录
+            LOG_DIR="/var/log/sshshield"
+            LOG_FILE="$LOG_DIR/sshshield.log"
+            sudo mkdir -p "$LOG_DIR"
+            sudo chmod 700 "$LOG_DIR"
+            sudo touch "$LOG_FILE"
+            sudo chmod 600 "$LOG_FILE"
+            
             # 创建服务文件
             sudo tee /etc/systemd/system/sshshield.service <<EOF
 [Unit]
@@ -874,7 +900,7 @@ EOF
 
 load_config() {
     source /etc/sshshield.conf
-    LOG_FILE=$(find /var/log/ -name 'secure*' -o -name 'auth.log*' | sort -r | head -1)
+    LOG_FILE="/var/log/sshshield/sshshield.log"
 }
 
 adjust_cron() {
@@ -903,7 +929,7 @@ EOF
 
 load_config() {
     source /etc/sshshield.conf
-    LOG_FILE=$(find /var/log/ -name 'secure*' -o -name 'auth.log*' | sort -r | head -1)
+    LOG_FILE="/var/log/sshshield/sshshield.log"
 }
 
 load_config
@@ -913,7 +939,7 @@ grep 'Failed password' $LOG_FILE | awk '{print $(NF-3)}' | sort | uniq -c | whil
     if [ $count -ge $MAX_ATTEMPTS ]; then
         if ! grep -q "$ip" /etc/hosts.deny; then
             echo "sshd:$ip" >> /etc/hosts.deny
-            echo "[$(date +'%Y-%m-%d %H:%M:%S')] 封禁IP: $ip 尝试次数: $count" >> /var/log/sshshield.log
+            echo "[$(date +'%Y-%m-%d %H:%M:%S')] 封禁IP: $ip 尝试次数: $count" >> "$LOG_FILE"
             # 自动解封
             echo "sed -i '/$ip/d' /etc/hosts.deny" | at now +$BAN_MINUTES minutes
         fi
@@ -936,7 +962,7 @@ EOF
             echo -e "高风险阈值: ${YELLOW}$HIGH_RISK_THRESHOLD 次总尝试${GREEN}"
             echo -e "常规扫描间隔: ${YELLOW}$SCAN_INTERVAL 分钟${GREEN}"
             echo -e "高风险扫描间隔: ${YELLOW}$SCAN_INTERVAL_HIGH 分钟${GREEN}"
-            echo -e "日志文件: ${YELLOW}/var/log/sshshield.log${GREEN}"
+            echo -e "日志文件: ${YELLOW}$LOG_FILE${GREEN}"
             echo -e "----------------------------------------"
         }
 
