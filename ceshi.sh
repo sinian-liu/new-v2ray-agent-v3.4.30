@@ -771,15 +771,15 @@ main() {
             fi
             ;;
 19)
+    # 日志文件路径
+    LOG_DIR="/var/log/sshshield"
+    LOG_FILE="$LOG_DIR/sshshield.log"
+
     # 检测是否已安装
     if [ -f /etc/sshshield.conf ] && systemctl is-active --quiet sshshield; then
         # 已安装，显示统计信息
         echo -e "${GREEN}[可疑IP统计]"
         echo -e "----------------------------------------${RESET}"
-        
-        # 日志文件路径
-        LOG_DIR="/var/log/sshshield"
-        LOG_FILE="$LOG_DIR/sshshield.log"
         
         # 检查日志目录是否存在
         if [ ! -d "$LOG_DIR" ]; then
@@ -795,9 +795,9 @@ main() {
             sudo chmod 600 "$LOG_FILE"
         fi
         
-        # 从日志文件中提取统计信息
-        if [ -f "$LOG_FILE" ]; then
-            # 使用更严格的日志解析逻辑
+        # 检查日志文件是否可读
+        if [ -r "$LOG_FILE" ]; then
+            # 从日志文件中提取统计信息
             awk '
             /封禁IP:/ {
                 # 提取时间
@@ -832,7 +832,7 @@ main() {
                 }
             }' "$LOG_FILE"
         else
-            echo -e "${YELLOW}未找到日志文件 $LOG_FILE${RESET}"
+            echo -e "${YELLOW}日志文件 $LOG_FILE 不可读，请检查权限！${RESET}"
         fi
         
         echo -e "${GREEN}----------------------------------------"
@@ -871,10 +871,10 @@ SCAN_INTERVAL_HIGH=$SCAN_INTERVAL_HIGH" | sudo tee /etc/sshshield.conf >/dev/nul
         # 安装函数
         install_sshshield() {
             # 创建日志目录
-            LOG_DIR="/var/log/sshshield"
-            LOG_FILE="$LOG_DIR/sshshield.log"
             sudo mkdir -p "$LOG_DIR"
             sudo chmod 700 "$LOG_DIR"
+            
+            # 创建日志文件
             sudo touch "$LOG_FILE"
             sudo chmod 600 "$LOG_FILE"
             
