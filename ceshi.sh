@@ -779,11 +779,24 @@ main() {
         
         # 从日志文件中提取统计信息
         if [ -f /var/log/sshshield.log ]; then
+            # 使用更严格的日志解析逻辑
             awk '
             /封禁IP:/ {
-                ip = $3
-                count = $5
-                ips[ip] += count
+                for (i=1; i<=NF; i++) {
+                    if ($i == "封禁IP:") {
+                        ip = $(i+1)
+                        break
+                    }
+                }
+                for (i=1; i<=NF; i++) {
+                    if ($i == "尝试次数:") {
+                        count = $(i+1)
+                        break
+                    }
+                }
+                if (ip ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/) {
+                    ips[ip] += count
+                }
             }
             END {
                 for (ip in ips) {
