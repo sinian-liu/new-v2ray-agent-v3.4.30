@@ -782,6 +782,10 @@ main() {
             # 使用更严格的日志解析逻辑
             awk '
             /封禁IP:/ {
+                # 提取时间
+                time = substr($1, 2) " " substr($2, 1, 8)
+                
+                # 提取IP和尝试次数
                 for (i=1; i<=NF; i++) {
                     if ($i == "封禁IP:") {
                         ip = $(i+1)
@@ -794,13 +798,19 @@ main() {
                         break
                     }
                 }
+                
+                # 更新IP的统计信息
                 if (ip ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/) {
                     ips[ip] += count
+                    if (time > last_time[ip]) {
+                        last_time[ip] = time
+                    }
                 }
             }
             END {
+                # 输出统计信息
                 for (ip in ips) {
-                    printf "IP: %-15s 尝试攻击次数: %d\n", ip, ips[ip]
+                    printf "IP: %-15s 尝试攻击次数: %-5d 最近攻击时间: %s\n", ip, ips[ip], last_time[ip]
                 }
             }' /var/log/sshshield.log
         else
@@ -903,7 +913,7 @@ grep 'Failed password' $LOG_FILE | awk '{print $(NF-3)}' | sort | uniq -c | whil
     if [ $count -ge $MAX_ATTEMPTS ]; then
         if ! grep -q "$ip" /etc/hosts.deny; then
             echo "sshd:$ip" >> /etc/hosts.deny
-            echo "[$(date)] 封禁IP: $ip 尝试次数: $count" >> /var/log/sshshield.log
+            echo "[$(date +'%Y-%m-%d %H:%M:%S')] 封禁IP: $ip 尝试次数: $count" >> /var/log/sshshield.log
             # 自动解封
             echo "sed -i '/$ip/d' /etc/hosts.deny" | at now +$BAN_MINUTES minutes
         fi
