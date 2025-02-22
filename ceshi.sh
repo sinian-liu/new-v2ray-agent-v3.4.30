@@ -152,7 +152,7 @@ show_menu() {
         echo -e "${YELLOW}16.共用端口（反代）${RESET}"
         echo -e "${YELLOW}17.安装 curl 和 wget${RESET}"
         echo -e "${YELLOW}18.安装 Docker${RESET}"
-        echo -e "${YELLOW}19.SSH 防暴力破解${RESET}"
+        echo -e "${YELLOW}19.SSH 防暴力破解检测${RESET}"
         echo -e "${GREEN}=============================================${RESET}"
 
         read -p "请输入选项 (输入 'q' 退出): " option
@@ -828,148 +828,72 @@ EOF
                 read -p "按回车键返回主菜单..."
                 ;;
             19)
-                # SSH防暴力破解
-                LOG_DIR="/var/log/sshshield"
-                LOG_FILE="$LOG_DIR/sshshield.log"
+                # SSH 防暴力破解检测
+                echo -e "${GREEN}正在检测 SSH 暴力破解尝试...${RESET}"
 
-                if [ -f /etc/sshshield.conf ] && systemctl is-active --quiet sshshield; then
-                    echo -e "${GREEN}[可疑IP统计]"
-                    echo -e "----------------------------------------${RESET}"
-                    if [ ! -d "$LOG_DIR" ]; then
-                        echo -e "${YELLOW}日志目录不存在，正在创建...${RESET}"
-                        sudo mkdir -p "$LOG_DIR"
-                        sudo chmod 700 "$LOG_DIR"
-                    fi
-                    if [ ! -f "$LOG_FILE" ]; then
-                        echo -e "${YELLOW}日志文件不存在，正在创建...${RESET}"
-                        sudo touch "$LOG_FILE"
-                        sudo chmod 600 "$LOG_FILE"
-                    fi
-                    if [ -r "$LOG_FILE" ]; then
-                        awk '
-                        /封禁IP:/ {
-                            time = substr($1, 2) " " substr($2, 1, 8)
-                            for (i=1; i<=NF; i++) {
-                                if ($i == "封禁IP:") { ip = $(i+1); break }
-                            }
-                            for (i=1; i<=NF; i++) {
-                                if ($i == "尝试次数:") { count = $(i+1); break }
-                            }
-                            if (ip ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/) {
-                                ips[ip] += count
-                                if (time > last_time[ip]) { last_time[ip] = time }
-                            }
-                        }
-                        END {
-                            for (ip in ips) {
-                                printf "IP: %-15s 尝试攻击次数: %-5d 最近攻击时间: %s\n", ip, ips[ip], last_time[ip]
-                            }
-                        }' "$LOG_FILE"
-                    else
-                        echo -e "${YELLOW}日志文件 $LOG_FILE 不可读，请检查权限！${RESET}"
-                    fi
-                    echo -e "${GREEN}----------------------------------------"
-                    echo -e "${YELLOW}提示：尝试次数超过${MAX_ATTEMPTS}次的IP将被自动屏蔽${RESET}"
+                # 确定并确保日志文件存在
+                if [ -f /var/log/auth.log ]; then
+                    LOG_FILE="/var/log/auth.log"  # Debian/Ubuntu
+                elif [ -f /var/log/secure ]; then
+                    LOG_FILE="/var/log/secure"   # CentOS/RHEL
                 else
-                    echo -e "${GREEN}正在配置SSH防暴力破解防护系统...${RESET}"
-                    interactive_sshshield_config() {
-                        echo -e "\n[SSH防护配置]"
-                        echo "----------------------------------------"
-                        read -p "请输入单IP允许的最大失败尝试次数 [默认5]: " custom_attempts
-                        MAX_ATTEMPTS=${custom_attempts:-5}
-                        read -p "请输入IP屏蔽时长（分钟）[默认1440（1天）]: " custom_ban
-                        BAN_MINUTES=${custom_ban:-1440}
-                        read -p "请输入高风险阈值（总失败次数）[默认10]: " custom_risk
-                        HIGH_RISK_THRESHOLD=${custom_risk:-10}
-                        read -p "请输入常规扫描间隔（分钟）[默认15]: " custom_scan
-                        SCAN_INTERVAL=${custom_scan:-15}
-                        read -p "请输入高风险扫描间隔（分钟）[默认5]: " custom_scan_high
-                        SCAN_INTERVAL_HIGH=${custom_scan_high:-5}
-                        echo "MAX_ATTEMPTS=$MAX_ATTEMPTS
-BAN_MINUTES=$BAN_MINUTES
-HIGH_RISK_THRESHOLD=$HIGH_RISK_THRESHOLD
-SCAN_INTERVAL=$SCAN_INTERVAL
-SCAN_INTERVAL_HIGH=$SCAN_INTERVAL_HIGH" | sudo tee /etc/sshshield.conf >/dev/null
-                    }
-
-                    install_sshshield() {
-                        sudo mkdir -p "$LOG_DIR"
-                        sudo chmod 700 "$LOG_DIR"
-                        sudo touch "$LOG_FILE"
-                        sudo chmod 600 "$LOG_FILE"
-
-                        sudo tee /etc/systemd/system/sshshield.service <<EOF
-[Unit]
-Description=SSH Bruteforce Protection System
-After=network.target
-[Service]
-ExecStart=/usr/local/bin/sshshield-daemon
-Restart=always
-RestartSec=60
-[Install]
-WantedBy=multi-user.target
-EOF
-
-                        sudo tee /usr/local/bin/sshshield-daemon <<'EOF'
-#!/bin/bash
-load_config() {
-    source /etc/sshshield.conf
-    LOG_FILE="/var/log/sshshield/sshshield.log"
-}
-adjust_cron() {
-    local interval=$1
-    crontab -l | grep -v 'sshshield-scan' | crontab -
-    (crontab -l 2>/dev/null; echo "*/$interval * * * * /usr/local/bin/sshshield-scan") | crontab -
-}
-load_config
-while true; do
-    TOTAL_ATTEMPTS=$(grep 'Failed password' $LOG_FILE | wc -l)
-    if [ $TOTAL_ATTEMPTS -ge $HIGH_RISK_THRESHOLD ]; then
-        adjust_cron $SCAN_INTERVAL_HIGH
-    else
-        adjust_cron $SCAN_INTERVAL
-    fi
-    sleep 300
-done
-EOF
-
-                        sudo tee /usr/local/bin/sshshield-scan <<'EOF'
-#!/bin/bash
-load_config() {
-    source /etc/sshshield.conf
-    LOG_FILE="/var/log/sshshield/sshshield.log"
-}
-load_config
-grep 'Failed password' $LOG_FILE | awk '{print $(NF-3)}' | sort | uniq -c | while read count ip; do
-    if [ $count -ge $MAX_ATTEMPTS ]; then
-        if ! grep -q "$ip" /etc/hosts.deny; then
-            echo "sshd:$ip" >> /etc/hosts.deny
-            echo "[$(date +'%Y-%m-%d %H:%M:%S')] 封禁IP: $ip 尝试次数: $count" >> "$LOG_FILE"
-            echo "sed -i '/$ip/d' /etc/hosts.deny" | at now +$BAN_MINUTES minutes
-        fi
-    fi
-done
-EOF
-
-                        sudo chmod 755 /usr/local/bin/sshshield-*
-                        sudo chmod 600 /etc/sshshield.conf
-                        sudo systemctl daemon-reload
-                        sudo systemctl enable --now sshshield
-
-                        echo -e "${GREEN}防护系统已启用！配置详情："
-                        echo -e "----------------------------------------"
-                        echo -e "单IP最大尝试次数: ${YELLOW}$MAX_ATTEMPTS${GREEN}"
-                        echo -e "IP封禁时长: ${YELLOW}$BAN_MINUTES 分钟${GREEN}"
-                        echo -e "高风险阈值: ${YELLOW}$HIGH_RISK_THRESHOLD 次总尝试${GREEN}"
-                        echo -e "常规扫描间隔: ${YELLOW}$SCAN_INTERVAL 分钟${GREEN}"
-                        echo -e "高风险扫描间隔: ${YELLOW}$SCAN_INTERVAL_HIGH 分钟${GREEN}"
-                        echo -e "日志文件: ${YELLOW}$LOG_FILE${GREEN}"
-                        echo -e "----------------------------------------"
-                    }
-
-                    interactive_sshshield_config
-                    install_sshshield
+                    echo -e "${YELLOW}未找到 SSH 日志文件，正在尝试创建 /var/log/auth.log...${RESET}"
+                    sudo touch /var/log/auth.log
+                    sudo chown syslog:adm /var/log/auth.log
+                    sudo chmod 640 /var/log/auth.log
+                    # 配置 rsyslog
+                    echo "auth,authpriv.* /var/log/auth.log" | sudo tee /etc/rsyslog.d/auth.conf > /dev/null
+                    sudo systemctl restart rsyslog
+                    sudo systemctl restart sshd
+                    if [ -f /var/log/auth.log ]; then
+                        LOG_FILE="/var/log/auth.log"
+                        echo -e "${GREEN}已创建 /var/log/auth.log 并配置完成！${RESET}"
+                    else
+                        echo -e "${RED}创建 /var/log/auth.log 失败，请检查 rsyslog 和 sshd 配置！${RESET}"
+                        read -p "按回车键返回主菜单..."
+                        continue
+                    fi
                 fi
+
+                # 用户输入检测参数
+                echo -e "${YELLOW}请输入检测参数（留空使用默认值）：${RESET}"
+                read -p "最小尝试次数阈值（默认 5 次）： " min_attempts
+                min_attempts=${min_attempts:-5}
+                read -p "检测时间范围（分钟，默认 1440 分钟，即 1 天）： " time_range
+                time_range=${time_range:-1440}
+
+                # 计算时间范围的开始时间
+                start_time=$(date -d "$time_range minutes ago" +"%Y-%m-%d %H:%M:%S")
+
+                # 检测并统计暴力破解尝试
+                echo -e "${GREEN}正在分析日志文件：$LOG_FILE${RESET}"
+                echo -e "${GREEN}检测时间范围：从 $start_time 到现在${RESET}"
+                echo -e "${GREEN}可疑 IP 统计（尝试次数 >= $min_attempts）："
+                echo -e "----------------------------------------${RESET}"
+
+                grep "Failed password" "$LOG_FILE" | awk -v start="$start_time" '
+                {
+                    log_time = substr($0, 1, 15)
+                    ip = $(NF-3)
+                    log_full_time = sprintf("%s %s", strftime("%Y"), log_time)
+                    if (log_full_time >= start) {
+                        attempts[ip]++
+                        if (!last_time[ip] || log_full_time > last_time[ip]) {
+                            last_time[ip] = log_full_time
+                        }
+                    }
+                }
+                END {
+                    for (ip in attempts) {
+                        if (attempts[ip] >= '"$min_attempts"') {
+                            printf "IP: %-15s 尝试次数: %-5d 最近尝试时间: %s\n", ip, attempts[ip], last_time[ip]
+                        }
+                    }
+                }' | sort -k3 -nr
+
+                echo -e "${GREEN}----------------------------------------${RESET}"
+                echo -e "${YELLOW}提示：以上为疑似暴力破解的 IP 列表，未自动封禁。${RESET}"
+                echo -e "${YELLOW}若需封禁，请手动编辑 /etc/hosts.deny 或使用防火墙规则。${RESET}"
                 read -p "按回车键返回主菜单..."
                 ;;
             *)
