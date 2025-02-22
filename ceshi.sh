@@ -1154,8 +1154,8 @@ EOF"
                             sudo apt autoremove -y || true
                             sudo dpkg --configure -a
                             sudo apt install -f
-                            # 清理旧配置文件
-                            sudo rm -f /etc/nginx/sites-available/default /etc/nginx/conf.d/default.conf
+                            # 清理旧配置文件和符号链接
+                            sudo rm -f /etc/nginx/sites-available/default /etc/nginx/sites-enabled/default /etc/nginx/conf.d/default.conf
                         else
                             echo -e "${RED}保留运行中的服务，可能导致安装冲突，建议手动清理后再试！${RESET}"
                         fi
@@ -1327,7 +1327,11 @@ EOF
                             else
                                 if [ "$SYSTEM" == "ubuntu" ] || [ "$SYSTEM" == "debian" ]; then
                                     sudo apt install -y php php-fpm php-mysql
-                                    PHP_FPM_SOCK=$(find /run/php -name "php*-fpm.sock" | head -n 1 || echo "/run/php/php-fpm.sock")
+                                    # 动态检测 PHP-FPM socket
+                                    PHP_FPM_SOCK=$(find /run/php -name "php*-fpm.sock" | head -n 1)
+                                    if [ -z "$PHP_FPM_SOCK" ]; then
+                                        PHP_FPM_SOCK="/run/php/php-fpm.sock"
+                                    fi
                                 elif [ "$SYSTEM" == "centos" ]; then
                                     sudo yum install -y php php-fpm php-mysqlnd
                                     PHP_FPM_SOCK="/run/php-fpm/www.sock"
@@ -1360,6 +1364,9 @@ server {
     }
 }
 EOF"
+                                        # 创建符号链接并移除旧的
+                                        sudo rm -f /etc/nginx/sites-enabled/default
+                                        sudo ln -s /etc/nginx/sites-available/default /etc/nginx/sites-enabled/default
                                     else
                                         sudo bash -c "cat > /etc/nginx/conf.d/default.conf <<EOF
 server {
