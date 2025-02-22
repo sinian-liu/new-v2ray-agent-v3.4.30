@@ -831,6 +831,28 @@ EOF
                 # SSH 防暴力破解检测
                 echo -e "${GREEN}正在检测 SSH 暴力破解尝试...${RESET}"
 
+                # 检查并安装 rsyslog（如果缺失）
+                if ! command -v rsyslogd &> /dev/null; then
+                    echo -e "${YELLOW}未检测到 rsyslog，正在安装...${RESET}"
+                    check_system
+                    if [ "$SYSTEM" == "ubuntu" ] || [ "$SYSTEM" == "debian" ]; then
+                        sudo apt update && sudo apt install -y rsyslog
+                    elif [ "$SYSTEM" == "centos" ]; then
+                        sudo yum install -y rsyslog
+                    elif [ "$SYSTEM" == "fedora" ]; then
+                        sudo dnf install -y rsyslog
+                    else
+                        echo -e "${RED}无法识别系统，无法安装 rsyslog！${RESET}"
+                    fi
+                    if command -v rsyslogd &> /dev/null; then
+                        sudo systemctl start rsyslog
+                        sudo systemctl enable rsyslog
+                        echo -e "${GREEN}rsyslog 安装并启动成功！${RESET}"
+                    else
+                        echo -e "${RED}rsyslog 安装失败，请手动安装！${RESET}"
+                    fi
+                fi
+
                 # 确定并确保日志文件存在
                 if [ -f /var/log/auth.log ]; then
                     LOG_FILE="/var/log/auth.log"  # Debian/Ubuntu
@@ -839,36 +861,53 @@ EOF
                 else
                     echo -e "${YELLOW}未找到 SSH 日志文件，正在尝试创建 /var/log/auth.log...${RESET}"
                     sudo touch /var/log/auth.log
-                    sudo chown syslog:adm /var/log/auth.log
+                    # 使用 root:root 替代 syslog:adm（适应无 syslog 用户的系统）
+                    sudo chown root:root /var/log/auth.log
                     sudo chmod 640 /var/log/auth.log
-                    # 配置 rsyslog
+                    # 检查 rsyslog 目录并创建
+                    if [ ! -d /etc/rsyslog.d ]; then
+                        sudo mkdir -p /etc/rsyslog.d
+                    fi
                     echo "auth,authpriv.* /var/log/auth.log" | sudo tee /etc/rsyslog.d/auth.conf > /dev/null
-                    sudo systemctl restart rsyslog
-                    sudo systemctl restart sshd
-                    if [ -f /var/log/auth.log ]; then
-                        LOG_FILE="/var/log/auth.log"
-                        echo -e "${GREEN}已创建 /var/log/auth.log 并配置完成！${RESET}"
+                    if command -v rsyslogd &> /dev/null; then
+                        sudo systemctl restart rsyslog
+                        sudo systemctl restart sshd
+                        if [ $? -eq 0 ] && [ -f /var/log/auth.log ]; then
+                            LOG_FILE="/var/log/auth.log"
+                            echo -e "${GREEN}已创建 /var/log/auth.log 并配置完成！${RESET}"
+                        else
+                            echo -e "${RED}日志服务配置失败，请检查 rsyslog 和 sshd 是否正常运行！${RESET}"
+                            echo -e "${YELLOW}建议：安装 rsyslog（sudo apt/yum install rsyslog）并重启服务。${RESET}"
+                            read -p "按回车键返回主菜单..."
+                            continue
+                        fi
                     else
-                        echo -e "${RED}创建 /var/log/auth.log 失败，请检查 rsyslog 和 sshd 配置！${RESET}"
+                        echo -e "${RED}未安装 rsyslog，无法配置日志文件！${RESET}"
                         read -p "按回车键返回主菜单..."
                         continue
                     fi
                 fi
 
-                # 用户输入检测参数
+                # 用户输入检测参数（恢复原始选项）
                 echo -e "${YELLOW}请输入检测参数（留空使用默认值）：${RESET}"
-                read -p "最小尝试次数阈值（默认 5 次）： " min_attempts
-                min_attempts=${min_attempts:-5}
-                read -p "检测时间范围（分钟，默认 1440 分钟，即 1 天）： " time_range
-                time_range=${time_range:-1440}
+                read -p "请输入单 IP 允许的最大失败尝试次数 [默认 5]： " max_attempts
+                max_attempts=${max_attempts:-5}
+                read -p "请输入 IP 屏蔽时长（分钟）[默认 1440（1天）]： " ban_minutes
+                ban_minutes=${ban_minutes:-1440}
+                read -p "请输入高风险阈值（总失败次数）[默认 10]： " high_risk_threshold
+                high_risk_threshold=${high_risk_threshold:-10}
+                read -p "请输入常规扫描间隔（分钟）[默认 15]： " scan_interval
+                scan_interval=${scan_interval:-15}
+                read -p "请输入高风险扫描间隔（分钟）[默认 5]： " scan_interval_high
+                scan_interval_high=${scan_interval_high:-5}
 
-                # 计算时间范围的开始时间
-                start_time=$(date -d "$time_range minutes ago" +"%Y-%m-%d %H:%M:%S")
+                # 计算时间范围的开始时间（基于 ban_minutes）
+                start_time=$(date -d "$ban_minutes minutes ago" +"%Y-%m-%d %H:%M:%S")
 
                 # 检测并统计暴力破解尝试
                 echo -e "${GREEN}正在分析日志文件：$LOG_FILE${RESET}"
                 echo -e "${GREEN}检测时间范围：从 $start_time 到现在${RESET}"
-                echo -e "${GREEN}可疑 IP 统计（尝试次数 >= $min_attempts）："
+                echo -e "${GREEN}可疑 IP 统计（尝试次数 >= $max_attempts）："
                 echo -e "----------------------------------------${RESET}"
 
                 grep "Failed password" "$LOG_FILE" | awk -v start="$start_time" '
@@ -885,7 +924,7 @@ EOF
                 }
                 END {
                     for (ip in attempts) {
-                        if (attempts[ip] >= '"$min_attempts"') {
+                        if (attempts[ip] >= '"$max_attempts"') {
                             printf "IP: %-15s 尝试次数: %-5d 最近尝试时间: %s\n", ip, attempts[ip], last_time[ip]
                         }
                     }
@@ -893,6 +932,7 @@ EOF
 
                 echo -e "${GREEN}----------------------------------------${RESET}"
                 echo -e "${YELLOW}提示：以上为疑似暴力破解的 IP 列表，未自动封禁。${RESET}"
+                echo -e "${YELLOW}配置参数：最大尝试次数=$max_attempts，屏蔽时长=$ban_minutes 分钟，高风险阈值=$high_risk_threshold，常规扫描=$scan_interval 分钟，高风险扫描=$scan_interval_high 分钟${RESET}"
                 echo -e "${YELLOW}若需封禁，请手动编辑 /etc/hosts.deny 或使用防火墙规则。${RESET}"
                 read -p "按回车键返回主菜单..."
                 ;;
