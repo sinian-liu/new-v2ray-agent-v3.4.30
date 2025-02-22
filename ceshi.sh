@@ -1429,5 +1429,9 @@ EOF"
 
                 read -p "按回车键返回主菜单..."
                 ;;
+        esac
+    done
+}
+
 # 运行主菜单
 show_menu
