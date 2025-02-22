@@ -830,6 +830,7 @@ EOF
             19)
                 # SSH 防暴力破解检测
                 echo -e "${GREEN}正在检测 SSH 暴力破解尝试...${RESET}"
+                CONFIG_FILE="/etc/ssh_brute_force.conf"
 
                 # 检查并安装 rsyslog（如果缺失）
                 if ! command -v rsyslogd &> /dev/null; then
@@ -861,10 +862,8 @@ EOF
                 else
                     echo -e "${YELLOW}未找到 SSH 日志文件，正在尝试创建 /var/log/auth.log...${RESET}"
                     sudo touch /var/log/auth.log
-                    # 使用 root:root 替代 syslog:adm（适应无 syslog 用户的系统）
                     sudo chown root:root /var/log/auth.log
                     sudo chmod 640 /var/log/auth.log
-                    # 检查 rsyslog 目录并创建
                     if [ ! -d /etc/rsyslog.d ]; then
                         sudo mkdir -p /etc/rsyslog.d
                     fi
@@ -877,7 +876,6 @@ EOF
                             echo -e "${GREEN}已创建 /var/log/auth.log 并配置完成！${RESET}"
                         else
                             echo -e "${RED}日志服务配置失败，请检查 rsyslog 和 sshd 是否正常运行！${RESET}"
-                            echo -e "${YELLOW}建议：安装 rsyslog（sudo apt/yum install rsyslog）并重启服务。${RESET}"
                             read -p "按回车键返回主菜单..."
                             continue
                         fi
@@ -888,26 +886,62 @@ EOF
                     fi
                 fi
 
-                # 用户输入检测参数（恢复原始选项）
-                echo -e "${YELLOW}请输入检测参数（留空使用默认值）：${RESET}"
-                read -p "请输入单 IP 允许的最大失败尝试次数 [默认 5]： " max_attempts
-                max_attempts=${max_attempts:-5}
-                read -p "请输入 IP 屏蔽时长（分钟）[默认 1440（1天）]： " ban_minutes
-                ban_minutes=${ban_minutes:-1440}
-                read -p "请输入高风险阈值（总失败次数）[默认 10]： " high_risk_threshold
-                high_risk_threshold=${high_risk_threshold:-10}
-                read -p "请输入常规扫描间隔（分钟）[默认 15]： " scan_interval
-                scan_interval=${scan_interval:-15}
-                read -p "请输入高风险扫描间隔（分钟）[默认 5]： " scan_interval_high
-                scan_interval_high=${scan_interval_high:-5}
+                # 检查是否首次运行
+                if [ ! -f "$CONFIG_FILE" ]; then
+                    echo -e "${YELLOW}首次运行，请设置检测参数：${RESET}"
+                    read -p "请输入单 IP 允许的最大失败尝试次数 [默认 5]： " max_attempts
+                    max_attempts=${max_attempts:-5}
+                    read -p "请输入 IP 屏蔽时长（分钟）[默认 1440（1天）]： " ban_minutes
+                    ban_minutes=${ban_minutes:-1440}
+                    read -p "请输入高风险阈值（总失败次数）[默认 10]： " high_risk_threshold
+                    high_risk_threshold=${high_risk_threshold:-10}
+                    read -p "请输入常规扫描间隔（分钟）[默认 15]： " scan_interval
+                    scan_interval=${scan_interval:-15}
+                    read -p "请输入高风险扫描间隔（分钟）[默认 5]： " scan_interval_high
+                    scan_interval_high=${scan_interval_high:-5}
 
-                # 计算时间范围的开始时间（基于 ban_minutes）
-                start_time=$(date -d "$ban_minutes minutes ago" +"%Y-%m-%d %H:%M:%S")
+                    # 保存配置
+                    echo "MAX_ATTEMPTS=$max_attempts" | sudo tee "$CONFIG_FILE" > /dev/null
+                    echo "BAN_MINUTES=$ban_minutes" | sudo tee -a "$CONFIG_FILE" > /dev/null
+                    echo "HIGH_RISK_THRESHOLD=$high_risk_threshold" | sudo tee -a "$CONFIG_FILE" > /dev/null
+                    echo "SCAN_INTERVAL=$scan_interval" | sudo tee -a "$CONFIG_FILE" > /dev/null
+                    echo "SCAN_INTERVAL_HIGH=$scan_interval_high" | sudo tee -a "$CONFIG_FILE" > /dev/null
+                    echo -e "${GREEN}配置已保存至 $CONFIG_FILE${RESET}"
+                else
+                    # 读取现有配置
+                    source "$CONFIG_FILE"
+                    echo -e "${YELLOW}当前配置：最大尝试次数=$MAX_ATTEMPTS，屏蔽时长=$BAN_MINUTES 分钟，高风险阈值=$HIGH_RISK_THRESHOLD，常规扫描=$SCAN_INTERVAL 分钟，高风险扫描=$SCAN_INTERVAL_HIGH 分钟${RESET}"
+                    read -p "请选择操作：1) 查看尝试破解的 IP 记录  2) 修改配置参数（输入 1 或 2）： " choice
+                    if [ "$choice" == "2" ]; then
+                        echo -e "${YELLOW}请输入新的检测参数（留空保留原值）：${RESET}"
+                        read -p "请输入单 IP 允许的最大失败尝试次数 [当前 $MAX_ATTEMPTS]： " max_attempts
+                        max_attempts=${max_attempts:-$MAX_ATTEMPTS}
+                        read -p "请输入 IP 屏蔽时长（分钟）[当前 $BAN_MINUTES]： " ban_minutes
+                        ban_minutes=${ban_minutes:-$BAN_MINUTES}
+                        read -p "请输入高风险阈值（总失败次数）[当前 $HIGH_RISK_THRESHOLD]： " high_risk_threshold
+                        high_risk_threshold=${high_risk_threshold:-$HIGH_RISK_THRESHOLD}
+                        read -p "请输入常规扫描间隔（分钟）[当前 $SCAN_INTERVAL]： " scan_interval
+                        scan_interval=${scan_interval:-$SCAN_INTERVAL}
+                        read -p "请输入高风险扫描间隔（分钟）[当前 $SCAN_INTERVAL_HIGH]： " scan_interval_high
+                        scan_interval_high=${scan_interval_high:-$SCAN_INTERVAL_HIGH}
+
+                        # 更新配置
+                        echo "MAX_ATTEMPTS=$max_attempts" | sudo tee "$CONFIG_FILE" > /dev/null
+                        echo "BAN_MINUTES=$ban_minutes" | sudo tee -a "$CONFIG_FILE" > /dev/null
+                        echo "HIGH_RISK_THRESHOLD=$high_risk_threshold" | sudo tee -a "$CONFIG_FILE" > /dev/null
+                        echo "SCAN_INTERVAL=$scan_interval" | sudo tee -a "$CONFIG_FILE" > /dev/null
+                        echo "SCAN_INTERVAL_HIGH=$scan_interval_high" | sudo tee -a "$CONFIG_FILE" > /dev/null
+                        echo -e "${GREEN}配置已更新至 $CONFIG_FILE${RESET}"
+                    fi
+                fi
+
+                # 计算时间范围的开始时间
+                start_time=$(date -d "$BAN_MINUTES minutes ago" +"%Y-%m-%d %H:%M:%S")
 
                 # 检测并统计暴力破解尝试
                 echo -e "${GREEN}正在分析日志文件：$LOG_FILE${RESET}"
                 echo -e "${GREEN}检测时间范围：从 $start_time 到现在${RESET}"
-                echo -e "${GREEN}可疑 IP 统计（尝试次数 >= $max_attempts）："
+                echo -e "${GREEN}可疑 IP 统计（尝试次数 >= $MAX_ATTEMPTS）："
                 echo -e "----------------------------------------${RESET}"
 
                 grep "Failed password" "$LOG_FILE" | awk -v start="$start_time" '
@@ -924,7 +958,7 @@ EOF
                 }
                 END {
                     for (ip in attempts) {
-                        if (attempts[ip] >= '"$max_attempts"') {
+                        if (attempts[ip] >= '"$MAX_ATTEMPTS"') {
                             printf "IP: %-15s 尝试次数: %-5d 最近尝试时间: %s\n", ip, attempts[ip], last_time[ip]
                         }
                     }
@@ -932,12 +966,8 @@ EOF
 
                 echo -e "${GREEN}----------------------------------------${RESET}"
                 echo -e "${YELLOW}提示：以上为疑似暴力破解的 IP 列表，未自动封禁。${RESET}"
-                echo -e "${YELLOW}配置参数：最大尝试次数=$max_attempts，屏蔽时长=$ban_minutes 分钟，高风险阈值=$high_risk_threshold，常规扫描=$scan_interval 分钟，高风险扫描=$scan_interval_high 分钟${RESET}"
+                echo -e "${YELLOW}配置参数：最大尝试次数=$MAX_ATTEMPTS，屏蔽时长=$BAN_MINUTES 分钟，高风险阈值=$HIGH_RISK_THRESHOLD，常规扫描=$SCAN_INTERVAL 分钟，高风险扫描=$SCAN_INTERVAL_HIGH 分钟${RESET}"
                 echo -e "${YELLOW}若需封禁，请手动编辑 /etc/hosts.deny 或使用防火墙规则。${RESET}"
-                read -p "按回车键返回主菜单..."
-                ;;
-            *)
-                echo -e "${RED}无效选项，请重新输入！${RESET}"
                 read -p "按回车键返回主菜单..."
                 ;;
         esac
