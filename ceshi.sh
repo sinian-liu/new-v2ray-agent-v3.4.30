@@ -6,9 +6,31 @@ RED="\033[31m"
 YELLOW="\033[33m"
 RESET="\033[0m"
 
-# 系统检测函数
+# 系统检测函数（改进版）
 check_system() {
-    if [ -f /etc/lsb-release ]; then
+    if [ -f /etc/os-release ]; then
+        . /etc/os-release
+        case $ID in
+            ubuntu)
+                SYSTEM="ubuntu"
+                ;;
+            debian)
+                SYSTEM="debian"
+                ;;
+            centos|rhel)
+                SYSTEM="centos"
+                ;;
+            fedora)
+                SYSTEM="fedora"
+                ;;
+            arch)
+                SYSTEM="arch"
+                ;;
+            *)
+                SYSTEM="unknown"
+                ;;
+        esac
+    elif [ -f /etc/lsb-release ]; then
         SYSTEM="ubuntu"
     elif [ -f /etc/redhat-release ]; then
         SYSTEM="centos"
@@ -159,7 +181,6 @@ show_menu() {
             1)
                 # VPS 一键测试脚本
                 echo -e "${GREEN}正在进行 VPS 测试 ...${RESET}"
-                # 下载并运行测试脚本，但保持控制流
                 curl -sL https://raw.githubusercontent.com/sinian-liu/onekey/main/system_info.sh -o /tmp/system_info.sh
                 if [ $? -eq 0 ]; then
                     chmod +x /tmp/system_info.sh
@@ -173,7 +194,6 @@ show_menu() {
             2)
                 # BBR 安装脚本
                 echo -e "${GREEN}正在安装 BBR ...${RESET}"
-                # 下载并运行 BBR 脚本
                 wget -O /tmp/tcpx.sh "https://github.com/sinian-liu/Linux-NetSpeed-BBR/raw/master/tcpx.sh"
                 if [ $? -eq 0 ]; then
                     chmod +x /tmp/tcpx.sh
@@ -187,7 +207,6 @@ show_menu() {
             3)
                 # 安装 v2ray 脚本
                 echo -e "${GREEN}正在安装 v2ray ...${RESET}"
-                # 下载并运行 v2ray 安装脚本
                 wget -P /tmp -N --no-check-certificate "https://raw.githubusercontent.com/sinian-liu/v2ray-agent-2.5.73/master/install.sh"
                 if [ $? -eq 0 ]; then
                     chmod 700 /tmp/install.sh
@@ -292,61 +311,75 @@ show_menu() {
             9)
                 # 永久禁用 IPv6
                 echo -e "${GREEN}正在禁用 IPv6 ...${RESET}"
-                if [ -f /etc/lsb-release ]; then
-                    sudo sysctl -w net.ipv6.conf.all.disable_ipv6=1
-                    sudo sysctl -w net.ipv6.conf.default.disable_ipv6=1
-                    echo "net.ipv6.conf.all.disable_ipv6=1" | sudo tee -a /etc/sysctl.conf
-                    echo "net.ipv6.conf.default.disable_ipv6=1" | sudo tee -a /etc/sysctl.conf
-                    sudo sysctl -p
-                    if [ $? -ne 0 ]; then
-                        echo -e "${RED}禁用 IPv6 失败，请检查权限或配置文件！${RESET}"
-                    else
-                        echo -e "${GREEN}IPv6 已成功禁用！${RESET}"
-                    fi
-                elif [ -f /etc/redhat-release ]; then
-                    sudo sysctl -w net.ipv6.conf.all.disable_ipv6=1
-                    sudo sysctl -w net.ipv6.conf.default.disable_ipv6=1
-                    echo "net.ipv6.conf.all.disable_ipv6 = 1" | sudo tee -a /etc/sysctl.conf
-                    echo "net.ipv6.conf.default.disable_ipv6 = 1" | sudo tee -a /etc/sysctl.conf
-                    sudo sysctl -p
-                    if [ $? -ne 0 ]; then
-                        echo -e "${RED}禁用 IPv6 失败，请检查权限或配置文件！${RESET}"
-                    else
-                        echo -e "${GREEN}IPv6 已成功禁用！${RESET}"
-                    fi
-                else
-                    echo -e "${RED}无法识别您的操作系统，无法禁用 IPv6。${RESET}"
-                fi
+                check_system
+                case $SYSTEM in
+                    ubuntu|debian)
+                        sudo sysctl -w net.ipv6.conf.all.disable_ipv6=1
+                        sudo sysctl -w net.ipv6.conf.default.disable_ipv6=1
+                        echo "net.ipv6.conf.all.disable_ipv6=1" | sudo tee -a /etc/sysctl.conf
+                        echo "net.ipv6.conf.default.disable_ipv6=1" | sudo tee -a /etc/sysctl.conf
+                        sudo sysctl -p
+                        if [ $? -ne 0 ]; then
+                            echo -e "${RED}禁用 IPv6 失败，请检查权限或配置文件！${RESET}"
+                        else
+                            echo -e "${GREEN}IPv6 已成功禁用！${RESET}"
+                        fi
+                        ;;
+                    centos|fedora)
+                        sudo sysctl -w net.ipv6.conf.all.disable_ipv6=1
+                        sudo sysctl -w net.ipv6.conf.default.disable_ipv6=1
+                        echo "net.ipv6.conf.all.disable_ipv6 = 1" | sudo tee -a /etc/sysctl.conf
+                        echo "net.ipv6.conf.default.disable_ipv6 = 1" | sudo tee -a /etc/sysctl.conf
+                        sudo sysctl -p
+                        if [ $? -ne 0 ]; then
+                            echo -e "${RED}禁用 IPv6 失败，请检查权限或配置文件！${RESET}"
+                        else
+                            echo -e "${GREEN}IPv6 已成功禁用！${RESET}"
+                        fi
+                        ;;
+                    *)
+                        echo -e "${RED}无法识别您的操作系统，无法禁用 IPv6。${RESET}"
+                        echo -e "${YELLOW}请检查 /etc/os-release 或相关系统文件以确认发行版。${RESET}"
+                        echo -e "${YELLOW}当前检测结果: SYSTEM=$SYSTEM${RESET}"
+                        ;;
+                esac
                 read -p "按回车键返回主菜单..."
                 ;;
             10)
                 # 解除禁用 IPv6
                 echo -e "${GREEN}正在解除禁用 IPv6 ...${RESET}"
-                if [ -f /etc/lsb-release ]; then
-                    sudo sysctl -w net.ipv6.conf.all.disable_ipv6=0
-                    sudo sysctl -w net.ipv6.conf.default.disable_ipv6=0
-                    sudo sed -i '/net.ipv6.conf.all.disable_ipv6/d' /etc/sysctl.conf
-                    sudo sed -i '/net.ipv6.conf.default.disable_ipv6/d' /etc/sysctl.conf
-                    sudo sysctl -p
-                    if [ $? -ne 0 ]; then
-                        echo -e "${RED}解除禁用 IPv6 失败，请检查权限或配置文件！${RESET}"
-                    else
-                        echo -e "${GREEN}IPv6 已成功启用！${RESET}"
-                    fi
-                elif [ -f /etc/redhat-release ]; then
-                    sudo sysctl -w net.ipv6.conf.all.disable_ipv6=0
-                    sudo sysctl -w net.ipv6.conf.default.disable_ipv6=0
-                    sudo sed -i '/net.ipv6.conf.all.disable_ipv6/d' /etc/sysctl.conf
-                    sudo sed -i '/net.ipv6.conf.default.disable_ipv6/d' /etc/sysctl.conf
-                    sudo sysctl -p
-                    if [ $? -ne 0 ]; then
-                        echo -e "${RED}解除禁用 IPv6 失败，请检查权限或配置文件！${RESET}"
-                    else
-                        echo -e "${GREEN}IPv6 已成功启用！${RESET}"
-                    fi
-                else
-                    echo -e "${RED}无法识别您的操作系统，无法解除禁用 IPv6。${RESET}"
-                fi
+                check_system
+                case $SYSTEM in
+                    ubuntu|debian)
+                        sudo sysctl -w net.ipv6.conf.all.disable_ipv6=0
+                        sudo sysctl -w net.ipv6.conf.default.disable_ipv6=0
+                        sudo sed -i '/net.ipv6.conf.all.disable_ipv6/d' /etc/sysctl.conf
+                        sudo sed -i '/net.ipv6.conf.default.disable_ipv6/d' /etc/sysctl.conf
+                        sudo sysctl -p
+                        if [ $? -ne 0 ]; then
+                            echo -e "${RED}解除禁用 IPv6 失败，请检查权限或配置文件！${RESET}"
+                        else
+                            echo -e "${GREEN}IPv6 已成功启用！${RESET}"
+                        fi
+                        ;;
+                    centos|fedora)
+                        sudo sysctl -w net.ipv6.conf.all.disable_ipv6=0
+                        sudo sysctl -w net.ipv6.conf.default.disable_ipv6=0
+                        sudo sed -i '/net.ipv6.conf.all.disable_ipv6/d' /etc/sysctl.conf
+                        sudo sed -i '/net.ipv6.conf.default.disable_ipv6/d' /etc/sysctl.conf
+                        sudo sysctl -p
+                        if [ $? -ne 0 ]; then
+                            echo -e "${RED}解除禁用 IPv6 失败，请检查权限或配置文件！${RESET}"
+                        else
+                            echo -e "${GREEN}IPv6 已成功启用！${RESET}"
+                        fi
+                        ;;
+                    *)
+                        echo -e "${RED}无法识别您的操作系统，无法解除禁用 IPv6。${RESET}"
+                        echo -e "${YELLOW}请检查 /etc/os-release 或相关系统文件以确认发行版。${RESET}"
+                        echo -e "${YELLOW}当前检测结果: SYSTEM=$SYSTEM${RESET}"
+                        ;;
+                esac
                 read -p "按回车键返回主菜单..."
                 ;;
             11)
