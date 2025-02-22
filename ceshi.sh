@@ -1122,7 +1122,7 @@ EOF"
                 read -p "按回车键返回主菜单..."
                 ;;
             20)
-                # 一键安装或卸载常用开发环境（LAMP/LEMP 栈）
+                # 一键安装或卸载常用开发环境（LAMP/LEMP 栈）基于 Docker
                 echo -e "${GREEN}正在准备处理常用开发环境（LAMP/LEMP 栈）...${RESET}"
 
                 # 检查系统类型
@@ -1131,32 +1131,26 @@ EOF"
                     echo -e "${RED}无法识别系统，无法继续操作！${RESET}"
                     read -p "按回车键返回主菜单..."
                 else
-                    # 检测运行中的服务
-                    echo -e "${YELLOW}正在检测运行中的 Web 服务...${RESET}"
-                    APACHE_RUNNING=false
-                    NGINX_RUNNING=false
-                    if systemctl is-active apache2 > /dev/null 2>&1 || systemctl is-active httpd > /dev/null 2>&1; then
-                        APACHE_RUNNING=true
-                        echo -e "${YELLOW}检测到 Apache 服务正在运行${RESET}"
-                    fi
-                    if systemctl is-active nginx > /dev/null 2>&1; then
-                        NGINX_RUNNING=true
-                        echo -e "${YELLOW}检测到 Nginx 服务正在运行${RESET}"
+                    # 检测运行中的 Docker 服务
+                    echo -e "${YELLOW}正在检测运行中的 Docker 服务...${RESET}"
+                    DOCKER_RUNNING=false
+                    if command -v docker > /dev/null 2>&1 && systemctl is-active docker > /dev/null 2>&1; then
+                        DOCKER_RUNNING=true
+                        echo -e "${YELLOW}检测到 Docker 服务正在运行${RESET}"
+                        if docker ps -q | grep -q "."; then
+                            echo -e "${YELLOW}检测到运行中的 Docker 容器${RESET}"
+                        fi
                     fi
 
-                    # 询问用户是否停止运行中的服务
-                    if [ "$APACHE_RUNNING" = true ] || [ "$NGINX_RUNNING" = true ]; then
-                        read -p "是否停止并移除运行中的服务以继续安装？（y/n，默认 n）： " stop_services
-                        if [ "$stop_services" == "y" ] || [ "$stop_services" == "Y" ]; then
-                            echo -e "${YELLOW}正在停止并移除可能冲突的服务...${RESET}"
-                            sudo systemctl stop apache2 httpd nginx mariadb php7.4-fpm || true
-                            sudo apt purge -y apache2 nginx mariadb-server php7.4-fpm php7.4-mysql libapache2-mod-php7.4 || true
-                            sudo apt autoremove -y || true
-                            sudo dpkg --configure -a
-                            sudo apt install -f
-                            sudo rm -f /etc/nginx/sites-available/default /etc/nginx/sites-enabled/default /etc/nginx/conf.d/default.conf
+                    # 询问用户是否停止运行中的 Docker 服务
+                    if [ "$DOCKER_RUNNING" = true ] && docker ps -q | grep -q "."; then
+                        read -p "是否停止并移除运行中的 Docker 容器以继续安装？（y/n，默认 n）： " stop_containers
+                        if [ "$stop_containers" == "y" ] || [ "$stop_containers" == "Y" ]; then
+                            echo -e "${YELLOW}正在停止并移除运行中的 Docker 容器...${RESET}"
+                            docker stop $(docker ps -q) || true
+                            docker rm $(docker ps -aq) || true
                         else
-                            echo -e "${RED}保留运行中的服务，可能导致安装冲突，建议手动清理后再试！${RESET}"
+                            echo -e "${RED}保留运行中的容器，可能导致安装冲突，建议手动清理后再试！${RESET}"
                         fi
                     fi
 
@@ -1214,166 +1208,100 @@ EOF"
                                 fi
                             fi
 
-                            # 询问 MariaDB 用户名和密码
+                            # 询问 MariaDB 用户信息
                             echo -e "${YELLOW}请设置 MariaDB 数据库用户信息：${RESET}"
-                            read -p "请输入数据库用户名（默认 root）： " db_user
-                            db_user=${db_user:-root}
-                            read -p "请输入数据库密码（留空默认 'passwd'）： " db_pass
-                            db_pass=${db_pass:-passwd}
+                            read -p "请输入数据库 ROOT 密码（默认 'passwd'）： " db_root_passwd
+                            db_root_passwd=${db_root_passwd:-passwd}
+                            read -p "请输入数据库用户名（默认 'user'）： " db_user
+                            db_user=${db_user:-user}
+                            read -p "请输入数据库用户密码（默认 'userpass'）： " db_user_passwd
+                            db_user_passwd=${db_user_passwd:-userpass}
 
-                            # 安装 Web 服务器
+                            # 安装 Docker 和 Docker Compose
+                            if ! command -v docker > /dev/null 2>&1; then
+                                echo -e "${YELLOW}安装 Docker...${RESET}"
+                                curl -fsSL https://get.docker.com | sh
+                            fi
+                            if ! command -v docker-compose > /dev/null 2>&1; then
+                                echo -e "${YELLOW}安装 Docker Compose...${RESET}"
+                                curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+                                chmod +x /usr/local/bin/docker-compose
+                            fi
+
+                            # 创建目录和文件
+                            cd /home && mkdir -p web/html web/mysql web/certs web/conf.d web/redis && touch web/docker-compose.yml
+
+                            # 下载并配置 docker-compose.yml
                             if [ "$STACK_TYPE" == "LAMP" ]; then
-                                if [ "$SYSTEM" == "ubuntu" ] || [ "$SYSTEM" == "debian" ]; then
-                                    sudo apt update && sudo apt install -y apache2
-                                    sudo sed -i "s/Listen 80/Listen $DEFAULT_PORT/" /etc/apache2/ports.conf
-                                    sudo sed -i "s/:80/:$DEFAULT_PORT/" /etc/apache2/sites-available/000-default.conf
-                                elif [ "$SYSTEM" == "centos" ]; then
-                                    sudo yum install -y httpd
-                                    sudo sed -i "s/Listen 80/Listen $DEFAULT_PORT/" /etc/httpd/conf/httpd.conf
-                                elif [ "$SYSTEM" == "fedora" ]; then
-                                    sudo dnf install -y httpd
-                                    sudo sed -i "s/Listen 80/Listen $DEFAULT_PORT/" /etc/httpd/conf/httpd.conf
-                                fi
-                                if [ $? -eq 0 ]; then
-                                    echo -e "${GREEN}Apache 安装成功！${RESET}"
-                                    sudo systemctl enable apache2 || sudo systemctl enable httpd
-                                    sudo systemctl start apache2 || sudo systemctl start httpd
-                                else
-                                    echo -e "${RED}Apache 安装失败，请检查日志：/var/log/apt/term.log 或使用 'journalctl -xe'${RESET}"
-                                    read -p "按回车键返回主菜单..."
-                                    continue
-                                fi
-                            else
-                                if [ "$SYSTEM" == "ubuntu" ] || [ "$SYSTEM" == "debian" ]; then
-                                    sudo apt update && sudo apt install -y nginx
-                                    sudo sed -i "s/listen 80/listen $DEFAULT_PORT/" /etc/nginx/sites-available/default
-                                elif [ "$SYSTEM" == "centos" ]; then
-                                    sudo yum install -y nginx
-                                    sudo sed -i "s/listen 80/listen $DEFAULT_PORT/" /etc/nginx/conf.d/default.conf
-                                elif [ "$SYSTEM" == "fedora" ]; then
-                                    sudo dnf install -y nginx
-                                    sudo sed -i "s/listen 80/listen $DEFAULT_PORT/" /etc/nginx/conf.d/default.conf
-                                fi
-                                if [ $? -eq 0 ]; then
-                                    echo -e "${GREEN}Nginx 安装成功！${RESET}"
-                                    sudo systemctl enable nginx
-                                    sudo systemctl start nginx
-                                    if [ $? -ne 0 ]; then
-                                        echo -e "${RED}Nginx 启动失败，请检查日志：/var/log/nginx/error.log 或 'journalctl -u nginx.service'${RESET}"
-                                        read -p "按回车键返回主菜单..."
-                                        continue
-                                    fi
-                                else
-                                    echo -e "${RED}Nginx 安装失败，请检查日志：/var/log/apt/term.log 或使用 'journalctl -xe'${RESET}"
-                                    read -p "按回车键返回主菜单..."
-                                    continue
-                                fi
-                            fi
-
-                            # 安装 MariaDB
-                            if [ "$SYSTEM" == "ubuntu" ] || [ "$SYSTEM" == "debian" ]; then
-                                sudo apt install -y mariadb-server
-                            elif [ "$SYSTEM" == "centos" ]; then
-                                sudo yum install -y mariadb-server
-                            elif [ "$SYSTEM" == "fedora" ]; then
-                                sudo dnf install -y mariadb-server
-                            fi
-                            if [ $? -eq 0 ]; then
-                                echo -e "${GREEN}MariaDB 安装成功！${RESET}"
-                                sudo systemctl enable mariadb
-                                sudo systemctl start mariadb
-                                # 配置 MariaDB 用户
-                                sudo mysql -e "SET PASSWORD FOR 'root'@'localhost' = PASSWORD('$db_pass');"
-                                sudo mysql -e "CREATE USER IF NOT EXISTS '$db_user'@'localhost' IDENTIFIED BY '$db_pass';"
-                                sudo mysql -e "GRANT ALL PRIVILEGES ON *.* TO '$db_user'@'localhost' WITH GRANT OPTION;"
-                                sudo mysql -e "FLUSH PRIVILEGES;"
-                                sudo mysql_secure_installation <<EOF
-
-y
-$db_pass
-$db_pass
-y
-y
-y
-y
-EOF
-                                echo -e "${GREEN}MariaDB 已配置，用户 '$db_user' 密码为 '$db_pass'${RESET}"
-                            else
-                                echo -e "${RED}MariaDB 安装失败，请检查日志：/var/log/apt/term.log 或使用 'journalctl -xe'${RESET}"
-                                read -p "按回车键返回主菜单..."
-                                continue
-                            fi
-
-                            # 安装 PHP
-                            if [ "$STACK_TYPE" == "LAMP" ]; then
-                                if [ "$SYSTEM" == "ubuntu" ] || [ "$SYSTEM" == "debian" ]; then
-                                    sudo apt install -y php libapache2-mod-php php-mysql
-                                elif [ "$SYSTEM" == "centos" ]; then
-                                    sudo yum install -y php php-mysqlnd
-                                elif [ "$SYSTEM" == "fedora" ]; then
-                                    sudo dnf install -y php php-mysqlnd
-                                fi
-                                if [ $? -eq 0 ]; then
-                                    echo -e "${GREEN}PHP 安装成功！${RESET}"
-                                    sudo systemctl restart apache2 || sudo systemctl restart httpd
-                                else
-                                    echo -e "${RED}PHP 安装失败，请检查日志：/var/log/apt/term.log 或使用 'journalctl -xe'${RESET}"
-                                    read -p "按回车键返回主菜单..."
-                                    continue
-                                fi
-                                # 创建测试页面
-                                sudo bash -c "echo '<?php phpinfo(); ?>' > /var/www/html/info.php"
-                            else
-                                if [ "$SYSTEM" == "ubuntu" ] || [ "$SYSTEM" == "debian" ]; then
-                                    sudo apt install -y php php-fpm php-mysql
-                                    # 动态检测 PHP-FPM 服务名和 socket
-                                    PHP_VERSION=$(php -v | head -n 1 | cut -d " " -f 2 | cut -d "." -f 1,2)
-                                    PHP_FPM_SERVICE="php${PHP_VERSION}-fpm"
-                                    PHP_FPM_SOCK=$(find /run/php -name "php*-fpm.sock" | head -n 1)
-                                    if [ -z "$PHP_FPM_SOCK" ]; then
-                                        PHP_FPM_SOCK="/run/php/php-fpm.sock"
-                                    fi
-                                elif [ "$SYSTEM" == "centos" ]; then
-                                    sudo yum install -y php php-fpm php-mysqlnd
-                                    PHP_FPM_SERVICE="php-fpm"
-                                    PHP_FPM_SOCK="/run/php-fpm/www.sock"
-                                elif [ "$SYSTEM" == "fedora" ]; then
-                                    sudo dnf install -y php php-fpm php-mysqlnd
-                                    PHP_FPM_SERVICE="php-fpm"
-                                    PHP_FPM_SOCK="/run/php-fpm/www.sock"
-                                fi
-                                if [ $? -eq 0 ]; then
-                                    echo -e "${GREEN}PHP 和 PHP-FPM 安装成功！${RESET}"
-                                    sudo systemctl enable "$PHP_FPM_SERVICE"
-                                    sudo systemctl start "$PHP_FPM_SERVICE"
-                                    # 配置 Nginx 默认站点
-                                    if [ "$SYSTEM" == "ubuntu" ] || [ "$SYSTEM" == "debian" ]; then
-                                        sudo bash -c "cat > /etc/nginx/sites-available/default <<EOF
-server {
-    listen $DEFAULT_PORT;
-    server_name _;
-    root /var/www/html;
-    index index.php index.html index.htm;
-
-    location / {
-        try_files \$uri \$uri/ =404;
-    }
-
-    location ~ \\.php\$ {
-        include snippets/fastcgi-php.conf;
-        fastcgi_pass unix:$PHP_FPM_SOCK;
-        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
-        include fastcgi_params;
-    }
-}
+                                # LAMP 配置（Apache）
+                                sudo bash -c "cat > /home/web/docker-compose.yml <<EOF
+version: '3'
+services:
+  apache:
+    image: httpd:latest
+    container_name: apache
+    ports:
+      - \"$DEFAULT_PORT:80\"
+    volumes:
+      - ./html:/usr/local/apache2/htdocs
+    depends_on:
+      - php
+      - mariadb
+  php:
+    image: php:7.4-apache
+    container_name: php
+    volumes:
+      - ./html:/usr/local/apache2/htdocs
+    depends_on:
+      - mariadb
+  mariadb:
+    image: mariadb:latest
+    container_name: mariadb
+    environment:
+      MYSQL_ROOT_PASSWORD: \"$db_root_passwd\"
+      MYSQL_DATABASE: \"myapp\"
+      MYSQL_USER: \"$db_user\"
+      MYSQL_PASSWORD: \"$db_user_passwd\"
+    volumes:
+      - ./mysql:/var/lib/mysql
 EOF"
-                                        # 创建符号链接并移除旧的
-                                        sudo rm -f /etc/nginx/sites-enabled/default
-                                        sudo ln -s /etc/nginx/sites-available/default /etc/nginx/sites-enabled/default
-                                    else
-                                        sudo bash -c "cat > /etc/nginx/conf.d/default.conf <<EOF
+                            else
+                                # LEMP 配置（Nginx）
+                                sudo bash -c "cat > /home/web/docker-compose.yml <<EOF
+version: '3'
+services:
+  nginx:
+    image: nginx:latest
+    container_name: nginx
+    ports:
+      - \"$DEFAULT_PORT:80\"
+    volumes:
+      - ./html:/usr/share/nginx/html
+      - ./conf.d:/etc/nginx/conf.d
+    depends_on:
+      - php
+  php:
+    image: php:7.4-fpm
+    container_name: php
+    volumes:
+      - ./html:/usr/share/nginx/html
+    depends_on:
+      - mariadb
+  mariadb:
+    image: mariadb:latest
+    container_name: mariadb
+    environment:
+      MYSQL_ROOT_PASSWORD: \"$db_root_passwd\"
+      MYSQL_DATABASE: \"myapp\"
+      MYSQL_USER: \"$db_user\"
+      MYSQL_PASSWORD: \"$db_user_passwd\"
+    volumes:
+      - ./mysql:/var/lib/mysql
+EOF"
+                                # 配置 Nginx 默认站点
+                                sudo bash -c "cat > /home/web/conf.d/default.conf <<EOF
 server {
-    listen $DEFAULT_PORT;
+    listen 80;
     server_name _;
     root /usr/share/nginx/html;
     index index.php index.html index.htm;
@@ -1383,94 +1311,54 @@ server {
     }
 
     location ~ \\.php\$ {
-        fastcgi_pass unix:$PHP_FPM_SOCK;
+        fastcgi_pass php:9000;
         fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
         include fastcgi_params;
     }
 }
 EOF"
-                                    fi
-                                    # 创建测试页面
-                                    if [ "$SYSTEM" == "centos" ] || [ "$SYSTEM" == "fedora" ]; then
-                                        sudo bash -c "echo '<?php phpinfo(); ?>' > /usr/share/nginx/html/info.php"
-                                    else
-                                        sudo bash -c "echo '<?php phpinfo(); ?>' > /var/www/html/info.php"
-                                    fi
-                                    sudo nginx -t
-                                    if [ $? -eq 0 ]; then
-                                        sudo systemctl restart nginx
-                                        sudo systemctl restart "$PHP_FPM_SERVICE"
-                                        if [ $? -ne 0 ]; then
-                                            echo -e "${RED}Nginx 或 PHP-FPM 重启失败，请检查日志：/var/log/nginx/error.log 或 'journalctl -u nginx.service'${RESET}"
-                                            read -p "按回车键返回主菜单..."
-                                            continue
-                                        fi
-                                    else
-                                        echo -e "${RED}Nginx 配置测试失败，请检查 /etc/nginx/sites-available/default 或 /etc/nginx/conf.d/default.conf${RESET}"
-                                        read -p "按回车键返回主菜单..."
-                                        continue
-                                    fi
-                                else
-                                    echo -e "${RED}PHP 或 PHP-FPM 安装失败，请检查日志：/var/log/apt/term.log 或使用 'journalctl -xe'${RESET}"
-                                    read -p "按回车键返回主菜单..."
-                                    continue
-                                fi
                             fi
+
+                            # 清除 iptables 规则
+                            iptables -P INPUT ACCEPT
+                            iptables -P FORWARD ACCEPT
+                            iptables -P OUTPUT ACCEPT
+                            iptables -F
+
+                            # 启动 Docker Compose
+                            cd /home/web && docker-compose up -d
+
+                            # 安装 PHP 扩展
+                            if [ "$STACK_TYPE" == "LAMP" ]; then
+                                PHP_CONTAINER="php"
+                            else
+                                PHP_CONTAINER="php"
+                            fi
+                            docker exec "$PHP_CONTAINER" apt update
+                            docker exec "$PHP_CONTAINER" apt install -y libmariadb-dev-compat libmariadb-dev libzip-dev libmagickwand-dev imagemagick
+                            docker exec "$PHP_CONTAINER" docker-php-ext-install mysqli pdo_mysql zip exif gd intl bcmath opcache
+                            docker exec "$PHP_CONTAINER" pecl install imagick
+                            docker exec "$PHP_CONTAINER" sh -c 'echo "extension=imagick.so" > /usr/local/etc/php/conf.d/imagick.ini'
+                            docker exec "$PHP_CONTAINER" pecl install redis
+                            docker exec "$PHP_CONTAINER" sh -c 'echo "extension=redis.so" > /usr/local/etc/php/conf.d/docker-php-ext-redis.ini'
+                            docker exec "$PHP_CONTAINER" sh -c 'echo "upload_max_filesize=50M \n post_max_size=50M" > /usr/local/etc/php/conf.d/uploads.ini'
+                            docker exec "$PHP_CONTAINER" sh -c 'echo "memory_limit=256M" > /usr/local/etc/php/conf.d/memory.ini'
 
                             server_ip=$(curl -s4 ifconfig.me)
                             echo -e "${GREEN}$STACK_TYPE 安装完成！${RESET}"
-                            echo -e "${YELLOW}访问 http://$server_ip:$DEFAULT_PORT/info.php 查看 PHP 配置${RESET}"
-                            echo -e "${YELLOW}数据库用户 '$db_user' 密码为 '$db_pass'${RESET}"
+                            echo -e "${YELLOW}访问 http://$server_ip:$DEFAULT_PORT 查看 Web 服务${RESET}"
+                            echo -e "${YELLOW}数据库用户 '$db_user' 密码为 '$db_user_passwd', ROOT 密码为 '$db_root_passwd'${RESET}"
                             ;;
                         3)
                             # 卸载 LAMP/LEMP
                             echo -e "${GREEN}正在卸载 LAMP/LEMP 技术栈...${RESET}"
                             read -p "请选择要卸载的技术栈：1) LAMP  2) LEMP（输入 1 或 2）： " uninstall_choice
 
-                            if [ "$uninstall_choice" == "1" ]; then
-                                # 卸载 LAMP
-                                echo -e "${YELLOW}正在卸载 LAMP 组件...${RESET}"
-                                if [ "$SYSTEM" == "ubuntu" ] || [ "$SYSTEM" == "debian" ]; then
-                                    sudo systemctl stop apache2 mariadb || true
-                                    sudo apt purge -y apache2 mariadb-server php libapache2-mod-php php-mysql
-                                    sudo apt autoremove -y
-                                    sudo rm -rf /var/www/html/info.php
-                                elif [ "$SYSTEM" == "centos" ]; then
-                                    sudo systemctl stop httpd mariadb || true
-                                    sudo yum remove -y httpd mariadb-server php php-mysqlnd
-                                    sudo rm -rf /var/www/html/info.php
-                                elif [ "$SYSTEM" == "fedora" ]; then
-                                    sudo systemctl stop httpd mariadb || true
-                                    sudo dnf remove -y httpd mariadb-server php php-mysqlnd
-                                    sudo rm -rf /var/www/html/info.php
-                                fi
-                                if [ $? -eq 0 ]; then
-                                    echo -e "${GREEN}LAMP 卸载完成！${RESET}"
-                                else
-                                    echo -e "${RED}LAMP 卸载失败，请手动检查！${RESET}"
-                                fi
-                            elif [ "$uninstall_choice" == "2" ]; then
-                                # 卸载 LEMP
-                                echo -e "${YELLOW}正在卸载 LEMP 组件...${RESET}"
-                                if [ "$SYSTEM" == "ubuntu" ] || [ "$SYSTEM" == "debian" ]; then
-                                    sudo systemctl stop nginx mariadb php7.4-fpm || true
-                                    sudo apt purge -y nginx mariadb-server php php-fpm php-mysql
-                                    sudo apt autoremove -y
-                                    sudo rm -rf /var/www/html/info.php
-                                elif [ "$SYSTEM" == "centos" ]; then
-                                    sudo systemctl stop nginx mariadb php-fpm || true
-                                    sudo yum remove -y nginx mariadb-server php php-fpm php-mysqlnd
-                                    sudo rm -rf /usr/share/nginx/html/info.php
-                                elif [ "$SYSTEM" == "fedora" ]; then
-                                    sudo systemctl stop nginx mariadb php-fpm || true
-                                    sudo dnf remove -y nginx mariadb-server php php-fpm php-mysqlnd
-                                    sudo rm -rf /usr/share/nginx/html/info.php
-                                fi
-                                if [ $? -eq 0 ]; then
-                                    echo -e "${GREEN}LEMP 卸载完成！${RESET}"
-                                else
-                                    echo -e "${RED}LEMP 卸载失败，请手动检查！${RESET}"
-                                fi
+                            if [ "$uninstall_choice" == "1" ] || [ "$uninstall_choice" == "2" ]; then
+                                cd /home/web || true
+                                docker-compose down -v || true
+                                sudo rm -rf /home/web
+                                echo -e "${GREEN}LAMP/LEMP 卸载完成！${RESET}"
                             else
                                 echo -e "${RED}无效选项，请输入 1 或 2！${RESET}"
                             fi
