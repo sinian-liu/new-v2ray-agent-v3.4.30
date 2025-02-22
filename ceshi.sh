@@ -1121,7 +1121,7 @@ EOF"
                 echo -e "${YELLOW}若需自动封禁或管理 IP，请使用选项 3 配置 Fail2Ban 或手动编辑 /etc/hosts.deny。${RESET}"
                 read -p "按回车键返回主菜单..."
                 ;;
-20)
+            20)
                 # 一键安装或卸载常用开发环境（LAMP/LEMP 栈）
                 echo -e "${GREEN}正在准备处理常用开发环境（LAMP/LEMP 栈）...${RESET}"
 
@@ -1192,8 +1192,8 @@ EOF"
                             read -p "请输入数据库密码（留空默认 'passwd'）： " db_pass
                             db_pass=${db_pass:-passwd}
 
-                            if [ "$operation_choice" == "1" ]; then
-                                # 安装 Apache
+                            # 安装 Web 服务器
+                            if [ "$STACK_TYPE" == "LAMP" ]; then
                                 if [ "$SYSTEM" == "ubuntu" ] || [ "$SYSTEM" == "debian" ]; then
                                     sudo apt update && sudo apt install -y apache2
                                     sudo sed -i "s/Listen 80/Listen $DEFAULT_PORT/" /etc/apache2/ports.conf
@@ -1215,7 +1215,6 @@ EOF"
                                     continue
                                 fi
                             else
-                                # 安装 Nginx
                                 if [ "$SYSTEM" == "ubuntu" ] || [ "$SYSTEM" == "debian" ]; then
                                     sudo apt update && sudo apt install -y nginx
                                     sudo sed -i "s/listen 80/listen $DEFAULT_PORT/" /etc/nginx/sites-available/default
@@ -1272,7 +1271,7 @@ EOF
                             fi
 
                             # 安装 PHP
-                            if [ "$operation_choice" == "1" ]; then
+                            if [ "$STACK_TYPE" == "LAMP" ]; then
                                 if [ "$SYSTEM" == "ubuntu" ] || [ "$SYSTEM" == "debian" ]; then
                                     sudo apt install -y php libapache2-mod-php php-mysql
                                 elif [ "$SYSTEM" == "centos" ]; then
@@ -1293,23 +1292,21 @@ EOF
                             else
                                 if [ "$SYSTEM" == "ubuntu" ] || [ "$SYSTEM" == "debian" ]; then
                                     sudo apt install -y php php-fpm php-mysql
+                                    PHP_FPM_SOCK="/run/php/php-fpm.sock"  # Ubuntu/Debian 默认 socket
                                 elif [ "$SYSTEM" == "centos" ]; then
                                     sudo yum install -y php php-fpm php-mysqlnd
+                                    PHP_FPM_SOCK="/run/php-fpm/www.sock"  # CentOS 默认 socket
                                 elif [ "$SYSTEM" == "fedora" ]; then
                                     sudo dnf install -y php php-fpm php-mysqlnd
+                                    PHP_FPM_SOCK="/run/php-fpm/www.sock"  # Fedora 默认 socket
                                 fi
                                 if [ $? -eq 0 ]; then
                                     echo -e "${GREEN}PHP 和 PHP-FPM 安装成功！${RESET}"
                                     sudo systemctl enable php-fpm
                                     sudo systemctl start php-fpm
-                                else
-                                    echo -e "${RED}PHP 或 PHP-FPM 安装失败，请手动检查！${RESET}"
-                                    read -p "按回车键返回主菜单..."
-                                    continue
-                                fi
-                                # 配置 Nginx 默认站点
-                                if [ "$SYSTEM" == "ubuntu" ] || [ "$SYSTEM" == "debian" ]; then
-                                    sudo bash -c "cat > /etc/nginx/sites-available/default <<EOF
+                                    # 配置 Nginx 默认站点
+                                    if [ "$SYSTEM" == "ubuntu" ] || [ "$SYSTEM" == "debian" ]; then
+                                        sudo bash -c "cat > /etc/nginx/sites-available/default <<EOF
 server {
     listen $DEFAULT_PORT;
     server_name _;
@@ -1322,14 +1319,14 @@ server {
 
     location ~ \\.php\$ {
         include snippets/fastcgi-php.conf;
-        fastcgi_pass unix:/run/php/php-fpm.sock;
+        fastcgi_pass unix:$PHP_FPM_SOCK;
         fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
         include fastcgi_params;
     }
 }
 EOF"
-                                else
-                                    sudo bash -c "cat > /etc/nginx/conf.d/default.conf <<EOF
+                                    else
+                                        sudo bash -c "cat > /etc/nginx/conf.d/default.conf <<EOF
 server {
     listen $DEFAULT_PORT;
     server_name _;
@@ -1341,22 +1338,25 @@ server {
     }
 
     location ~ \\.php\$ {
-        fastcgi_pass unix:/run/php-fpm/www.sock;
+        fastcgi_pass unix:$PHP_FPM_SOCK;
         fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
         include fastcgi_params;
     }
 }
 EOF"
-                                fi
-                                # 创建测试页面
-                                if [ "$SYSTEM" == "centos" ] || [ "$SYSTEM" == "fedora" ]; then
-                                    sudo bash -c "echo '<?php phpinfo(); ?>' > /usr/share/nginx/html/info.php"
-                                else
-                                    sudo bash -c "echo '<?php phpinfo(); ?>' > /var/www/html/info.php"
-                                fi
-                                sudo systemctl restart nginx
-                                if [ "$SYSTEM" == "centos" ] || [ "$SYSTEM" == "fedora" ]; then
+                                    fi
+                                    # 创建测试页面
+                                    if [ "$SYSTEM" == "centos" ] || [ "$SYSTEM" == "fedora" ]; then
+                                        sudo bash -c "echo '<?php phpinfo(); ?>' > /usr/share/nginx/html/info.php"
+                                    else
+                                        sudo bash -c "echo '<?php phpinfo(); ?>' > /var/www/html/info.php"
+                                    fi
+                                    sudo systemctl restart nginx
                                     sudo systemctl restart php-fpm
+                                else
+                                    echo -e "${RED}PHP 或 PHP-FPM 安装失败，请手动检查！${RESET}"
+                                    read -p "按回车键返回主菜单..."
+                                    continue
                                 fi
                             fi
 
@@ -1425,10 +1425,7 @@ EOF"
                 fi
                 read -p "按回车键返回主菜单..."
                 ;;
-            *)
-                echo -e "${RED}无效选项，请重新输入！${RESET}"
-                read -p "按回车键返回主菜单..."
-                ;;
+            # [其他选项 0-19 保持不变]
         esac
     done
 }
