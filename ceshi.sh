@@ -153,7 +153,7 @@ show_menu() {
         echo -e "${YELLOW}17.安装 curl 和 wget${RESET}"
         echo -e "${YELLOW}18.安装 Docker${RESET}"
         echo -e "${YELLOW}19.SSH 防暴力破解检测${RESET}"
-        echo -e "${YELLOW}20.一键安装或卸载 LAMP/LEMP${RESET}"        
+        echo -e "${YELLOW}20.Speedtest测速面板${RESET}"        
         echo -e "${GREEN}=============================================${RESET}"
 
         read -p "请输入选项 (输入 'q' 退出): " option
@@ -1122,8 +1122,8 @@ EOF"
                 read -p "按回车键返回主菜单..."
                 ;;
             20)
-                # 一键安装或卸载常用开发环境（LAMP/LEMP 栈）基于 Docker
-                echo -e "${GREEN}正在准备处理常用开发环境（LAMP/LEMP 栈）...${RESET}"
+                # Speedtest测速面板（基于 ALS - Another Looking-glass Server）
+                echo -e "${GREEN}正在准备处理 Speedtest 测速面板...${RESET}"
 
                 # 检查系统类型
                 check_system
@@ -1156,24 +1156,16 @@ EOF"
 
                     # 提示用户选择操作
                     echo -e "${YELLOW}请选择操作：${RESET}"
-                    echo "1) 安装 LAMP (Apache, MariaDB, PHP)"
-                    echo "2) 安装 LEMP (Nginx, MariaDB, PHP)"
-                    echo "3) 卸载 LAMP/LEMP"
-                    read -p "请输入选项（1、2 或 3）： " operation_choice
+                    echo "1) 安装 Speedtest 测速面板"
+                    echo "2) 卸载 Speedtest 测速面板"
+                    read -p "请输入选项（1 或 2）： " operation_choice
 
                     case $operation_choice in
-                        1|2)
-                            # 安装 LAMP 或 LEMP
-                            if [ "$operation_choice" == "1" ]; then
-                                STACK_TYPE="LAMP"
-                                SERVER_TYPE="Apache"
-                            else
-                                STACK_TYPE="LEMP"
-                                SERVER_TYPE="Nginx"
-                            fi
-                            echo -e "${GREEN}正在安装 $STACK_TYPE 技术栈...${RESET}"
+                        1)
+                            # 安装 Speedtest 测速面板
+                            echo -e "${GREEN}正在安装 Speedtest 测速面板...${RESET}"
 
-                            # 检查端口占用
+                            # 检查端口占用并选择可用端口
                             DEFAULT_PORT=80
                             check_port() {
                                 local port=$1
@@ -1187,20 +1179,22 @@ EOF"
                             check_port "$DEFAULT_PORT"
                             if [ $? -eq 1 ]; then
                                 echo -e "${RED}端口 $DEFAULT_PORT 已被占用！${RESET}"
-                                read -p "是否修改默认端口？（y/n，默认 n）： " modify_port
-                                if [ "$modify_port" == "y" ] || [ "$modify_port" == "Y" ]; then
-                                    read -p "请输入新的端口号（例如 8080）： " new_port
-                                    while ! [[ "$new_port" =~ ^[0-9]+$ ]] || [ "$new_port" -lt 1 ] || [ "$new_port" -gt 65535 ]; do
-                                        echo -e "${RED}无效端口，请输入 1-65535 之间的数字！${RESET}"
+                                read -p "是否更换端口？（y/n，默认 y）： " change_port
+                                if [ "$change_port" != "n" ] && [ "$change_port" != "N" ]; then
+                                    while true; do
                                         read -p "请输入新的端口号（例如 8080）： " new_port
+                                        while ! [[ "$new_port" =~ ^[0-9]+$ ]] || [ "$new_port" -lt 1 ] || [ "$new_port" -gt 65535 ]; do
+                                            echo -e "${RED}无效端口，请输入 1-65535 之间的数字！${RESET}"
+                                            read -p "请输入新的端口号（例如 8080）： " new_port
+                                        done
+                                        check_port "$new_port"
+                                        if [ $? -eq 0 ]; then
+                                            DEFAULT_PORT=$new_port
+                                            break
+                                        else
+                                            echo -e "${RED}端口 $new_port 已被占用，请选择其他端口！${RESET}"
+                                        fi
                                     done
-                                    check_port "$new_port"
-                                    if [ $? -eq 1 ]; then
-                                        echo -e "${RED}端口 $new_port 仍然被占用，请手动释放或选择其他端口！${RESET}"
-                                        read -p "按回车键返回主菜单..."
-                                        continue
-                                    fi
-                                    DEFAULT_PORT=$new_port
                                 else
                                     echo -e "${RED}端口 $DEFAULT_PORT 被占用，无法继续安装！${RESET}"
                                     read -p "按回车键返回主菜单..."
@@ -1208,14 +1202,27 @@ EOF"
                                 fi
                             fi
 
-                            # 询问 MariaDB 用户信息
-                            echo -e "${YELLOW}请设置 MariaDB 数据库用户信息：${RESET}"
-                            read -p "请输入数据库 ROOT 密码（默认 'passwd'）： " db_root_passwd
-                            db_root_passwd=${db_root_passwd:-passwd}
-                            read -p "请输入数据库用户名（默认 'user'）： " db_user
-                            db_user=${db_user:-user}
-                            read -p "请输入数据库用户密码（默认 'userpass'）： " db_user_passwd
-                            db_user_passwd=${db_user_passwd:-userpass}
+                            # 检查并放行防火墙端口
+                            if command -v ufw > /dev/null 2>&1; then
+                                ufw status | grep -q "Status: active"
+                                if [ $? -eq 0 ]; then
+                                    echo -e "${YELLOW}检测到 UFW 防火墙正在运行...${RESET}"
+                                    ufw status | grep -q "$DEFAULT_PORT"
+                                    if [ $? -ne 0 ]; then
+                                        echo -e "${YELLOW}正在放行端口 $DEFAULT_PORT...${RESET}"
+                                        sudo ufw allow "$DEFAULT_PORT/tcp"
+                                        sudo ufw reload
+                                    fi
+                                fi
+                            elif command -v iptables > /dev/null 2>&1; then
+                                echo -e "${YELLOW}检测到 iptables 防火墙...${RESET}"
+                                iptables -C INPUT -p tcp --dport "$DEFAULT_PORT" -j ACCEPT 2>/dev/null
+                                if [ $? -ne 0 ]; then
+                                    echo -e "${YELLOW}正在放行端口 $DEFAULT_PORT...${RESET}"
+                                    sudo iptables -A INPUT -p tcp --dport "$DEFAULT_PORT" -j ACCEPT
+                                    sudo iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
+                                fi
+                            fi
 
                             # 安装 Docker 和 Docker Compose
                             if ! command -v docker > /dev/null 2>&1; then
@@ -1228,143 +1235,40 @@ EOF"
                                 chmod +x /usr/local/bin/docker-compose
                             fi
 
-                            # 创建目录和文件
-                            cd /home && mkdir -p web/html web/mysql web/certs web/conf.d web/redis && touch web/docker-compose.yml
-
-                            # 下载并配置 docker-compose.yml
-                            if [ "$STACK_TYPE" == "LAMP" ]; then
-                                # LAMP 配置（Apache）
-                                sudo bash -c "cat > /home/web/docker-compose.yml <<EOF
+                            # 创建目录和配置 docker-compose.yml
+                            cd /home && mkdir -p web && touch web/docker-compose.yml
+                            sudo bash -c "cat > /home/web/docker-compose.yml <<EOF
 version: '3'
 services:
-  apache:
-    image: httpd:latest
-    container_name: apache
+  als:
+    image: wikihostinc/looking-glass-server:latest
+    container_name: speedtest_panel
     ports:
       - \"$DEFAULT_PORT:80\"
-    volumes:
-      - ./html:/usr/local/apache2/htdocs
-    depends_on:
-      - php
-      - mariadb
-  php:
-    image: php:7.4-apache
-    container_name: php
-    volumes:
-      - ./html:/usr/local/apache2/htdocs
-    depends_on:
-      - mariadb
-  mariadb:
-    image: mariadb:latest
-    container_name: mariadb
     environment:
-      MYSQL_ROOT_PASSWORD: \"$db_root_passwd\"
-      MYSQL_DATABASE: \"myapp\"
-      MYSQL_USER: \"$db_user\"
-      MYSQL_PASSWORD: \"$db_user_passwd\"
-    volumes:
-      - ./mysql:/var/lib/mysql
+      - HTTP_PORT=$DEFAULT_PORT
+    restart: always
+    network_mode: host
 EOF"
-                            else
-                                # LEMP 配置（Nginx）
-                                sudo bash -c "cat > /home/web/docker-compose.yml <<EOF
-version: '3'
-services:
-  nginx:
-    image: nginx:latest
-    container_name: nginx
-    ports:
-      - \"$DEFAULT_PORT:80\"
-    volumes:
-      - ./html:/usr/share/nginx/html
-      - ./conf.d:/etc/nginx/conf.d
-    depends_on:
-      - php
-  php:
-    image: php:7.4-fpm
-    container_name: php
-    volumes:
-      - ./html:/usr/share/nginx/html
-    depends_on:
-      - mariadb
-  mariadb:
-    image: mariadb:latest
-    container_name: mariadb
-    environment:
-      MYSQL_ROOT_PASSWORD: \"$db_root_passwd\"
-      MYSQL_DATABASE: \"myapp\"
-      MYSQL_USER: \"$db_user\"
-      MYSQL_PASSWORD: \"$db_user_passwd\"
-    volumes:
-      - ./mysql:/var/lib/mysql
-EOF"
-                                # 配置 Nginx 默认站点
-                                sudo bash -c "cat > /home/web/conf.d/default.conf <<EOF
-server {
-    listen 80;
-    server_name _;
-    root /usr/share/nginx/html;
-    index index.php index.html index.htm;
-
-    location / {
-        try_files \$uri \$uri/ =404;
-    }
-
-    location ~ \\.php\$ {
-        fastcgi_pass php:9000;
-        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
-        include fastcgi_params;
-    }
-}
-EOF"
-                            fi
-
-                            # 清除 iptables 规则
-                            iptables -P INPUT ACCEPT
-                            iptables -P FORWARD ACCEPT
-                            iptables -P OUTPUT ACCEPT
-                            iptables -F
 
                             # 启动 Docker Compose
                             cd /home/web && docker-compose up -d
 
-                            # 安装 PHP 扩展
-                            if [ "$STACK_TYPE" == "LAMP" ]; then
-                                PHP_CONTAINER="php"
-                            else
-                                PHP_CONTAINER="php"
-                            fi
-                            docker exec "$PHP_CONTAINER" apt update
-                            docker exec "$PHP_CONTAINER" apt install -y libmariadb-dev-compat libmariadb-dev libzip-dev libmagickwand-dev imagemagick
-                            docker exec "$PHP_CONTAINER" docker-php-ext-install mysqli pdo_mysql zip exif gd intl bcmath opcache
-                            docker exec "$PHP_CONTAINER" pecl install imagick
-                            docker exec "$PHP_CONTAINER" sh -c 'echo "extension=imagick.so" > /usr/local/etc/php/conf.d/imagick.ini'
-                            docker exec "$PHP_CONTAINER" pecl install redis
-                            docker exec "$PHP_CONTAINER" sh -c 'echo "extension=redis.so" > /usr/local/etc/php/conf.d/docker-php-ext-redis.ini'
-                            docker exec "$PHP_CONTAINER" sh -c 'echo "upload_max_filesize=50M \n post_max_size=50M" > /usr/local/etc/php/conf.d/uploads.ini'
-                            docker exec "$PHP_CONTAINER" sh -c 'echo "memory_limit=256M" > /usr/local/etc/php/conf.d/memory.ini'
-
                             server_ip=$(curl -s4 ifconfig.me)
-                            echo -e "${GREEN}$STACK_TYPE 安装完成！${RESET}"
-                            echo -e "${YELLOW}访问 http://$server_ip:$DEFAULT_PORT 查看 Web 服务${RESET}"
-                            echo -e "${YELLOW}数据库用户 '$db_user' 密码为 '$db_user_passwd', ROOT 密码为 '$db_root_passwd'${RESET}"
+                            echo -e "${GREEN}Speedtest 测速面板安装完成！${RESET}"
+                            echo -e "${YELLOW}访问 http://$server_ip:$DEFAULT_PORT 查看 Speedtest 测速面板${RESET}"
+                            echo -e "${YELLOW}功能包括：HTML5 速度测试、Ping、iPerf3、Speedtest、下载测速、网卡流量监控、在线 Shell${RESET}"
                             ;;
-                        3)
-                            # 卸载 LAMP/LEMP
-                            echo -e "${GREEN}正在卸载 LAMP/LEMP 技术栈...${RESET}"
-                            read -p "请选择要卸载的技术栈：1) LAMP  2) LEMP（输入 1 或 2）： " uninstall_choice
-
-                            if [ "$uninstall_choice" == "1" ] || [ "$uninstall_choice" == "2" ]; then
-                                cd /home/web || true
-                                docker-compose down -v || true
-                                sudo rm -rf /home/web
-                                echo -e "${GREEN}LAMP/LEMP 卸载完成！${RESET}"
-                            else
-                                echo -e "${RED}无效选项，请输入 1 或 2！${RESET}"
-                            fi
+                        2)
+                            # 卸载 Speedtest 测速面板
+                            echo -e "${GREEN}正在卸载 Speedtest 测速面板...${RESET}"
+                            cd /home/web || true
+                            docker-compose down -v || true
+                            sudo rm -rf /home/web
+                            echo -e "${GREEN}Speedtest 测速面板卸载完成！${RESET}"
                             ;;
                         *)
-                            echo -e "${RED}无效选项，请输入 1、2 或 3！${RESET}"
+                            echo -e "${RED}无效选项，请输入 1 或 2！${RESET}"
                             ;;
                     esac
                 fi
