@@ -1327,7 +1327,7 @@ EOF
                             else
                                 if [ "$SYSTEM" == "ubuntu" ] || [ "$SYSTEM" == "debian" ]; then
                                     sudo apt install -y php php-fpm php-mysql
-                                    PHP_FPM_SOCK="/run/php/php-fpm.sock"
+                                    PHP_FPM_SOCK=$(find /run/php -name "php*-fpm.sock" | head -n 1 || echo "/run/php/php-fpm.sock")
                                 elif [ "$SYSTEM" == "centos" ]; then
                                     sudo yum install -y php php-fpm php-mysqlnd
                                     PHP_FPM_SOCK="/run/php-fpm/www.sock"
@@ -1386,7 +1386,7 @@ EOF"
                                     else
                                         sudo bash -c "echo '<?php phpinfo(); ?>' > /var/www/html/info.php"
                                     fi
-                                    sudo nginx -t  # 测试 Nginx 配置
+                                    sudo nginx -t
                                     if [ $? -eq 0 ]; then
                                         sudo systemctl restart nginx
                                         sudo systemctl restart php-fpm
