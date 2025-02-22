@@ -159,15 +159,26 @@ show_menu() {
             1)
                 # VPS 一键测试脚本
                 echo -e "${GREEN}正在进行 VPS 测试 ...${RESET}"
-                bash <(curl -sL https://raw.githubusercontent.com/sinian-liu/onekey/main/system_info.sh)
+                # 下载并运行测试脚本，但保持控制流
+                curl -sL https://raw.githubusercontent.com/sinian-liu/onekey/main/system_info.sh -o /tmp/system_info.sh
+                if [ $? -eq 0 ]; then
+                    chmod +x /tmp/system_info.sh
+                    bash /tmp/system_info.sh
+                    rm -f /tmp/system_info.sh
+                else
+                    echo -e "${RED}下载 VPS 测试脚本失败，请检查网络！${RESET}"
+                fi
                 read -p "按回车键返回主菜单..."
                 ;;
             2)
                 # BBR 安装脚本
                 echo -e "${GREEN}正在安装 BBR ...${RESET}"
-                wget -O tcpx.sh "https://github.com/sinian-liu/Linux-NetSpeed-BBR/raw/master/tcpx.sh"
+                # 下载并运行 BBR 脚本
+                wget -O /tmp/tcpx.sh "https://github.com/sinian-liu/Linux-NetSpeed-BBR/raw/master/tcpx.sh"
                 if [ $? -eq 0 ]; then
-                    chmod +x tcpx.sh && ./tcpx.sh
+                    chmod +x /tmp/tcpx.sh
+                    bash /tmp/tcpx.sh
+                    rm -f /tmp/tcpx.sh
                 else
                     echo -e "${RED}下载 BBR 脚本失败，请检查网络！${RESET}"
                 fi
@@ -176,9 +187,12 @@ show_menu() {
             3)
                 # 安装 v2ray 脚本
                 echo -e "${GREEN}正在安装 v2ray ...${RESET}"
-                wget -P /root -N --no-check-certificate "https://raw.githubusercontent.com/sinian-liu/v2ray-agent-2.5.73/master/install.sh"
+                # 下载并运行 v2ray 安装脚本
+                wget -P /tmp -N --no-check-certificate "https://raw.githubusercontent.com/sinian-liu/v2ray-agent-2.5.73/master/install.sh"
                 if [ $? -eq 0 ]; then
-                    chmod 700 /root/install.sh && /root/install.sh
+                    chmod 700 /tmp/install.sh
+                    bash /tmp/install.sh
+                    rm -f /tmp/install.sh
                 else
                     echo -e "${RED}下载 v2ray 脚本失败，请检查网络！${RESET}"
                 fi
@@ -227,18 +241,20 @@ show_menu() {
                 # 宝塔纯净版安装
                 echo -e "${GREEN}正在安装宝塔面板...${RESET}"
                 if [ -f /etc/lsb-release ]; then
-                    wget -O install.sh https://install.baota.sbs/install/install_6.0.sh
+                    wget -O /tmp/install.sh https://install.baota.sbs/install/install_6.0.sh
                     if [ $? -eq 0 ]; then
-                        bash install.sh
+                        bash /tmp/install.sh
+                        rm -f /tmp/install.sh
                     else
                         echo -e "${RED}下载宝塔安装脚本失败，请检查网络！${RESET}"
                     fi
                 elif [ -f /etc/redhat-release ]; then
                     yum install -y wget
                     if [ $? -eq 0 ]; then
-                        wget -O install.sh https://install.baota.sbs/install/install_6.0.sh
+                        wget -O /tmp/install.sh https://install.baota.sbs/install/install_6.0.sh
                         if [ $? -eq 0 ]; then
-                            sh install.sh
+                            sh /tmp/install.sh
+                            rm -f /tmp/install.sh
                         else
                             echo -e "${RED}下载宝塔安装脚本失败，请检查网络！${RESET}"
                         fi
@@ -396,10 +412,11 @@ show_menu() {
                 fi
 
                 echo -e "${YELLOW}开始下载并运行安装脚本...${RESET}"
-                wget --no-check-certificate -O NewReinstall.sh https://git.io/newbetags
+                wget --no-check-certificate -O /tmp/NewReinstall.sh https://git.io/newbetags
                 if [ $? -eq 0 ]; then
-                    chmod a+x NewReinstall.sh
-                    bash NewReinstall.sh
+                    chmod a+x /tmp/NewReinstall.sh
+                    bash /tmp/NewReinstall.sh
+                    rm -f /tmp/NewReinstall.sh
                     echo -e "${GREEN}安装完成！${RESET}"
                 else
                     echo -e "${RED}脚本下载失败，请检查网络或镜像源！${RESET}"
@@ -451,9 +468,12 @@ show_menu() {
                 echo -e "${GREEN}正在安装 NekoNekoStatus 服务器探针并绑定域名...${RESET}"
                 if ! command -v docker &> /dev/null; then
                     echo -e "${YELLOW}检测到 Docker 未安装，正在安装 Docker...${RESET}"
-                    curl -fsSL https://get.docker.com | bash -s docker
-                    if [ $? -ne 0 ]; then
-                        echo -e "${RED}Docker 安装失败，请手动安装 Docker！${RESET}"
+                    curl -fsSL https://get.docker.com -o /tmp/get-docker.sh
+                    if [ $? -eq 0 ]; then
+                        bash /tmp/get-docker.sh
+                        rm -f /tmp/get-docker.sh
+                    else
+                        echo -e "${RED}Docker 安装脚本下载失败，请手动安装 Docker！${RESET}"
                     fi
                 fi
 
