@@ -1,4 +1,4 @@
-#!/bin/bash
+    #!/bin/bash
 
 # 设置颜色
 GREEN="\033[32m"
@@ -153,6 +153,7 @@ show_menu() {
         echo -e "${YELLOW}17.安装 curl 和 wget${RESET}"
         echo -e "${YELLOW}18.安装 Docker${RESET}"
         echo -e "${YELLOW}19.SSH 防暴力破解检测${RESET}"
+        echo -e "${YELLOW}20.一键安装或卸载 LAMP/LEMP${RESET}"        
         echo -e "${GREEN}=============================================${RESET}"
 
         read -p "请输入选项 (输入 'q' 退出): " option
@@ -1120,9 +1121,6 @@ EOF"
                 echo -e "${YELLOW}若需自动封禁或管理 IP，请使用选项 3 配置 Fail2Ban 或手动编辑 /etc/hosts.deny。${RESET}"
                 read -p "按回车键返回主菜单..."
                 ;;
-        esac
-    done
-}
             20)
                 # 一键安装或卸载常用开发环境（LAMP/LEMP 栈）
                 echo -e "${GREEN}正在准备处理常用开发环境（LAMP/LEMP 栈）...${RESET}"
