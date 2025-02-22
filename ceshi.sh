@@ -1,4 +1,4 @@
-    #!/bin/bash
+#!/bin/bash
 
 # 设置颜色
 GREEN="\033[32m"
@@ -153,7 +153,7 @@ show_menu() {
         echo -e "${YELLOW}17.安装 curl 和 wget${RESET}"
         echo -e "${YELLOW}18.安装 Docker${RESET}"
         echo -e "${YELLOW}19.SSH 防暴力破解检测${RESET}"
-        echo -e "${YELLOW}20.Speedtest测速面板${RESET}"        
+        echo -e "${YELLOW}20.Speedtest测速面板${RESET}"
         echo -e "${GREEN}=============================================${RESET}"
 
         read -p "请输入选项 (输入 'q' 退出): " option
@@ -161,6 +161,8 @@ show_menu() {
         # 检查是否退出
         if [ "$option" = "q" ]; then
             echo -e "${GREEN}退出脚本，感谢使用！${RESET}"
+            echo -e "${GREEN}服务器推荐：https://my.frantech.ca/aff.php?aff=4337${RESET}"
+            echo -e "${GREEN}VPS评测官方网站：https://www.1373737.xyz/${RESET}"
             exit 0
         fi
 
@@ -384,12 +386,36 @@ show_menu() {
                 read -p "按回车键返回主菜单..."
                 ;;
             11)
-                # 服务器时区修改为中国时区
-                echo -e "${GREEN}正在修改服务器时区为中国时区 ...${RESET}"
-                sudo ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime
-                sudo service cron restart
-                read -p "按回车键返回主菜单..."
-                ;;
+    # 服务器时区修改为中国时区
+    echo -e "${GREEN}正在修改服务器时区为中国时区 ...${RESET}"
+    
+    # 设置时区为 Asia/Shanghai
+    sudo ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime
+    
+    # 重启 cron 服务
+    if command -v systemctl &> /dev/null; then
+        # 尝试重启 cron 服务
+        if systemctl list-unit-files | grep -q cron.service; then
+            sudo systemctl restart cron
+        else
+            echo -e "${YELLOW}未找到 cron 服务，跳过重启。${RESET}"
+        fi
+    else
+        # 使用 service 命令重启 cron
+        if service --status-all | grep -q cron; then
+            sudo service cron restart
+        else
+            echo -e "${YELLOW}未找到 cron 服务，跳过重启。${RESET}"
+        fi
+    fi
+    
+    # 显示当前时区和时间
+    echo -e "${YELLOW}当前时区已设置为：$(timedatectl | grep "Time zone" | awk '{print $3}')${RESET}"
+    echo -e "${YELLOW}当前时间：$(date)${RESET}"
+    
+    # 按回车键返回主菜单
+    read -p "按回车键返回主菜单..."
+    ;;
             12)
                 # 长时间保持 SSH 会话连接不断开
                 echo -e "${GREEN}正在配置 SSH 保持连接...${RESET}"
@@ -1263,8 +1289,26 @@ EOF"
                             # 卸载 Speedtest 测速面板
                             echo -e "${GREEN}正在卸载 Speedtest 测速面板...${RESET}"
                             cd /home/web || true
-                            docker-compose down -v || true
+                            if [ -f docker-compose.yml ]; then
+                                docker-compose down -v || true
+                                echo -e "${YELLOW}已停止并移除 Speedtest 测速面板容器和卷${RESET}"
+                            fi
+                            # 检查并移除任何名为 speedtest_panel 的容器
+                            if docker ps -a | grep -q "speedtest_panel"; then
+                                docker stop speedtest_panel || true
+                                docker rm speedtest_panel || true
+                                echo -e "${YELLOW}已移除独立的 speedtest_panel 容器${RESET}"
+                            fi
                             sudo rm -rf /home/web
+                            echo -e "${YELLOW}已删除 /home/web 目录${RESET}"
+                            # 询问是否移除 ALS 镜像
+                            if docker images | grep -q "wikihostinc/looking-glass-server"; then
+                                read -p "是否移除 Speedtest 测速面板的 Docker 镜像（wikihostinc/looking-glass-server）？（y/n，默认 n）： " remove_image
+                                if [ "$remove_image" == "y" ] || [ "$remove_image" == "Y" ]; then
+                                    docker rmi wikihostinc/looking-glass-server:latest || true
+                                    echo -e "${YELLOW}已移除 Speedtest 测速面板的 Docker 镜像${RESET}"
+                                fi
+                            fi
                             echo -e "${GREEN}Speedtest 测速面板卸载完成！${RESET}"
                             ;;
                         *)
