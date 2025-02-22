@@ -1121,7 +1121,7 @@ EOF"
                 echo -e "${YELLOW}若需自动封禁或管理 IP，请使用选项 3 配置 Fail2Ban 或手动编辑 /etc/hosts.deny。${RESET}"
                 read -p "按回车键返回主菜单..."
                 ;;
-            20)
+20)
                 # 一键安装或卸载常用开发环境（LAMP/LEMP 栈）
                 echo -e "${GREEN}正在准备处理常用开发环境（LAMP/LEMP 栈）...${RESET}"
 
@@ -1130,133 +1130,131 @@ EOF"
                 if [ "$SYSTEM" == "unknown" ]; then
                     echo -e "${RED}无法识别系统，无法继续操作！${RESET}"
                     read -p "按回车键返回主菜单..."
-                    continue
-                fi
+                else
+                    # 提示用户选择操作
+                    echo -e "${YELLOW}请选择操作：${RESET}"
+                    echo "1) 安装 LAMP (Apache, MariaDB, PHP)"
+                    echo "2) 安装 LEMP (Nginx, MariaDB, PHP)"
+                    echo "3) 卸载 LAMP/LEMP"
+                    read -p "请输入选项（1、2 或 3）： " operation_choice
 
-                # 提示用户选择操作
-                echo -e "${YELLOW}请选择操作：${RESET}"
-                echo "1) 安装 LAMP (Apache, MariaDB, PHP)"
-                echo "2) 安装 LEMP (Nginx, MariaDB, PHP)"
-                echo "3) 卸载 LAMP/LEMP"
-                read -p "请输入选项（1、2 或 3）： " operation_choice
-
-                case $operation_choice in
-                    1|2)
-                        # 安装 LAMP 或 LEMP
-                        if [ "$operation_choice" == "1" ]; then
-                            STACK_TYPE="LAMP"
-                            SERVER_TYPE="Apache"
-                        else
-                            STACK_TYPE="LEMP"
-                            SERVER_TYPE="Nginx"
-                        fi
-                        echo -e "${GREEN}正在安装 $STACK_TYPE 技术栈...${RESET}"
-
-                        # 检查端口占用
-                        DEFAULT_PORT=80
-                        check_port() {
-                            local port=$1
-                            if netstat -tuln | grep ":$port" > /dev/null; then
-                                return 1
+                    case $operation_choice in
+                        1|2)
+                            # 安装 LAMP 或 LEMP
+                            if [ "$operation_choice" == "1" ]; then
+                                STACK_TYPE="LAMP"
+                                SERVER_TYPE="Apache"
                             else
-                                return 0
+                                STACK_TYPE="LEMP"
+                                SERVER_TYPE="Nginx"
                             fi
-                        }
+                            echo -e "${GREEN}正在安装 $STACK_TYPE 技术栈...${RESET}"
 
-                        check_port $DEFAULT_PORT
-                        if [ $? -eq 1 ]; then
-                            echo -e "${RED}端口 $DEFAULT_PORT 已被占用！${RESET}"
-                            read -p "是否修改默认端口？（y/n，默认 n）： " modify_port
-                            if [ "$modify_port" == "y" ] || [ "$modify_port" == "Y" ]; then
-                                read -p "请输入新的端口号（例如 8080）： " new_port
-                                while ! [[ "$new_port" =~ ^[0-9]+$ ]] || [ "$new_port" -lt 1 ] || [ "$new_port" -gt 65535 ]; do
-                                    echo -e "${RED}无效端口，请输入 1-65535 之间的数字！${RESET}"
+                            # 检查端口占用
+                            DEFAULT_PORT=80
+                            check_port() {
+                                local port=$1
+                                if netstat -tuln | grep ":$port" > /dev/null; then
+                                    return 1
+                                else
+                                    return 0
+                                fi
+                            }
+
+                            check_port "$DEFAULT_PORT"
+                            if [ $? -eq 1 ]; then
+                                echo -e "${RED}端口 $DEFAULT_PORT 已被占用！${RESET}"
+                                read -p "是否修改默认端口？（y/n，默认 n）： " modify_port
+                                if [ "$modify_port" == "y" ] || [ "$modify_port" == "Y" ]; then
                                     read -p "请输入新的端口号（例如 8080）： " new_port
-                                done
-                                check_port "$new_port"
-                                if [ $? -eq 1 ]; then
-                                    echo -e "${RED}端口 $new_port 仍然被占用，请手动释放或选择其他端口！${RESET}"
+                                    while ! [[ "$new_port" =~ ^[0-9]+$ ]] || [ "$new_port" -lt 1 ] || [ "$new_port" -gt 65535 ]; do
+                                        echo -e "${RED}无效端口，请输入 1-65535 之间的数字！${RESET}"
+                                        read -p "请输入新的端口号（例如 8080）： " new_port
+                                    done
+                                    check_port "$new_port"
+                                    if [ $? -eq 1 ]; then
+                                        echo -e "${RED}端口 $new_port 仍然被占用，请手动释放或选择其他端口！${RESET}"
+                                        read -p "按回车键返回主菜单..."
+                                        continue
+                                    fi
+                                    DEFAULT_PORT=$new_port
+                                else
+                                    echo -e "${RED}端口 $DEFAULT_PORT 被占用，无法继续安装！${RESET}"
                                     read -p "按回车键返回主菜单..."
                                     continue
                                 fi
-                                DEFAULT_PORT=$new_port
-                            else
-                                echo -e "${RED}端口 $DEFAULT_PORT 被占用，无法继续安装！${RESET}"
-                                read -p "按回车键返回主菜单..."
-                                continue
                             fi
-                        fi
 
-                        # 询问 MariaDB 用户名和密码
-                        echo -e "${YELLOW}请设置 MariaDB 数据库用户信息：${RESET}"
-                        read -p "请输入数据库用户名（默认 root）： " db_user
-                        db_user=${db_user:-root}
-                        read -p "请输入数据库密码（留空默认 'passwd'）： " db_pass
-                        db_pass=${db_pass:-passwd}
+                            # 询问 MariaDB 用户名和密码
+                            echo -e "${YELLOW}请设置 MariaDB 数据库用户信息：${RESET}"
+                            read -p "请输入数据库用户名（默认 root）： " db_user
+                            db_user=${db_user:-root}
+                            read -p "请输入数据库密码（留空默认 'passwd'）： " db_pass
+                            db_pass=${db_pass:-passwd}
 
-                        if [ "$operation_choice" == "1" ]; then
-                            # 安装 Apache
+                            if [ "$operation_choice" == "1" ]; then
+                                # 安装 Apache
+                                if [ "$SYSTEM" == "ubuntu" ] || [ "$SYSTEM" == "debian" ]; then
+                                    sudo apt update && sudo apt install -y apache2
+                                    sudo sed -i "s/Listen 80/Listen $DEFAULT_PORT/" /etc/apache2/ports.conf
+                                    sudo sed -i "s/:80/:$DEFAULT_PORT/" /etc/apache2/sites-available/000-default.conf
+                                elif [ "$SYSTEM" == "centos" ]; then
+                                    sudo yum install -y httpd
+                                    sudo sed -i "s/Listen 80/Listen $DEFAULT_PORT/" /etc/httpd/conf/httpd.conf
+                                elif [ "$SYSTEM" == "fedora" ]; then
+                                    sudo dnf install -y httpd
+                                    sudo sed -i "s/Listen 80/Listen $DEFAULT_PORT/" /etc/httpd/conf/httpd.conf
+                                fi
+                                if [ $? -eq 0 ]; then
+                                    echo -e "${GREEN}Apache 安装成功！${RESET}"
+                                    sudo systemctl enable apache2 || sudo systemctl enable httpd
+                                    sudo systemctl start apache2 || sudo systemctl start httpd
+                                else
+                                    echo -e "${RED}Apache 安装失败，请手动检查！${RESET}"
+                                    read -p "按回车键返回主菜单..."
+                                    continue
+                                fi
+                            else
+                                # 安装 Nginx
+                                if [ "$SYSTEM" == "ubuntu" ] || [ "$SYSTEM" == "debian" ]; then
+                                    sudo apt update && sudo apt install -y nginx
+                                    sudo sed -i "s/listen 80/listen $DEFAULT_PORT/" /etc/nginx/sites-available/default
+                                elif [ "$SYSTEM" == "centos" ]; then
+                                    sudo yum install -y nginx
+                                    sudo sed -i "s/listen 80/listen $DEFAULT_PORT/" /etc/nginx/conf.d/default.conf
+                                elif [ "$SYSTEM" == "fedora" ]; then
+                                    sudo dnf install -y nginx
+                                    sudo sed -i "s/listen 80/listen $DEFAULT_PORT/" /etc/nginx/conf.d/default.conf
+                                fi
+                                if [ $? -eq 0 ]; then
+                                    echo -e "${GREEN}Nginx 安装成功！${RESET}"
+                                    sudo systemctl enable nginx
+                                    sudo systemctl start nginx
+                                else
+                                    echo -e "${RED}Nginx 安装失败，请手动检查！${RESET}"
+                                    read -p "按回车键返回主菜单..."
+                                    continue
+                                fi
+                            fi
+
+                            # 安装 MariaDB
                             if [ "$SYSTEM" == "ubuntu" ] || [ "$SYSTEM" == "debian" ]; then
-                                sudo apt update && sudo apt install -y apache2
-                                sudo sed -i "s/Listen 80/Listen $DEFAULT_PORT/" /etc/apache2/ports.conf
-                                sudo sed -i "s/:80/:$DEFAULT_PORT/" /etc/apache2/sites-available/000-default.conf
+                                sudo apt install -y mariadb-server
                             elif [ "$SYSTEM" == "centos" ]; then
-                                sudo yum install -y httpd
-                                sudo sed -i "s/Listen 80/Listen $DEFAULT_PORT/" /etc/httpd/conf/httpd.conf
+                                sudo yum install -y mariadb-server
                             elif [ "$SYSTEM" == "fedora" ]; then
-                                sudo dnf install -y httpd
-                                sudo sed -i "s/Listen 80/Listen $DEFAULT_PORT/" /etc/httpd/conf/httpd.conf
+                                sudo dnf install -y mariadb-server
                             fi
                             if [ $? -eq 0 ]; then
-                                echo -e "${GREEN}Apache 安装成功！${RESET}"
-                                sudo systemctl enable apache2 || sudo systemctl enable httpd
-                                sudo systemctl start apache2 || sudo systemctl start httpd
-                            else
-                                echo -e "${RED}Apache 安装失败，请手动检查！${RESET}"
-                                read -p "按回车键返回主菜单..."
-                                continue
-                            fi
-                        else
-                            # 安装 Nginx
-                            if [ "$SYSTEM" == "ubuntu" ] || [ "$SYSTEM" == "debian" ]; then
-                                sudo apt update && sudo apt install -y nginx
-                                sudo sed -i "s/listen 80/listen $DEFAULT_PORT/" /etc/nginx/sites-available/default
-                            elif [ "$SYSTEM" == "centos" ]; then
-                                sudo yum install -y nginx
-                                sudo sed -i "s/listen 80/listen $DEFAULT_PORT/" /etc/nginx/conf.d/default.conf
-                            elif [ "$SYSTEM" == "fedora" ]; then
-                                sudo dnf install -y nginx
-                                sudo sed -i "s/listen 80/listen $DEFAULT_PORT/" /etc/nginx/conf.d/default.conf
-                            fi
-                            if [ $? -eq 0 ]; then
-                                echo -e "${GREEN}Nginx 安装成功！${RESET}"
-                                sudo systemctl enable nginx
-                                sudo systemctl start nginx
-                            else
-                                echo -e "${RED}Nginx 安装失败，请手动检查！${RESET}"
-                                read -p "按回车键返回主菜单..."
-                                continue
-                            fi
-                        fi
-
-                        # 安装 MariaDB
-                        if [ "$SYSTEM" == "ubuntu" ] || [ "$SYSTEM" == "debian" ]; then
-                            sudo apt install -y mariadb-server
-                        elif [ "$SYSTEM" == "centos" ]; then
-                            sudo yum install -y mariadb-server
-                        elif [ "$SYSTEM" == "fedora" ]; then
-                            sudo dnf install -y mariadb-server
-                        fi
-                        if [ $? -eq 0 ]; then
-                            echo -e "${GREEN}MariaDB 安装成功！${RESET}"
-                            sudo systemctl enable mariadb
-                            sudo systemctl start mariadb
-                            # 配置 MariaDB 用户
-                            sudo mysql -e "SET PASSWORD FOR 'root'@'localhost' = PASSWORD('$db_pass');"
-                            sudo mysql -e "CREATE USER IF NOT EXISTS '$db_user'@'localhost' IDENTIFIED BY '$db_pass';"
-                            sudo mysql -e "GRANT ALL PRIVILEGES ON *.* TO '$db_user'@'localhost' WITH GRANT OPTION;"
-                            sudo mysql -e "FLUSH PRIVILEGES;"
-                            sudo mysql_secure_installation <<EOF
+                                echo -e "${GREEN}MariaDB 安装成功！${RESET}"
+                                sudo systemctl enable mariadb
+                                sudo systemctl start mariadb
+                                # 配置 MariaDB 用户
+                                sudo mysql -e "SET PASSWORD FOR 'root'@'localhost' = PASSWORD('$db_pass');"
+                                sudo mysql -e "CREATE USER IF NOT EXISTS '$db_user'@'localhost' IDENTIFIED BY '$db_pass';"
+                                sudo mysql -e "GRANT ALL PRIVILEGES ON *.* TO '$db_user'@'localhost' WITH GRANT OPTION;"
+                                sudo mysql -e "FLUSH PRIVILEGES;"
+                                sudo mysql_secure_installation <<EOF
 
 y
 $db_pass
@@ -1266,52 +1264,52 @@ y
 y
 y
 EOF
-                            echo -e "${GREEN}MariaDB 已配置，用户 '$db_user' 密码为 '$db_pass'${RESET}"
-                        else
-                            echo -e "${RED}MariaDB 安装失败，请手动检查！${RESET}"
-                            read -p "按回车键返回主菜单..."
-                            continue
-                        fi
+                                echo -e "${GREEN}MariaDB 已配置，用户 '$db_user' 密码为 '$db_pass'${RESET}"
+                            else
+                                echo -e "${RED}MariaDB 安装失败，请手动检查！${RESET}"
+                                read -p "按回车键返回主菜单..."
+                                continue
+                            fi
 
-                        # 安装 PHP
-                        if [ "$operation_choice" == "1" ]; then
-                            if [ "$SYSTEM" == "ubuntu" ] || [ "$SYSTEM" == "debian" ]; then
-                                sudo apt install -y php libapache2-mod-php php-mysql
-                            elif [ "$SYSTEM" == "centos" ]; then
-                                sudo yum install -y php php-mysqlnd
-                            elif [ "$SYSTEM" == "fedora" ]; then
-                                sudo dnf install -y php php-mysqlnd
-                            fi
-                            if [ $? -eq 0 ]; then
-                                echo -e "${GREEN}PHP 安装成功！${RESET}"
-                                sudo systemctl restart apache2 || sudo systemctl restart httpd
+                            # 安装 PHP
+                            if [ "$operation_choice" == "1" ]; then
+                                if [ "$SYSTEM" == "ubuntu" ] || [ "$SYSTEM" == "debian" ]; then
+                                    sudo apt install -y php libapache2-mod-php php-mysql
+                                elif [ "$SYSTEM" == "centos" ]; then
+                                    sudo yum install -y php php-mysqlnd
+                                elif [ "$SYSTEM" == "fedora" ]; then
+                                    sudo dnf install -y php php-mysqlnd
+                                fi
+                                if [ $? -eq 0 ]; then
+                                    echo -e "${GREEN}PHP 安装成功！${RESET}"
+                                    sudo systemctl restart apache2 || sudo systemctl restart httpd
+                                else
+                                    echo -e "${RED}PHP 安装失败，请手动检查！${RESET}"
+                                    read -p "按回车键返回主菜单..."
+                                    continue
+                                fi
+                                # 创建测试页面
+                                sudo bash -c "echo '<?php phpinfo(); ?>' > /var/www/html/info.php"
                             else
-                                echo -e "${RED}PHP 安装失败，请手动检查！${RESET}"
-                                read -p "按回车键返回主菜单..."
-                                continue
-                            fi
-                            # 创建测试页面
-                            sudo bash -c "echo '<?php phpinfo(); ?>' > /var/www/html/info.php"
-                        else
-                            if [ "$SYSTEM" == "ubuntu" ] || [ "$SYSTEM" == "debian" ]; then
-                                sudo apt install -y php php-fpm php-mysql
-                            elif [ "$SYSTEM" == "centos" ]; then
-                                sudo yum install -y php php-fpm php-mysqlnd
-                            elif [ "$SYSTEM" == "fedora" ]; then
-                                sudo dnf install -y php php-fpm php-mysqlnd
-                            fi
-                            if [ $? -eq 0 ]; then
-                                echo -e "${GREEN}PHP 和 PHP-FPM 安装成功！${RESET}"
-                                sudo systemctl enable php-fpm
-                                sudo systemctl start php-fpm
-                            else
-                                echo -e "${RED}PHP 或 PHP-FPM 安装失败，请手动检查！${RESET}"
-                                read -p "按回车键返回主菜单..."
-                                continue
-                            fi
-                            # 配置 Nginx 默认站点
-                            if [ "$SYSTEM" == "ubuntu" ] || [ "$SYSTEM" == "debian" ]; then
-                                sudo bash -c "cat > /etc/nginx/sites-available/default <<EOF
+                                if [ "$SYSTEM" == "ubuntu" ] || [ "$SYSTEM" == "debian" ]; then
+                                    sudo apt install -y php php-fpm php-mysql
+                                elif [ "$SYSTEM" == "centos" ]; then
+                                    sudo yum install -y php php-fpm php-mysqlnd
+                                elif [ "$SYSTEM" == "fedora" ]; then
+                                    sudo dnf install -y php php-fpm php-mysqlnd
+                                fi
+                                if [ $? -eq 0 ]; then
+                                    echo -e "${GREEN}PHP 和 PHP-FPM 安装成功！${RESET}"
+                                    sudo systemctl enable php-fpm
+                                    sudo systemctl start php-fpm
+                                else
+                                    echo -e "${RED}PHP 或 PHP-FPM 安装失败，请手动检查！${RESET}"
+                                    read -p "按回车键返回主菜单..."
+                                    continue
+                                fi
+                                # 配置 Nginx 默认站点
+                                if [ "$SYSTEM" == "ubuntu" ] || [ "$SYSTEM" == "debian" ]; then
+                                    sudo bash -c "cat > /etc/nginx/sites-available/default <<EOF
 server {
     listen $DEFAULT_PORT;
     server_name _;
@@ -1330,8 +1328,8 @@ server {
     }
 }
 EOF"
-                            else
-                                sudo bash -c "cat > /etc/nginx/conf.d/default.conf <<EOF
+                                else
+                                    sudo bash -c "cat > /etc/nginx/conf.d/default.conf <<EOF
 server {
     listen $DEFAULT_PORT;
     server_name _;
@@ -1349,84 +1347,86 @@ server {
     }
 }
 EOF"
+                                fi
+                                # 创建测试页面
+                                if [ "$SYSTEM" == "centos" ] || [ "$SYSTEM" == "fedora" ]; then
+                                    sudo bash -c "echo '<?php phpinfo(); ?>' > /usr/share/nginx/html/info.php"
+                                else
+                                    sudo bash -c "echo '<?php phpinfo(); ?>' > /var/www/html/info.php"
+                                fi
+                                sudo systemctl restart nginx
+                                if [ "$SYSTEM" == "centos" ] || [ "$SYSTEM" == "fedora" ]; then
+                                    sudo systemctl restart php-fpm
+                                fi
                             fi
-                            # 创建测试页面
-                            if [ "$SYSTEM" == "centos" ] || [ "$SYSTEM" == "fedora" ]; then
-                                sudo bash -c "echo '<?php phpinfo(); ?>' > /usr/share/nginx/html/info.php"
-                            else
-                                sudo bash -c "echo '<?php phpinfo(); ?>' > /var/www/html/info.php"
-                            fi
-                            sudo systemctl restart nginx
-                            if [ "$SYSTEM" == "centos" ] || [ "$SYSTEM" == "fedora" ]; then
-                                sudo systemctl restart php-fpm
-                            fi
-                        fi
 
-                        server_ip=$(curl -s4 ifconfig.me)
-                        echo -e "${GREEN}$STACK_TYPE 安装完成！${RESET}"
-                        echo -e "${YELLOW}访问 http://$server_ip:$DEFAULT_PORT/info.php 查看 PHP 配置${RESET}"
-                        echo -e "${YELLOW}数据库用户 '$db_user' 密码为 '$db_pass'${RESET}"
-                        ;;
-                    3)
-                        # 卸载 LAMP/LEMP
-                        echo -e "${GREEN}正在卸载 LAMP/LEMP 技术栈...${RESET}"
-                        read -p "请选择要卸载的技术栈：1) LAMP  2) LEMP（输入 1 或 2）： " uninstall_choice
+                            server_ip=$(curl -s4 ifconfig.me)
+                            echo -e "${GREEN}$STACK_TYPE 安装完成！${RESET}"
+                            echo -e "${YELLOW}访问 http://$server_ip:$DEFAULT_PORT/info.php 查看 PHP 配置${RESET}"
+                            echo -e "${YELLOW}数据库用户 '$db_user' 密码为 '$db_pass'${RESET}"
+                            ;;
+                        3)
+                            # 卸载 LAMP/LEMP
+                            echo -e "${GREEN}正在卸载 LAMP/LEMP 技术栈...${RESET}"
+                            read -p "请选择要卸载的技术栈：1) LAMP  2) LEMP（输入 1 或 2）： " uninstall_choice
 
-                        if [ "$uninstall_choice" == "1" ]; then
-                            # 卸载 LAMP
-                            echo -e "${YELLOW}正在卸载 LAMP 组件...${RESET}"
-                            if [ "$SYSTEM" == "ubuntu" ] || [ "$SYSTEM" == "debian" ]; then
-                                sudo systemctl stop apache2 mariadb || true
-                                sudo apt purge -y apache2 mariadb-server php libapache2-mod-php php-mysql
-                                sudo apt autoremove -y
-                                sudo rm -rf /var/www/html/info.php
-                            elif [ "$SYSTEM" == "centos" ]; then
-                                sudo systemctl stop httpd mariadb || true
-                                sudo yum remove -y httpd mariadb-server php php-mysqlnd
-                                sudo rm -rf /var/www/html/info.php
-                            elif [ "$SYSTEM" == "fedora" ]; then
-                                sudo systemctl stop httpd mariadb || true
-                                sudo dnf remove -y httpd mariadb-server php php-mysqlnd
-                                sudo rm -rf /var/www/html/info.php
-                            fi
-                            if [ $? -eq 0 ]; then
-                                echo -e "${GREEN}LAMP 卸载完成！${RESET}"
+                            if [ "$uninstall_choice" == "1" ]; then
+                                # 卸载 LAMP
+                                echo -e "${YELLOW}正在卸载 LAMP 组件...${RESET}"
+                                if [ "$SYSTEM" == "ubuntu" ] || [ "$SYSTEM" == "debian" ]; then
+                                    sudo systemctl stop apache2 mariadb || true
+                                    sudo apt purge -y apache2 mariadb-server php libapache2-mod-php php-mysql
+                                    sudo apt autoremove -y
+                                    sudo rm -rf /var/www/html/info.php
+                                elif [ "$SYSTEM" == "centos" ]; then
+                                    sudo systemctl stop httpd mariadb || true
+                                    sudo yum remove -y httpd mariadb-server php php-mysqlnd
+                                    sudo rm -rf /var/www/html/info.php
+                                elif [ "$SYSTEM" == "fedora" ]; then
+                                    sudo systemctl stop httpd mariadb || true
+                                    sudo dnf remove -y httpd mariadb-server php php-mysqlnd
+                                    sudo rm -rf /var/www/html/info.php
+                                fi
+                                if [ $? -eq 0 ]; then
+                                    echo -e "${GREEN}LAMP 卸载完成！${RESET}"
+                                else
+                                    echo -e "${RED}LAMP 卸载失败，请手动检查！${RESET}"
+                                fi
+                            elif [ "$uninstall_choice" == "2" ]; then
+                                # 卸载 LEMP
+                                echo -e "${YELLOW}正在卸载 LEMP 组件...${RESET}"
+                                if [ "$SYSTEM" == "ubuntu" ] || [ "$SYSTEM" == "debian" ]; then
+                                    sudo systemctl stop nginx mariadb php-fpm || true
+                                    sudo apt purge -y nginx mariadb-server php php-fpm php-mysql
+                                    sudo apt autoremove -y
+                                    sudo rm -rf /var/www/html/info.php
+                                elif [ "$SYSTEM" == "centos" ]; then
+                                    sudo systemctl stop nginx mariadb php-fpm || true
+                                    sudo yum remove -y nginx mariadb-server php php-fpm php-mysqlnd
+                                    sudo rm -rf /usr/share/nginx/html/info.php
+                                elif [ "$SYSTEM" == "fedora" ]; then
+                                    sudo systemctl stop nginx mariadb php-fpm || true
+                                    sudo dnf remove -y nginx mariadb-server php php-fpm php-mysqlnd
+                                    sudo rm -rf /usr/share/nginx/html/info.php
+                                fi
+                                if [ $? -eq 0 ]; then
+                                    echo -e "${GREEN}LEMP 卸载完成！${RESET}"
+                                else
+                                    echo -e "${RED}LEMP 卸载失败，请手动检查！${RESET}"
+                                fi
                             else
-                                echo -e "${RED}LAMP 卸载失败，请手动检查！${RESET}"
+                                echo -e "${RED}无效选项，请输入 1 或 2！${RESET}"
                             fi
-                        elif [ "$uninstall_choice" == "2" ]; then
-                            # 卸载 LEMP
-                            echo -e "${YELLOW}正在卸载 LEMP 组件...${RESET}"
-                            if [ "$SYSTEM" == "ubuntu" ] || [ "$SYSTEM" == "debian" ]; then
-                                sudo systemctl stop nginx mariadb php-fpm || true
-                                sudo apt purge -y nginx mariadb-server php php-fpm php-mysql
-                                sudo apt autoremove -y
-                                sudo rm -rf /var/www/html/info.php
-                            elif [ "$SYSTEM" == "centos" ]; then
-                                sudo systemctl stop nginx mariadb php-fpm || true
-                                sudo yum remove -y nginx mariadb-server php php-fpm php-mysqlnd
-                                sudo rm -rf /usr/share/nginx/html/info.php
-                            elif [ "$SYSTEM" == "fedora" ]; then
-                                sudo systemctl stop nginx mariadb php-fpm || true
-                                sudo dnf remove -y nginx mariadb-server php php-fpm php-mysqlnd
-                                sudo rm -rf /usr/share/nginx/html/info.php
-                            fi
-                            if [ $? -eq 0 ]; then
-                                echo -e "${GREEN}LEMP 卸载完成！${RESET}"
-                            else
-                                echo -e "${RED}LEMP 卸载失败，请手动检查！${RESET}"
-                            fi
-                        else
-                            echo -e "${RED}无效选项，请输入 1 或 2！${RESET}"
-                        fi
-                        ;;
-                    *)
-                        echo -e "${RED}无效选项，请输入 1、2 或 3！${RESET}"
-                        read -p "按回车键返回主菜单..."
-                        continue
-                        ;;
-                esac
-
+                            ;;
+                        *)
+                            echo -e "${RED}无效选项，请输入 1、2 或 3！${RESET}"
+                            ;;
+                    esac
+                fi
+                read -p "按回车键返回主菜单..."
+                ;;
+            *)
+                echo -e "${RED}无效选项，请重新输入！${RESET}"
                 read -p "按回车键返回主菜单..."
                 ;;
         esac
