@@ -1123,7 +1123,7 @@ EOF"
                 ;;
             20)
                 # 一键安装或卸载常用开发环境（LAMP/LEMP 栈）
-echo -e "${GREEN}正在准备处理常用开发环境（LAMP/LEMP 栈）...${RESET}"
+                echo -e "${GREEN}正在准备处理常用开发环境（LAMP/LEMP 栈）...${RESET}"
 
                 # 检查系统类型
                 check_system
@@ -1154,6 +1154,8 @@ echo -e "${GREEN}正在准备处理常用开发环境（LAMP/LEMP 栈）...${RES
                             sudo apt autoremove -y || true
                             sudo dpkg --configure -a
                             sudo apt install -f
+                            # 清理旧配置文件
+                            sudo rm -f /etc/nginx/sites-available/default /etc/nginx/conf.d/default.conf
                         else
                             echo -e "${RED}保留运行中的服务，可能导致安装冲突，建议手动清理后再试！${RESET}"
                         fi
@@ -1257,6 +1259,11 @@ echo -e "${GREEN}正在准备处理常用开发环境（LAMP/LEMP 栈）...${RES
                                     echo -e "${GREEN}Nginx 安装成功！${RESET}"
                                     sudo systemctl enable nginx
                                     sudo systemctl start nginx
+                                    if [ $? -ne 0 ]; then
+                                        echo -e "${RED}Nginx 启动失败，请检查日志：/var/log/nginx/error.log 或 'journalctl -u nginx.service'${RESET}"
+                                        read -p "按回车键返回主菜单..."
+                                        continue
+                                    fi
                                 else
                                     echo -e "${RED}Nginx 安装失败，请检查日志：/var/log/apt/term.log 或使用 'journalctl -xe'${RESET}"
                                     read -p "按回车键返回主菜单..."
@@ -1379,10 +1386,17 @@ EOF"
                                     else
                                         sudo bash -c "echo '<?php phpinfo(); ?>' > /var/www/html/info.php"
                                     fi
-                                    sudo systemctl restart nginx
-                                    sudo systemctl restart php-fpm
-                                    if [ $? -ne 0 ]; then
-                                        echo -e "${RED}Nginx 或 PHP-FPM 重启失败，请检查日志：/var/log/nginx/error.log 或 'journalctl -xe'${RESET}"
+                                    sudo nginx -t  # 测试 Nginx 配置
+                                    if [ $? -eq 0 ]; then
+                                        sudo systemctl restart nginx
+                                        sudo systemctl restart php-fpm
+                                        if [ $? -ne 0 ]; then
+                                            echo -e "${RED}Nginx 或 PHP-FPM 重启失败，请检查日志：/var/log/nginx/error.log 或 'journalctl -u nginx.service'${RESET}"
+                                            read -p "按回车键返回主菜单..."
+                                            continue
+                                        fi
+                                    else
+                                        echo -e "${RED}Nginx 配置测试失败，请检查 /etc/nginx/sites-available/default 或 /etc/nginx/conf.d/default.conf${RESET}"
                                         read -p "按回车键返回主菜单..."
                                         continue
                                     fi
