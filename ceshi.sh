@@ -1123,7 +1123,7 @@ EOF"
                 ;;
             20)
                 # 一键安装或卸载常用开发环境（LAMP/LEMP 栈）
-                echo -e "${GREEN}正在准备处理常用开发环境（LAMP/LEMP 栈）...${RESET}"
+echo -e "${GREEN}正在准备处理常用开发环境（LAMP/LEMP 栈）...${RESET}"
 
                 # 检查系统类型
                 check_system
@@ -1131,6 +1131,34 @@ EOF"
                     echo -e "${RED}无法识别系统，无法继续操作！${RESET}"
                     read -p "按回车键返回主菜单..."
                 else
+                    # 检测运行中的服务
+                    echo -e "${YELLOW}正在检测运行中的 Web 服务...${RESET}"
+                    APACHE_RUNNING=false
+                    NGINX_RUNNING=false
+                    if systemctl is-active apache2 > /dev/null 2>&1 || systemctl is-active httpd > /dev/null 2>&1; then
+                        APACHE_RUNNING=true
+                        echo -e "${YELLOW}检测到 Apache 服务正在运行${RESET}"
+                    fi
+                    if systemctl is-active nginx > /dev/null 2>&1; then
+                        NGINX_RUNNING=true
+                        echo -e "${YELLOW}检测到 Nginx 服务正在运行${RESET}"
+                    fi
+
+                    # 询问用户是否停止运行中的服务
+                    if [ "$APACHE_RUNNING" = true ] || [ "$NGINX_RUNNING" = true ]; then
+                        read -p "是否停止并移除运行中的服务以继续安装？（y/n，默认 n）： " stop_services
+                        if [ "$stop_services" == "y" ] || [ "$stop_services" == "Y" ]; then
+                            echo -e "${YELLOW}正在停止并移除可能冲突的服务...${RESET}"
+                            sudo systemctl stop apache2 httpd nginx mariadb php7.4-fpm || true
+                            sudo apt purge -y apache2 nginx mariadb-server php7.4-fpm php7.4-mysql libapache2-mod-php7.4 || true
+                            sudo apt autoremove -y || true
+                            sudo dpkg --configure -a
+                            sudo apt install -f
+                        else
+                            echo -e "${RED}保留运行中的服务，可能导致安装冲突，建议手动清理后再试！${RESET}"
+                        fi
+                    fi
+
                     # 提示用户选择操作
                     echo -e "${YELLOW}请选择操作：${RESET}"
                     echo "1) 安装 LAMP (Apache, MariaDB, PHP)"
@@ -1210,7 +1238,7 @@ EOF"
                                     sudo systemctl enable apache2 || sudo systemctl enable httpd
                                     sudo systemctl start apache2 || sudo systemctl start httpd
                                 else
-                                    echo -e "${RED}Apache 安装失败，请手动检查！${RESET}"
+                                    echo -e "${RED}Apache 安装失败，请检查日志：/var/log/apt/term.log 或使用 'journalctl -xe'${RESET}"
                                     read -p "按回车键返回主菜单..."
                                     continue
                                 fi
@@ -1230,7 +1258,7 @@ EOF"
                                     sudo systemctl enable nginx
                                     sudo systemctl start nginx
                                 else
-                                    echo -e "${RED}Nginx 安装失败，请手动检查！${RESET}"
+                                    echo -e "${RED}Nginx 安装失败，请检查日志：/var/log/apt/term.log 或使用 'journalctl -xe'${RESET}"
                                     read -p "按回车键返回主菜单..."
                                     continue
                                 fi
@@ -1265,7 +1293,7 @@ y
 EOF
                                 echo -e "${GREEN}MariaDB 已配置，用户 '$db_user' 密码为 '$db_pass'${RESET}"
                             else
-                                echo -e "${RED}MariaDB 安装失败，请手动检查！${RESET}"
+                                echo -e "${RED}MariaDB 安装失败，请检查日志：/var/log/apt/term.log 或使用 'journalctl -xe'${RESET}"
                                 read -p "按回车键返回主菜单..."
                                 continue
                             fi
@@ -1283,7 +1311,7 @@ EOF
                                     echo -e "${GREEN}PHP 安装成功！${RESET}"
                                     sudo systemctl restart apache2 || sudo systemctl restart httpd
                                 else
-                                    echo -e "${RED}PHP 安装失败，请手动检查！${RESET}"
+                                    echo -e "${RED}PHP 安装失败，请检查日志：/var/log/apt/term.log 或使用 'journalctl -xe'${RESET}"
                                     read -p "按回车键返回主菜单..."
                                     continue
                                 fi
@@ -1292,13 +1320,13 @@ EOF
                             else
                                 if [ "$SYSTEM" == "ubuntu" ] || [ "$SYSTEM" == "debian" ]; then
                                     sudo apt install -y php php-fpm php-mysql
-                                    PHP_FPM_SOCK="/run/php/php-fpm.sock"  # Ubuntu/Debian 默认 socket
+                                    PHP_FPM_SOCK="/run/php/php-fpm.sock"
                                 elif [ "$SYSTEM" == "centos" ]; then
                                     sudo yum install -y php php-fpm php-mysqlnd
-                                    PHP_FPM_SOCK="/run/php-fpm/www.sock"  # CentOS 默认 socket
+                                    PHP_FPM_SOCK="/run/php-fpm/www.sock"
                                 elif [ "$SYSTEM" == "fedora" ]; then
                                     sudo dnf install -y php php-fpm php-mysqlnd
-                                    PHP_FPM_SOCK="/run/php-fpm/www.sock"  # Fedora 默认 socket
+                                    PHP_FPM_SOCK="/run/php-fpm/www.sock"
                                 fi
                                 if [ $? -eq 0 ]; then
                                     echo -e "${GREEN}PHP 和 PHP-FPM 安装成功！${RESET}"
@@ -1353,8 +1381,13 @@ EOF"
                                     fi
                                     sudo systemctl restart nginx
                                     sudo systemctl restart php-fpm
+                                    if [ $? -ne 0 ]; then
+                                        echo -e "${RED}Nginx 或 PHP-FPM 重启失败，请检查日志：/var/log/nginx/error.log 或 'journalctl -xe'${RESET}"
+                                        read -p "按回车键返回主菜单..."
+                                        continue
+                                    fi
                                 else
-                                    echo -e "${RED}PHP 或 PHP-FPM 安装失败，请手动检查！${RESET}"
+                                    echo -e "${RED}PHP 或 PHP-FPM 安装失败，请检查日志：/var/log/apt/term.log 或使用 'journalctl -xe'${RESET}"
                                     read -p "按回车键返回主菜单..."
                                     continue
                                 fi
@@ -1425,7 +1458,6 @@ EOF"
                 fi
                 read -p "按回车键返回主菜单..."
                 ;;
-            # [其他选项 0-19 保持不变]
         esac
     done
 }
