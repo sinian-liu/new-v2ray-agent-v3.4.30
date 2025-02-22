@@ -828,9 +828,9 @@ EOF
                 read -p "按回车键返回主菜单..."
                 ;;
             19)
-                # SSH 防暴力破解检测
-                echo -e "${GREEN}正在检测 SSH 暴力破解尝试...${RESET}"
-                CONFIG_FILE="/etc/ssh_brute_force.conf"
+                # SSH 防暴力破解检测与防护
+                echo -e "${GREEN}正在处理 SSH 暴力破解检测与防护...${RESET}"
+                DETECT_CONFIG="/etc/ssh_brute_force.conf"
 
                 # 检查并安装 rsyslog（如果缺失）
                 if ! command -v rsyslogd &> /dev/null; then
@@ -886,13 +886,13 @@ EOF
                     fi
                 fi
 
-                # 检查是否首次运行
-                if [ ! -f "$CONFIG_FILE" ]; then
-                    echo -e "${YELLOW}首次运行，请设置检测参数：${RESET}"
+                # 检查是否首次运行检测配置
+                if [ ! -f "$DETECT_CONFIG" ]; then
+                    echo -e "${YELLOW}首次运行检测功能，请设置检测参数：${RESET}"
                     read -p "请输入单 IP 允许的最大失败尝试次数 [默认 5]： " max_attempts
                     max_attempts=${max_attempts:-5}
-                    read -p "请输入 IP 屏蔽时长（分钟）[默认 1440（1天）]： " ban_minutes
-                    ban_minutes=${ban_minutes:-1440}
+                    read -p "请输入 IP 统计时间范围（分钟）[默认 1440（1天）]： " detect_time
+                    detect_time=${detect_time:-1440}
                     read -p "请输入高风险阈值（总失败次数）[默认 10]： " high_risk_threshold
                     high_risk_threshold=${high_risk_threshold:-10}
                     read -p "请输入常规扫描间隔（分钟）[默认 15]： " scan_interval
@@ -900,24 +900,24 @@ EOF
                     read -p "请输入高风险扫描间隔（分钟）[默认 5]： " scan_interval_high
                     scan_interval_high=${scan_interval_high:-5}
 
-                    # 保存配置
-                    echo "MAX_ATTEMPTS=$max_attempts" | sudo tee "$CONFIG_FILE" > /dev/null
-                    echo "BAN_MINUTES=$ban_minutes" | sudo tee -a "$CONFIG_FILE" > /dev/null
-                    echo "HIGH_RISK_THRESHOLD=$high_risk_threshold" | sudo tee -a "$CONFIG_FILE" > /dev/null
-                    echo "SCAN_INTERVAL=$scan_interval" | sudo tee -a "$CONFIG_FILE" > /dev/null
-                    echo "SCAN_INTERVAL_HIGH=$scan_interval_high" | sudo tee -a "$CONFIG_FILE" > /dev/null
-                    echo -e "${GREEN}配置已保存至 $CONFIG_FILE${RESET}"
+                    # 保存检测配置
+                    echo "MAX_ATTEMPTS=$max_attempts" | sudo tee "$DETECT_CONFIG" > /dev/null
+                    echo "DETECT_TIME=$detect_time" | sudo tee -a "$DETECT_CONFIG" > /dev/null
+                    echo "HIGH_RISK_THRESHOLD=$high_risk_threshold" | sudo tee -a "$DETECT_CONFIG" > /dev/null
+                    echo "SCAN_INTERVAL=$scan_interval" | sudo tee -a "$DETECT_CONFIG" > /dev/null
+                    echo "SCAN_INTERVAL_HIGH=$scan_interval_high" | sudo tee -a "$DETECT_CONFIG" > /dev/null
+                    echo -e "${GREEN}检测配置已保存至 $DETECT_CONFIG${RESET}"
                 else
-                    # 读取现有配置
-                    source "$CONFIG_FILE"
-                    echo -e "${YELLOW}当前配置：最大尝试次数=$MAX_ATTEMPTS，屏蔽时长=$BAN_MINUTES 分钟，高风险阈值=$HIGH_RISK_THRESHOLD，常规扫描=$SCAN_INTERVAL 分钟，高风险扫描=$SCAN_INTERVAL_HIGH 分钟${RESET}"
-                    read -p "请选择操作：1) 查看尝试破解的 IP 记录  2) 修改配置参数（输入 1 或 2）： " choice
+                    # 读取检测配置
+                    source "$DETECT_CONFIG"
+                    echo -e "${YELLOW}当前检测配置：最大尝试次数=$MAX_ATTEMPTS，统计时间范围=$DETECT_TIME 分钟，高风险阈值=$HIGH_RISK_THRESHOLD，常规扫描=$SCAN_INTERVAL 分钟，高风险扫描=$SCAN_INTERVAL_HIGH 分钟${RESET}"
+                    read -p "请选择操作：1) 查看尝试破解的 IP 记录  2) 修改检测参数  3) 配置 Fail2Ban 防护（输入 1、2 或 3）： " choice
                     if [ "$choice" == "2" ]; then
                         echo -e "${YELLOW}请输入新的检测参数（留空保留原值）：${RESET}"
                         read -p "请输入单 IP 允许的最大失败尝试次数 [当前 $MAX_ATTEMPTS]： " max_attempts
                         max_attempts=${max_attempts:-$MAX_ATTEMPTS}
-                        read -p "请输入 IP 屏蔽时长（分钟）[当前 $BAN_MINUTES]： " ban_minutes
-                        ban_minutes=${ban_minutes:-$BAN_MINUTES}
+                        read -p "请输入 IP 统计时间范围（分钟）[当前 $DETECT_TIME]： " detect_time
+                        detect_time=${detect_time:-$DETECT_TIME}
                         read -p "请输入高风险阈值（总失败次数）[当前 $HIGH_RISK_THRESHOLD]： " high_risk_threshold
                         high_risk_threshold=${high_risk_threshold:-$HIGH_RISK_THRESHOLD}
                         read -p "请输入常规扫描间隔（分钟）[当前 $SCAN_INTERVAL]： " scan_interval
@@ -925,18 +925,168 @@ EOF
                         read -p "请输入高风险扫描间隔（分钟）[当前 $SCAN_INTERVAL_HIGH]： " scan_interval_high
                         scan_interval_high=${scan_interval_high:-$SCAN_INTERVAL_HIGH}
 
-                        # 更新配置
-                        echo "MAX_ATTEMPTS=$max_attempts" | sudo tee "$CONFIG_FILE" > /dev/null
-                        echo "BAN_MINUTES=$ban_minutes" | sudo tee -a "$CONFIG_FILE" > /dev/null
-                        echo "HIGH_RISK_THRESHOLD=$high_risk_threshold" | sudo tee -a "$CONFIG_FILE" > /dev/null
-                        echo "SCAN_INTERVAL=$scan_interval" | sudo tee -a "$CONFIG_FILE" > /dev/null
-                        echo "SCAN_INTERVAL_HIGH=$scan_interval_high" | sudo tee -a "$CONFIG_FILE" > /dev/null
-                        echo -e "${GREEN}配置已更新至 $CONFIG_FILE${RESET}"
+                        # 更新检测配置
+                        echo "MAX_ATTEMPTS=$max_attempts" | sudo tee "$DETECT_CONFIG" > /dev/null
+                        echo "DETECT_TIME=$detect_time" | sudo tee -a "$DETECT_CONFIG" > /dev/null
+                        echo "HIGH_RISK_THRESHOLD=$high_risk_threshold" | sudo tee -a "$DETECT_CONFIG" > /dev/null
+                        echo "SCAN_INTERVAL=$scan_interval" | sudo tee -a "$DETECT_CONFIG" > /dev/null
+                        echo "SCAN_INTERVAL_HIGH=$scan_interval_high" | sudo tee -a "$DETECT_CONFIG" > /dev/null
+                        echo -e "${GREEN}检测配置已更新至 $DETECT_CONFIG${RESET}"
+                    elif [ "$choice" == "3" ]; then
+                        # 子选项 3：配置 Fail2Ban 防护
+                        FAIL2BAN_CONFIG="/etc/fail2ban_config.conf"
+                        echo -e "${GREEN}正在处理 Fail2Ban 防护配置...${RESET}"
+
+                        # 检查并安装 Fail2Ban
+                        if ! command -v fail2ban-client &> /dev/null; then
+                            echo -e "${YELLOW}未检测到 Fail2Ban，正在安装...${RESET}"
+                            check_system
+                            if [ "$SYSTEM" == "ubuntu" ] || [ "$SYSTEM" == "debian" ]; then
+                                sudo apt update && sudo apt install -y fail2ban
+                            elif [ "$SYSTEM" == "centos" ]; then
+                                sudo yum install -y epel-release && sudo yum install -y fail2ban
+                            elif [ "$SYSTEM" == "fedora" ]; then
+                                sudo dnf install -y fail2ban
+                            else
+                                echo -e "${RED}无法识别系统，无法安装 Fail2Ban！${RESET}"
+                            fi
+                            if [ $? -eq 0 ]; then
+                                echo -e "${GREEN}Fail2Ban 安装成功！${RESET}"
+                            else
+                                echo -e "${RED}Fail2Ban 安装失败，请手动安装！${RESET}"
+                                read -p "按回车键继续检测暴力破解记录..."
+                            fi
+                        else
+                            echo -e "${YELLOW}Fail2Ban 已安装，跳过安装步骤。${RESET}"
+                        fi
+
+                        # 检查 Fail2Ban 配置是否首次运行
+                        if [ ! -f "$FAIL2BAN_CONFIG" ]; then
+                            echo -e "${YELLOW}首次配置 Fail2Ban，请设置防护参数：${RESET}"
+                            read -p "请输入单 IP 允许的最大失败尝试次数 [默认 5]： " fail2ban_max_attempts
+                            fail2ban_max_attempts=${fail2ban_max_attempts:-5}
+                            read -p "请输入 IP 封禁时长（秒）[默认 3600（1小时）]： " ban_time
+                            ban_time=${ban_time:-3600}
+                            read -p "请输入查找时间窗口（秒）[默认 600（10分钟）]： " find_time
+                            find_time=${find_time:-600}
+
+                            # 保存 Fail2Ban 配置
+                            echo "FAIL2BAN_MAX_ATTEMPTS=$fail2ban_max_attempts" | sudo tee "$FAIL2BAN_CONFIG" > /dev/null
+                            echo "BAN_TIME=$ban_time" | sudo tee -a "$FAIL2BAN_CONFIG" > /dev/null
+                            echo "FIND_TIME=$find_time" | sudo tee -a "$FAIL2BAN_CONFIG" > /dev/null
+
+                            # 配置 Fail2Ban jail.local
+                            sudo bash -c "cat > /etc/fail2ban/jail.local <<EOF
+[DEFAULT]
+bantime = $ban_time
+findtime = $find_time
+maxretry = $fail2ban_max_attempts
+
+[sshd]
+enabled = true
+port = ssh
+filter = sshd
+logpath = $LOG_FILE
+maxretry = $fail2ban_max_attempts
+bantime = $ban_time
+EOF"
+                            echo -e "${GREEN}Fail2Ban 配置已保存至 $FAIL2BAN_CONFIG 和 /etc/fail2ban/jail.local${RESET}"
+                            sudo systemctl restart fail2ban
+                            sudo systemctl enable fail2ban
+                        else
+                            # 读取 Fail2Ban 配置
+                            source "$FAIL2BAN_CONFIG"
+                            echo -e "${YELLOW}当前 Fail2Ban 配置：最大尝试次数=$FAIL2BAN_MAX_ATTEMPTS，封禁时长=$BAN_TIME 秒，查找时间窗口=$FIND_TIME 秒${RESET}"
+                            read -p "请选择 Fail2Ban 操作：1) 查看封禁状态  2) 修改 Fail2Ban 参数  3) 管理封禁 IP（输入 1、2 或 3）： " fail2ban_choice
+                            if [ "$fail2ban_choice" == "1" ]; then
+                                # 查看封禁状态
+                                echo -e "${GREEN}当前 Fail2Ban 封禁状态：${RESET}"
+                                echo -e "----------------------------------------${RESET}"
+                                if sudo fail2ban-client status sshd > /dev/null 2>&1; then
+                                    sudo fail2ban-client status sshd
+                                else
+                                    echo -e "${RED}Fail2Ban 未正常运行，请检查服务状态！${RESET}"
+                                fi
+                                echo -e "${GREEN}----------------------------------------${RESET}"
+                            elif [ "$fail2ban_choice" == "2" ]; then
+                                # 修改 Fail2Ban 参数
+                                echo -e "${YELLOW}请输入新的 Fail2Ban 参数（留空保留原值）：${RESET}"
+                                read -p "请输入单 IP 允许的最大失败尝试次数 [当前 $FAIL2BAN_MAX_ATTEMPTS]： " fail2ban_max_attempts
+                                fail2ban_max_attempts=${fail2ban_max_attempts:-$FAIL2BAN_MAX_ATTEMPTS}
+                                read -p "请输入 IP 封禁时长（秒）[当前 $BAN_TIME]： " ban_time
+                                ban_time=${ban_time:-$BAN_TIME}
+                                read -p "请输入查找时间窗口（秒）[当前 $FIND_TIME]： " find_time
+                                find_time=${find_time:-$FIND_TIME}
+
+                                # 更新 Fail2Ban 配置
+                                echo "FAIL2BAN_MAX_ATTEMPTS=$fail2ban_max_attempts" | sudo tee "$FAIL2BAN_CONFIG" > /dev/null
+                                echo "BAN_TIME=$ban_time" | sudo tee -a "$FAIL2BAN_CONFIG" > /dev/null
+                                echo "FIND_TIME=$find_time" | sudo tee -a "$FAIL2BAN_CONFIG" > /dev/null
+
+                                # 更新 jail.local
+                                sudo bash -c "cat > /etc/fail2ban/jail.local <<EOF
+[DEFAULT]
+bantime = $ban_time
+findtime = $find_time
+maxretry = $fail2ban_max_attempts
+
+[sshd]
+enabled = true
+port = ssh
+filter = sshd
+logpath = $LOG_FILE
+maxretry = $fail2ban_max_attempts
+bantime = $ban_time
+EOF"
+                                echo -e "${GREEN}Fail2Ban 配置已更新至 $FAIL2BAN_CONFIG 和 /etc/fail2ban/jail.local${RESET}"
+                                sudo systemctl restart fail2ban
+                            elif [ "$fail2ban_choice" == "3" ]; then
+                                # 管理封禁 IP
+                                echo -e "${GREEN}当前 Fail2Ban 封禁状态：${RESET}"
+                                echo -e "----------------------------------------${RESET}"
+                                if sudo fail2ban-client status sshd > /dev/null 2>&1; then
+                                    STATUS=$(sudo fail2ban-client status sshd)
+                                    BANNED_IPS=$(echo "$STATUS" | grep "Banned IP list" | awk '{print $NF}')
+                                    echo "$STATUS"
+                                    echo -e "${GREEN}----------------------------------------${RESET}"
+                                    if [ -n "$BANNED_IPS" ]; then
+                                        echo -e "${YELLOW}已封禁的 IP：$BANNED_IPS${RESET}"
+                                        read -p "请输入要解禁的 IP（留空取消）： " ip_to_unban
+                                        if [ -n "$ip_to_unban" ]; then
+                                            sudo fail2ban-client unban "$ip_to_unban"
+                                            if [ $? -eq 0 ]; then
+                                                echo -e "${GREEN}已成功解禁 IP：$ip_to_unban${RESET}"
+                                            else
+                                                echo -e "${RED}解禁 IP 失败，请检查输入！${RESET}"
+                                            fi
+                                        fi
+                                    else
+                                        echo -e "${YELLOW}暂无封禁 IP${RESET}"
+                                        read -p "请输入要手动封禁的 IP（留空取消）： " ip_to_ban
+                                        if [ -n "$ip_to_ban" ]; then
+                                            sudo fail2ban-client ban "$ip_to_ban"
+                                            if [ $? -eq 0 ]; then
+                                                echo -e "${GREEN}已成功封禁 IP：$ip_to_ban${RESET}"
+                                            else
+                                                echo -e "${RED}封禁 IP 失败，请检查输入！${RESET}"
+                                            fi
+                                        fi
+                                    fi
+                                else
+                                    echo -e "${RED}Fail2Ban 未正常运行，请检查服务状态！${RESET}"
+                                    echo -e "${GREEN}----------------------------------------${RESET}"
+                                fi
+                            fi
+                        fi
+                        # 启动或重启 Fail2Ban 服务
+                        sudo systemctl restart fail2ban
+                        sudo systemctl enable fail2ban
+                        read -p "按回车键继续检测暴力破解记录..."
                     fi
                 fi
 
                 # 计算时间范围的开始时间
-                start_time=$(date -d "$BAN_MINUTES minutes ago" +"%Y-%m-%d %H:%M:%S")
+                start_time=$(date -d "$DETECT_TIME minutes ago" +"%Y-%m-%d %H:%M:%S")
 
                 # 检测并统计暴力破解尝试
                 echo -e "${GREEN}正在分析日志文件：$LOG_FILE${RESET}"
@@ -966,8 +1116,8 @@ EOF
 
                 echo -e "${GREEN}----------------------------------------${RESET}"
                 echo -e "${YELLOW}提示：以上为疑似暴力破解的 IP 列表，未自动封禁。${RESET}"
-                echo -e "${YELLOW}配置参数：最大尝试次数=$MAX_ATTEMPTS，屏蔽时长=$BAN_MINUTES 分钟，高风险阈值=$HIGH_RISK_THRESHOLD，常规扫描=$SCAN_INTERVAL 分钟，高风险扫描=$SCAN_INTERVAL_HIGH 分钟${RESET}"
-                echo -e "${YELLOW}若需封禁，请手动编辑 /etc/hosts.deny 或使用防火墙规则。${RESET}"
+                echo -e "${YELLOW}检测配置：最大尝试次数=$MAX_ATTEMPTS，统计时间范围=$DETECT_TIME 分钟，高风险阈值=$HIGH_RISK_THRESHOLD，常规扫描=$SCAN_INTERVAL 分钟，高风险扫描=$SCAN_INTERVAL_HIGH 分钟${RESET}"
+                echo -e "${YELLOW}若需自动封禁或管理 IP，请使用选项 3 配置 Fail2Ban 或手动编辑 /etc/hosts.deny。${RESET}"
                 read -p "按回车键返回主菜单..."
                 ;;
         esac
