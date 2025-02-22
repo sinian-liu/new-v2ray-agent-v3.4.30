@@ -1154,7 +1154,6 @@ EOF"
                             sudo apt autoremove -y || true
                             sudo dpkg --configure -a
                             sudo apt install -f
-                            # 清理旧配置文件和符号链接
                             sudo rm -f /etc/nginx/sites-available/default /etc/nginx/sites-enabled/default /etc/nginx/conf.d/default.conf
                         else
                             echo -e "${RED}保留运行中的服务，可能导致安装冲突，建议手动清理后再试！${RESET}"
@@ -1327,22 +1326,26 @@ EOF
                             else
                                 if [ "$SYSTEM" == "ubuntu" ] || [ "$SYSTEM" == "debian" ]; then
                                     sudo apt install -y php php-fpm php-mysql
-                                    # 动态检测 PHP-FPM socket
+                                    # 动态检测 PHP-FPM 服务名和 socket
+                                    PHP_VERSION=$(php -v | head -n 1 | cut -d " " -f 2 | cut -d "." -f 1,2)
+                                    PHP_FPM_SERVICE="php${PHP_VERSION}-fpm"
                                     PHP_FPM_SOCK=$(find /run/php -name "php*-fpm.sock" | head -n 1)
                                     if [ -z "$PHP_FPM_SOCK" ]; then
                                         PHP_FPM_SOCK="/run/php/php-fpm.sock"
                                     fi
                                 elif [ "$SYSTEM" == "centos" ]; then
                                     sudo yum install -y php php-fpm php-mysqlnd
+                                    PHP_FPM_SERVICE="php-fpm"
                                     PHP_FPM_SOCK="/run/php-fpm/www.sock"
                                 elif [ "$SYSTEM" == "fedora" ]; then
                                     sudo dnf install -y php php-fpm php-mysqlnd
+                                    PHP_FPM_SERVICE="php-fpm"
                                     PHP_FPM_SOCK="/run/php-fpm/www.sock"
                                 fi
                                 if [ $? -eq 0 ]; then
                                     echo -e "${GREEN}PHP 和 PHP-FPM 安装成功！${RESET}"
-                                    sudo systemctl enable php-fpm
-                                    sudo systemctl start php-fpm
+                                    sudo systemctl enable "$PHP_FPM_SERVICE"
+                                    sudo systemctl start "$PHP_FPM_SERVICE"
                                     # 配置 Nginx 默认站点
                                     if [ "$SYSTEM" == "ubuntu" ] || [ "$SYSTEM" == "debian" ]; then
                                         sudo bash -c "cat > /etc/nginx/sites-available/default <<EOF
@@ -1396,7 +1399,7 @@ EOF"
                                     sudo nginx -t
                                     if [ $? -eq 0 ]; then
                                         sudo systemctl restart nginx
-                                        sudo systemctl restart php-fpm
+                                        sudo systemctl restart "$PHP_FPM_SERVICE"
                                         if [ $? -ne 0 ]; then
                                             echo -e "${RED}Nginx 或 PHP-FPM 重启失败，请检查日志：/var/log/nginx/error.log 或 'journalctl -u nginx.service'${RESET}"
                                             read -p "按回车键返回主菜单..."
@@ -1450,7 +1453,7 @@ EOF"
                                 # 卸载 LEMP
                                 echo -e "${YELLOW}正在卸载 LEMP 组件...${RESET}"
                                 if [ "$SYSTEM" == "ubuntu" ] || [ "$SYSTEM" == "debian" ]; then
-                                    sudo systemctl stop nginx mariadb php-fpm || true
+                                    sudo systemctl stop nginx mariadb php7.4-fpm || true
                                     sudo apt purge -y nginx mariadb-server php php-fpm php-mysql
                                     sudo apt autoremove -y
                                     sudo rm -rf /var/www/html/info.php
