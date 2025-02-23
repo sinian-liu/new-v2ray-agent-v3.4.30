@@ -1544,6 +1544,127 @@ EOF"
                                 continue
                             fi
                             touch wordpress/docker-compose.yml
+
+                            # 第一步：启动 HTTP 配置以生成证书
+                            if [ "$ENABLE_HTTPS" == "yes" ]; then
+                                sudo bash -c "cat > /home/wordpress/docker-compose.yml <<EOF
+services:
+  nginx:
+    image: nginx:latest
+    container_name: wordpress_nginx
+    ports:
+      - \"$DEFAULT_PORT:80\"
+    volumes:
+      - ./html:/var/www/html
+      - ./conf.d:/etc/nginx/conf.d
+      - ./logs/nginx:/var/log/nginx
+    depends_on:
+      - wordpress
+    restart: unless-stopped
+  wordpress:
+    image: wordpress:php8.2-fpm
+    container_name: wordpress
+    volumes:
+      - ./html:/var/www/html
+    environment:
+      WORDPRESS_DB_HOST: mariadb:3306
+      WORDPRESS_DB_USER: \"$db_user\"
+      WORDPRESS_DB_PASSWORD: \"$db_user_passwd\"
+      WORDPRESS_DB_NAME: \"wordpress\"
+    depends_on:
+      mariadb:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: [\"CMD\", \"bash\", \"-c\", \"ps aux | grep php-fpm || exit 1\"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+  mariadb:
+    image: mariadb:latest
+    container_name: wordpress_mariadb
+    environment:
+      MYSQL_ROOT_PASSWORD: \"$db_root_passwd\"
+      MYSQL_DATABASE: \"wordpress\"
+      MYSQL_USER: \"$db_user\"
+      MYSQL_PASSWORD: \"$db_user_passwd\"
+    volumes:
+      - ./mysql:/var/lib/mysql
+      - ./logs/mariadb:/var/log/mysql
+    restart: unless-stopped
+    healthcheck:
+      test: [\"CMD\", \"healthcheck.sh\", \"--connect\", \"--innodb_initialized\"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+EOF"
+                                TEMP_CONF=$(mktemp)
+                                cat > "$TEMP_CONF" <<EOF
+server {
+    listen 80;
+    server_name $DOMAIN;
+    root /var/www/html;
+    index index.php index.html index.htm;
+
+    location / {
+        try_files \$uri \$uri/ /index.php?\$args;
+    }
+
+    location ~ \\.php\$ {
+        fastcgi_pass wordpress:9000;
+        fastcgi_index index.php;
+        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
+        include fastcgi_params;
+    }
+}
+EOF
+                                sudo mv "$TEMP_CONF" /home/wordpress/conf.d/default.conf
+                                sudo chmod 644 /home/wordpress/conf.d/default.conf
+
+                                cd /home/wordpress && docker-compose up -d
+                                if [ $? -ne 0 ]; then
+                                    echo -e "${RED}Docker Compose 启动失败（HTTP 阶段），请检查以下日志：${RESET}"
+                                    docker-compose logs
+                                    read -p "按回车键返回主菜单..."
+                                    continue
+                                fi
+
+                                # 等待 HTTP 服务就绪
+                                echo -e "${YELLOW}等待 HTTP 服务初始化（最多 60 秒）...${RESET}"
+                                TIMEOUT=60
+                                INTERVAL=10
+                                ELAPSED=0
+                                while [ $ELAPSED -lt $TIMEOUT ]; do
+                                    if curl -s -I "http://localhost:$DEFAULT_PORT" | grep -q "HTTP"; then
+                                        break
+                                    fi
+                                    sleep $INTERVAL
+                                    ELAPSED=$((ELAPSED + INTERVAL))
+                                done
+
+                                if ! curl -s -I "http://localhost:$DEFAULT_PORT" | grep -q "HTTP"; then
+                                    echo -e "${RED}HTTP 服务启动失败，请检查以下日志：${RESET}"
+                                    docker-compose logs
+                                    read -p "按回车键返回主菜单..."
+                                    continue
+                                fi
+
+                                # 生成证书
+                                echo -e "${YELLOW}正在申请 Let's Encrypt 证书...${RESET}"
+                                docker run --rm -v /home/wordpress/certs:/etc/letsencrypt -v /home/wordpress/html:/var/www/html certbot/certbot certonly --webroot -w /var/www/html --force-renewal --email "admin@$DOMAIN" -d "$DOMAIN" --agree-tos --non-interactive
+                                if [ $? -eq 0 ]; then
+                                    echo -e "${GREEN}Let's Encrypt 证书申请成功！${RESET}"
+                                else
+                                    echo -e "${RED}Let's Encrypt 证书申请失败，请检查域名解析或网络连接！${RESET}"
+                                    CERT_FAIL="yes"
+                                    docker-compose logs wordpress_certbot
+                                fi
+
+                                # 停止临时 HTTP 服务
+                                cd /home/wordpress && docker-compose down
+                            fi
+
+                            # 第二步：配置完整服务（包括 HTTPS 或仅 HTTP）
                             if [ "$ENABLE_HTTPS" == "yes" ]; then
                                 sudo bash -c "cat > /home/wordpress/docker-compose.yml <<EOF
 services:
@@ -1576,7 +1697,7 @@ services:
         condition: service_healthy
     restart: unless-stopped
     healthcheck:
-      test: [\"CMD\", \"ps\", \"aux\", \"|\", \"grep\", \"php-fpm\"]
+      test: [\"CMD\", \"bash\", \"-c\", \"ps aux | grep php-fpm || exit 1\"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -1603,7 +1724,7 @@ services:
     volumes:
       - ./certs:/etc/letsencrypt
       - ./html:/var/www/html
-    entrypoint: \"/bin/sh -c 'certbot certonly --webroot -w /var/www/html --force-renewal --email admin@$DOMAIN -d $DOMAIN --agree-tos --non-interactive && trap : TERM INT; (while true; do certbot renew --quiet; sleep 12h; done) & wait'\"
+    entrypoint: \"/bin/sh -c 'trap : TERM INT; (while true; do certbot renew --quiet; sleep 12h; done) & wait'\"
     depends_on:
       - nginx
 EOF"
@@ -1637,7 +1758,7 @@ services:
         condition: service_healthy
     restart: unless-stopped
     healthcheck:
-      test: [\"CMD\", \"ps\", \"aux\", \"|\", \"grep\", \"php-fpm\"]
+      test: [\"CMD\", \"bash\", \"-c\", \"ps aux | grep php-fpm || exit 1\"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -1723,6 +1844,9 @@ EOF
                                 echo -e "${RED}Docker Compose 启动失败，请检查以下日志：${RESET}"
                                 docker-compose logs
                                 echo -e "${YELLOW}可能原因：镜像拉取失败、端口冲突或服务依赖问题${RESET}"
+                                if [ "$CERT_FAIL" == "yes" ]; then
+                                    echo -e "${RED}可能因 Let's Encrypt 证书申请失败导致安装失败，请检查域名解析和网络设置${RESET}"
+                                fi
                                 read -p "按回车键返回主菜单..."
                                 continue
                             fi
@@ -1742,13 +1866,24 @@ EOF
                                 ELAPSED=$((ELAPSED + INTERVAL))
                             done
 
-                            if ! curl -s -I "http://localhost:$DEFAULT_PORT" | grep -q "HTTP"; then
+                            CHECK_PORT=$DEFAULT_PORT
+                            if [ "$ENABLE_HTTPS" == "yes" ]; then
+                                CHECK_PORT=$DEFAULT_SSL_PORT
+                                CHECK_URL="https://$DOMAIN:$CHECK_PORT"
+                            else
+                                CHECK_URL="http://localhost:$CHECK_PORT"
+                            fi
+
+                            if ! curl -s -I "$CHECK_URL" | grep -q "HTTP"; then
                                 echo -e "${RED}服务未正常启动（可能出现 HTTP ERROR 503），请检查以下信息：${RESET}"
                                 echo -e "${YELLOW}容器状态：${RESET}"
                                 docker ps -a
                                 echo -e "${YELLOW}日志：${RESET}"
                                 docker-compose logs
                                 echo -e "${YELLOW}可能原因：Nginx 或 PHP-FPM 未运行、数据库未就绪、证书生成失败${RESET}"
+                                if [ "$CERT_FAIL" == "yes" ]; then
+                                    echo -e "${RED}可能因 Let's Encrypt 证书申请失败导致安装失败，请检查域名解析和网络设置${RESET}"
+                                fi
                                 echo -e "${YELLOW}建议：检查日志后，重启服务（cd /home/wordpress && docker-compose down && docker-compose up -d）${RESET}"
                                 read -p "按回车键返回主菜单..."
                                 continue
@@ -1756,7 +1891,7 @@ EOF
 
                             # 检查证书到期时间（如果启用 HTTPS）
                             if [ "$ENABLE_HTTPS" == "yes" ]; then
-                                CERT_EXPIRY=$(docker exec wordpress_certbot openssl x509 -enddate -noout -in /etc/letsencrypt/live/$DOMAIN/fullchain.pem 2>/dev/null | cut -d'=' -f2)
+                                CERT_EXPIRY=$(docker exec wordpress_nginx openssl x509 -enddate -noout -in /etc/nginx/certs/live/$DOMAIN/fullchain.pem 2>/dev/null | cut -d'=' -f2)
                                 if [ -n "$CERT_EXPIRY" ]; then
                                     echo -e "${YELLOW}证书到期时间：$CERT_EXPIRY（自动续签已启用，每 12 小时检查一次）${RESET}"
                                 else
