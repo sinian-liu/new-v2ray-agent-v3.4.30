@@ -2108,7 +2108,7 @@ EOF"
                             # 从本地 docker-compose.yml 获取原始端口和域名
                             ORIGINAL_PORT=$(grep -oP '(?<=ports:.*- ")[0-9]+:80' /home/wordpress/docker-compose.yml | cut -d':' -f1 || echo "$DEFAULT_PORT")
                             ORIGINAL_SSL_PORT=$(grep -oP '(?<=ports:.*- ")[0-9]+:443' /home/wordpress/docker-compose.yml | cut -d':' -f1 || echo "$DEFAULT_SSL_PORT")
-                            ORIGINAL_DOMAIN=$(grep -oP '(?<=server_name ).*?(?=;)' /home/wordpress/conf.d/default.conf | head -n 1 || echo "_")
+                            ORIGINAL_DOMAIN=$(grep -o 'server_name.*;' /home/wordpress/conf.d/default.conf | sed -e 's/server_name \(.*\);/\1/' | head -n 1 || echo "_")
 
                             read -p "请输入新服务器的 IP 地址： " NEW_SERVER_IP
                             while [ -z "$NEW_SERVER_IP" ] || ! ping -c 1 "$NEW_SERVER_IP" > /dev/null 2>&1; do
@@ -2469,8 +2469,13 @@ EOF
                                 continue
                             fi
 
-                            # 获取当前域名
-                            CURRENT_DOMAIN=$(grep -oP '(?<=server_name ).*?(?=;)' /home/wordpress/conf.d/default.conf | head -n 1 || echo "未知")
+                            # 获取当前域名（使用 sed 替代 grep -P）
+                            CURRENT_DOMAIN=$(sed -n 's/^\s*server_name\s*\([^;]*\);/\1/p' /home/wordpress/conf.d/default.conf | head -n 1 || echo "未知")
+                            if [ "$CURRENT_DOMAIN" = "未知" ]; then
+                                echo -e "${RED}无法从配置文件中提取域名，请检查 /home/wordpress/conf.d/default.conf！${RESET}"
+                                read -p "按回车键返回主菜单..."
+                                continue
+                            fi
                             CERT_FILE="/home/wordpress/certs/live/$CURRENT_DOMAIN/fullchain.pem"
 
                             if [ ! -f "$CERT_FILE" ]; then
@@ -2482,7 +2487,7 @@ EOF
                             # 提取证书信息
                             START_DATE=$(docker exec wordpress_nginx openssl x509 -startdate -noout -in "$CERT_FILE" 2>/dev/null | cut -d'=' -f2)
                             END_DATE=$(docker exec wordpress_nginx openssl x509 -enddate -noout -in "$CERT_FILE" 2>/dev/null | cut -d'=' -f2)
-                            CERT_TYPE=$(docker exec wordpress_nginx openssl x509 -text -noout -in "$CERT_FILE" 2>/dev/null | grep -oP '(?<=Public-Key: \(\d+ bit\)).*?(?=Public Key)' | tr -d ' \n' || echo "未知")
+                            CERT_TYPE=$(docker exec wordpress_nginx openssl x509 -text -noout -in "$CERT_FILE" 2>/dev/null | grep -A1 "Public-Key" | tail -n1 | sed 's/^\s*//;s/\s*$//')
 
                             if [ -z "$START_DATE" ] || [ -z "$END_DATE" ]; then
                                 echo -e "${RED}无法解析证书信息，请检查证书文件完整性！${RESET}"
@@ -2575,29 +2580,33 @@ EOF
                             echo "1) 每天（每天备份一次）"
                             echo "2) 每周（每周备份一次）"
                             echo "3) 每月（每月备份一次）"
-                            read -p "请输入选项（1、2 或 3，默认 1）： " backup_interval_choice
+                            echo "4) 立即备份（仅执行一次备份，不设置定时任务）"
+                            read -p "请输入选项（1、2、3 或 4，默认 1）： " backup_interval_choice
                             case $backup_interval_choice in
                                 2) BACKUP_INTERVAL="每周"; CRON_BASE="0 2 * * 0" ;; # 每周日凌晨 2 点
                                 3) BACKUP_INTERVAL="每月"; CRON_BASE="0 2 1 * *" ;; # 每月 1 日凌晨 2 点
+                                4) BACKUP_INTERVAL="立即备份"; CRON_BASE="" ;;
                                 *|1) BACKUP_INTERVAL="每天"; CRON_BASE="0 2 * * *" ;; # 每天凌晨 2 点
                             esac
 
-                            # 选择备份时间
-                            read -p "请输入备份时间 - 小时（0-23，默认 2）： " BACKUP_HOUR
-                            BACKUP_HOUR=${BACKUP_HOUR:-2}
-                            while ! [[ "$BACKUP_HOUR" =~ ^[0-9]+$ ]] || [ "$BACKUP_HOUR" -lt 0 ] || [ "$BACKUP_HOUR" -gt 23 ]; do
-                                echo -e "${RED}小时必须为 0-23 之间的数字，请重新输入！${RESET}"
+                            if [ "$BACKUP_INTERVAL" != "立即备份" ]; then
+                                # 选择备份时间
                                 read -p "请输入备份时间 - 小时（0-23，默认 2）： " BACKUP_HOUR
-                            done
+                                BACKUP_HOUR=${BACKUP_HOUR:-2}
+                                while ! [[ "$BACKUP_HOUR" =~ ^[0-9]+$ ]] || [ "$BACKUP_HOUR" -lt 0 ] || [ "$BACKUP_HOUR" -gt 23 ]; do
+                                    echo -e "${RED}小时必须为 0-23 之间的数字，请重新输入！${RESET}"
+                                    read -p "请输入备份时间 - 小时（0-23，默认 2）： " BACKUP_HOUR
+                                done
 
-                            read -p "请输入备份时间 - 分钟（0-59，默认 0）： " BACKUP_MINUTE
-                            BACKUP_MINUTE=${BACKUP_MINUTE:-0}
-                            while ! [[ "$BACKUP_MINUTE" =~ ^[0-9]+$ ]] || [ "$BACKUP_MINUTE" -lt 0 ] || [ "$BACKUP_MINUTE" -gt 59 ]; do
-                                echo -e "${RED}分钟必须为 0-59 之间的数字，请重新输入！${RESET}"
                                 read -p "请输入备份时间 - 分钟（0-59，默认 0）： " BACKUP_MINUTE
-                            done
+                                BACKUP_MINUTE=${BACKUP_MINUTE:-0}
+                                while ! [[ "$BACKUP_MINUTE" =~ ^[0-9]+$ ]] || [ "$BACKUP_MINUTE" -lt 0 ] || [ "$BACKUP_MINUTE" -gt 59 ]; do
+                                    echo -e "${RED}分钟必须为 0-59 之间的数字，请重新输入！${RESET}"
+                                    read -p "请输入备份时间 - 分钟（0-59，默认 0）： " BACKUP_MINUTE
+                                done
 
-                            CRON_TIME="$BACKUP_MINUTE $BACKUP_HOUR ${CRON_BASE#* * *}" # 组合分钟、小时和周期
+                                CRON_TIME="$BACKUP_MINUTE $BACKUP_HOUR ${CRON_BASE#* * *}" # 组合分钟、小时和周期
+                            fi
 
                             # 创建备份脚本
                             bash -c "cat > /usr/local/bin/wordpress_backup.sh <<EOF
@@ -2626,13 +2635,26 @@ EOF"
                                 ssh -i "$BACKUP_SSH_KEY" -o StrictHostKeyChecking=no "$BACKUP_SSH_USER@$BACKUP_SERVER_IP" "mkdir -p ~/wordpress_backups"
                             fi
 
-                            # 设置 cron 任务
-                            (crontab -l 2>/dev/null | grep -v "wordpress_backup.sh"; echo "$CRON_TIME /usr/local/bin/wordpress_backup.sh") | crontab -
-                            if [ $? -eq 0 ]; then
-                                echo -e "${GREEN}定时备份已设置为 $BACKUP_INTERVAL，每$BACKUP_INTERVAL $BACKUP_HOUR:$BACKUP_MINUTE 执行，备份目标：$BACKUP_SSH_USER@$BACKUP_SERVER_IP:~/wordpress_backups${RESET}"
-                                echo -e "${YELLOW}备份日志存储在 /var/log/wordpress_backup.log${RESET}"
+                            # 如果选择立即备份，直接执行
+                            if [ "$BACKUP_INTERVAL" == "立即备份" ]; then
+                                echo -e "${YELLOW}正在执行立即备份...${RESET}"
+                                /usr/local/bin/wordpress_backup.sh
+                                if [ $? -eq 0 ]; then
+                                    echo -e "${GREEN}立即备份完成！备份文件已传输至 $BACKUP_SSH_USER@$BACKUP_SERVER_IP:~/wordpress_backups${RESET}"
+                                    echo -e "${YELLOW}请检查 /var/log/wordpress_backup.log 查看备份日志${RESET}"
+                                else
+                                    echo -e "${RED}立即备份失败，请检查网络或服务器配置！${RESET}"
+                                    echo -e "${YELLOW}详情见 /var/log/wordpress_backup.log${RESET}"
+                                fi
                             else
-                                echo -e "${RED}设置定时备份失败，请手动检查 crontab！${RESET}"
+                                # 设置 cron 任务
+                                (crontab -l 2>/dev/null | grep -v "wordpress_backup.sh"; echo "$CRON_TIME /usr/local/bin/wordpress_backup.sh") | crontab -
+                                if [ $? -eq 0 ]; then
+                                    echo -e "${GREEN}定时备份已设置为 $BACKUP_INTERVAL，每$BACKUP_INTERVAL $BACKUP_HOUR:$BACKUP_MINUTE 执行，备份目标：$BACKUP_SSH_USER@$BACKUP_SERVER_IP:~/wordpress_backups${RESET}"
+                                    echo -e "${YELLOW}备份日志存储在 /var/log/wordpress_backup.log${RESET}"
+                                else
+                                    echo -e "${RED}设置定时备份失败，请手动检查 crontab！${RESET}"
+                                fi
                             fi
                             read -p "按回车键返回主菜单..."
                             ;;
