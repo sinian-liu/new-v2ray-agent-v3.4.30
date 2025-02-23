@@ -1643,7 +1643,49 @@ case $operation_choice in
         fi
         touch wordpress/docker-compose.yml
 
-        # 生成 docker-compose.yml
+        # 先单独启动 MariaDB 服务以确保初始化完成
+        echo -e "${YELLOW}正在单独启动 MariaDB 以确保初始化完成...${RESET}"
+        bash -c "cat > /home/wordpress/docker-compose.yml <<EOF
+services:
+  mariadb:
+    image: mariadb:latest
+    container_name: wordpress_mariadb
+    environment:
+      MYSQL_ROOT_PASSWORD: \"$db_root_passwd\"
+      MYSQL_DATABASE: wordpress
+      MYSQL_USER: wordpress
+      MYSQL_PASSWORD: \"$db_user_passwd\"
+    volumes:
+      - ./mysql:/var/lib/mysql
+      - ./logs/mariadb:/var/log/mysql
+    restart: unless-stopped
+    healthcheck:
+      test: [\"CMD\", \"mysqladmin\", \"ping\", \"-h\", \"localhost\", \"-u\", \"wordpress\", \"-p$db_user_passwd\"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+EOF"
+        cd /home/wordpress && docker-compose up -d mariadb
+        if [ $? -ne 0 ]; then
+            echo -e "${RED}MariaDB 启动失败，请检查日志！${RESET}"
+            docker-compose logs mariadb
+            read -p "按回车键返回主菜单..."
+            continue
+        fi
+
+        # 无限循环等待 MariaDB 健康检查通过
+        echo -e "${YELLOW}等待 MariaDB 初始化完成...${RESET}"
+        while true; do
+            if docker inspect wordpress_mariadb --format '{{.State.Health.Status}}' | grep -q "healthy"; then
+                echo -e "${GREEN}MariaDB 初始化完成！${RESET}"
+                break
+            fi
+            echo -e "${YELLOW}MariaDB 仍在初始化中，请稍候（检查间隔 10 秒）...${RESET}"
+            sleep 10
+        done
+
+        # 生成完整的 docker-compose.yml（HTTP 或 HTTPS）
         CERT_OK="no"
         if [ "$ENABLE_HTTPS" == "yes" ]; then
             bash -c "cat > /home/wordpress/docker-compose.yml <<EOF
@@ -1761,7 +1803,6 @@ EOF
                 CERT_FAIL="yes"
             fi
 
-            # 停止临时 HTTP 服务
             cd /home/wordpress && docker-compose down
         fi
 
@@ -1942,7 +1983,7 @@ EOF
         mv "$TEMP_CONF" /home/wordpress/conf.d/default.conf
         chmod 644 /home/wordpress/conf.d/default.conf
 
-        # 启动 Docker Compose
+        # 启动完整的 Docker Compose 服务
         cd /home/wordpress && docker-compose up -d
         if [ $? -ne 0 ]; then
             echo -e "${RED}Docker Compose 启动失败，请检查以下日志：${RESET}"
@@ -2049,7 +2090,6 @@ EOF"
         read -p "是否配置定时备份 WordPress 到其他服务器？（y/n，默认 n）： " enable_backup
         if [ "$enable_backup" == "y" ] || [ "$enable_backup" == "Y" ]; then
             operation_choice=5
-            # 这里假设跳转到选项 5，实际逻辑在选项 5 中定义
             echo -e "${YELLOW}即将跳转到定时备份配置（选项 5）...${RESET}"
         fi
         read -p "按回车键返回主菜单..."
