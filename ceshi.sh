@@ -1643,13 +1643,36 @@ case $operation_choice in
         fi
         touch wordpress/docker-compose.yml
 
-        # 检查系统资源
+        # 检查系统资源并设置交换空间
         echo -e "${YELLOW}检查系统资源...${RESET}"
         FREE_MEM=$(free -m | awk '/^Mem:/ {print $4}')
         FREE_DISK=$(df -h /home | awk 'NR==2 {print $4}')
         echo -e "${YELLOW}可用内存：$FREE_MEM MB，可用磁盘空间：$FREE_DISK${RESET}"
-        if [ "$FREE_MEM" -lt 256 ] || [ "${FREE_DISK%G}" -lt 1 ]; then
-            echo -e "${RED}警告：内存或磁盘空间不足，MariaDB 可能无法正常运行！${RESET}"
+        if [ "$FREE_MEM" -lt 256 ]; then
+            echo -e "${YELLOW}内存不足 256MB，正在创建 512MB 交换空间...${RESET}"
+            if [ ! -f /swapfile ]; then
+                fallocate -l 512M /swapfile
+                chmod 600 /swapfile
+                mkswap /swapfile
+                swapon /swapfile
+                echo "/swapfile none swap sw 0 0" >> /etc/fstab
+                echo -e "${GREEN}交换空间创建并启用成功！${RESET}"
+            else
+                echo -e "${YELLOW}交换空间已存在，尝试启用...${RESET}"
+                swapon /swapfile 2>/dev/null || echo -e "${RED}交换空间启用失败，请检查 /swapfile${RESET}"
+            fi
+            FREE_MEM=$(free -m | awk '/^Mem:/ {print $4}')
+            echo -e "${YELLOW}启用交换空间后可用内存：$FREE_MEM MB${RESET}"
+            if [ "$FREE_MEM" -lt 256 ]; then
+                echo -e "${RED}即使启用交换空间，内存仍不足 256MB，请释放更多内存或升级服务器！${RESET}"
+                read -p "按回车键返回主菜单..."
+                continue
+            fi
+        fi
+        if [ "${FREE_DISK%G}" -lt 1 ]; then
+            echo -e "${RED}错误：可用磁盘空间不足 1GB，MariaDB 可能无法运行！请释放空间后重试。${RESET}"
+            read -p "按回车键返回主菜单..."
+            continue
         fi
 
         # 先单独启动 MariaDB
@@ -1664,6 +1687,7 @@ services:
       MYSQL_DATABASE: wordpress
       MYSQL_USER: wordpress
       MYSQL_PASSWORD: \"$db_user_passwd\"
+      MYSQL_INNODB_BUFFER_POOL_SIZE: 64M
     volumes:
       - ./mysql:/var/lib/mysql
       - ./logs/mariadb:/var/log/mysql
@@ -1746,6 +1770,7 @@ services:
       MYSQL_DATABASE: wordpress
       MYSQL_USER: wordpress
       MYSQL_PASSWORD: \"$db_user_passwd\"
+      MYSQL_INNODB_BUFFER_POOL_SIZE: 64M
     volumes:
       - ./mysql:/var/lib/mysql
       - ./logs/mariadb:/var/log/mysql
@@ -1858,6 +1883,7 @@ services:
       MYSQL_DATABASE: wordpress
       MYSQL_USER: wordpress
       MYSQL_PASSWORD: \"$db_user_passwd\"
+      MYSQL_INNODB_BUFFER_POOL_SIZE: 64M
     volumes:
       - ./mysql:/var/lib/mysql
       - ./logs/mariadb:/var/log/mysql
@@ -1911,6 +1937,7 @@ services:
       MYSQL_DATABASE: wordpress
       MYSQL_USER: wordpress
       MYSQL_PASSWORD: \"$db_user_passwd\"
+      MYSQL_INNODB_BUFFER_POOL_SIZE: 64M
     volumes:
       - ./mysql:/var/lib/mysql
       - ./logs/mariadb:/var/log/mysql
@@ -2076,6 +2103,16 @@ EOF"
             echo -e "${GREEN}WordPress 服务已配置为开机自启${RESET}"
         else
             echo -e "${RED}配置 WordPress 服务失败，请手动检查！${RESET}"
+        fi
+
+        # 禁用交换空间（可选）
+        echo -e "${YELLOW}MariaDB 已稳定运行，是否禁用交换空间以释放磁盘空间？（y/n，默认 n）：${RESET}"
+        read -p "请输入选择： " disable_swap
+        if [ "$disable_swap" == "y" ] || [ "$disable_swap" == "Y" ]; then
+            swapoff /swapfile
+            sed -i '/\/swapfile none swap sw 0 0/d' /etc/fstab
+            rm -f /swapfile
+            echo -e "${GREEN}交换空间已禁用并删除！${RESET}"
         fi
 
         server_ip=$(curl -s4 ifconfig.me)
