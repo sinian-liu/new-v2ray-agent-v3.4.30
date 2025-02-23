@@ -1320,7 +1320,6 @@ EOF"
                 read -p "按回车键返回主菜单..."
                 ;;
         21)
-            21)
                 # WordPress 安装（基于 Docker，支持域名绑定、HTTPS 和迁移）
                 echo -e "${GREEN}正在准备处理 WordPress 安装...${RESET}"
 
@@ -2095,6 +2094,7 @@ EOF
                 fi
                 read -p "按回车键返回主菜单..."
                 ;;
+
         esac
     done
 }
