@@ -1627,11 +1627,72 @@ case $operation_choice in
             fi
         done
 
+        # 检查系统资源并设置交换空间
+        echo -e "${YELLOW}检查系统资源...${RESET}"
+        TOTAL_MEM=$(free -m | awk '/^Mem:/ {print $2}')
+        AVAILABLE_MEM=$(free -m | awk '/^Mem:/ {print $7}')  # 使用 available 列
+        FREE_DISK=$(df -h /home | awk 'NR==2 {print $4}')
+        echo -e "${YELLOW}总内存：$TOTAL_MEM MB，可用内存：$AVAILABLE_MEM MB，可用磁盘空间：$FREE_DISK${RESET}"
+        
+        # 检查总内存是否满足最低 512MB
+        if [ "$TOTAL_MEM" -lt 512 ]; then
+            echo -e "${RED}错误：总内存少于 512MB，无法满足最低安装要求！${RESET}"
+            echo -e "${YELLOW}提示：最低配置需 512MB（搭配 Swap），推荐 1GB 或以上。${RESET}"
+            read -p "是否尝试 256MB 极简配置安装？（y/n，默认 n）： " minimal_install
+            if [ "$minimal_install" == "y" ] || [ "$minimal_install" == "Y" ]; then
+                echo -e "${YELLOW}将使用 256MB 极简配置（禁用 HTTPS、最小化资源占用）...${RESET}"
+                MINIMAL_MODE="yes"
+            else
+                echo -e "${RED}请升级服务器至至少 512MB 内存后再试！${RESET}"
+                read -p "按回车键返回主菜单..."
+                continue
+            fi
+        else
+            # 总内存 ≥ 512MB
+            if [ "$TOTAL_MEM" -lt 1024 ]; then
+                echo -e "${YELLOW}总内存为 $TOTAL_MEM MB，满足最低 512MB 配置，将启用 512MB 交换空间以确保稳定性。${RESET}"
+                if [ ! -f /swapfile ]; then
+                    echo -e "${YELLOW}创建并启用 512MB 交换空间...${RESET}"
+                    fallocate -l 512M /swapfile
+                    chmod 600 /swapfile
+                    mkswap /swapfile
+                    swapon /swapfile
+                    echo "/swapfile none swap sw 0 0" >> /etc/fstab
+                    echo "vm.swappiness=60" > /etc/sysctl.d/99-swappiness.conf
+                    sysctl -p /etc/sysctl.d/99-swappiness.conf
+                    echo -e "${GREEN}交换空间创建并启用成功！${RESET}"
+                    sleep 5  # 等待系统调整内存状态
+                else
+                    echo -e "${YELLOW}交换空间已存在，尝试启用...${RESET}"
+                    swapon /swapfile 2>/dev/null || echo -e "${RED}交换空间启用失败，请检查 /swapfile${RESET}"
+                    sleep 5
+                fi
+            else
+                echo -e "${GREEN}总内存为 $TOTAL_MEM MB，满足推荐配置（1GB 或以上），无需强制启用 Swap 可稳定运行。${RESET}"
+            fi
+            # 检查可用内存
+            AVAILABLE_MEM=$(free -m | awk '/^Mem:/ {print $7}')
+            if [ "$AVAILABLE_MEM" -lt 256 ]; then
+                echo -e "${YELLOW}可用内存 $AVAILABLE_MEM MB 不足 256MB，建议释放内存以提升性能。${RESET}"
+                echo -e "${YELLOW}当前内存使用情况：${RESET}"
+                free -m
+                echo -e "${YELLOW}内存占用最高的进程：${RESET}"
+                ps aux --sort=-%mem | head -n 5
+            fi
+        fi
+
+        if [ "${FREE_DISK%G}" -lt 1 ]; then
+            echo -e "${RED}错误：可用磁盘空间不足 1GB，MariaDB 可能无法运行！请释放空间后重试。${RESET}"
+            read -p "按回车键返回主菜单..."
+            continue
+        fi
+
         # 安装 Docker Compose
         if ! command -v docker-compose > /dev/null 2>&1; then
             echo -e "${YELLOW}安装 Docker Compose...${RESET}"
             curl -L "https://github.com/docker/compose/releases/download/v2.20.0/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
             chmod +x /usr/local/bin/docker-compose
+            sleep 2  # 等待内存缓冲区释放
         fi
 
         # 创建目录和配置 docker-compose.yml
@@ -1643,42 +1704,38 @@ case $operation_choice in
         fi
         touch wordpress/docker-compose.yml
 
-        # 检查系统资源并设置交换空间
-        echo -e "${YELLOW}检查系统资源...${RESET}"
-        FREE_MEM=$(free -m | awk '/^Mem:/ {print $4}')
-        FREE_DISK=$(df -h /home | awk 'NR==2 {print $4}')
-        echo -e "${YELLOW}可用内存：$FREE_MEM MB，可用磁盘空间：$FREE_DISK${RESET}"
-        if [ "$FREE_MEM" -lt 256 ]; then
-            echo -e "${YELLOW}内存不足 256MB，正在创建 512MB 交换空间...${RESET}"
-            if [ ! -f /swapfile ]; then
-                fallocate -l 512M /swapfile
-                chmod 600 /swapfile
-                mkswap /swapfile
-                swapon /swapfile
-                echo "/swapfile none swap sw 0 0" >> /etc/fstab
-                echo -e "${GREEN}交换空间创建并启用成功！${RESET}"
-            else
-                echo -e "${YELLOW}交换空间已存在，尝试启用...${RESET}"
-                swapon /swapfile 2>/dev/null || echo -e "${RED}交换空间启用失败，请检查 /swapfile${RESET}"
-            fi
-            FREE_MEM=$(free -m | awk '/^Mem:/ {print $4}')
-            echo -e "${YELLOW}启用交换空间后可用内存：$FREE_MEM MB${RESET}"
-            if [ "$FREE_MEM" -lt 256 ]; then
-                echo -e "${RED}即使启用交换空间，内存仍不足 256MB，请释放更多内存或升级服务器！${RESET}"
-                read -p "按回车键返回主菜单..."
-                continue
-            fi
-        fi
-        if [ "${FREE_DISK%G}" -lt 1 ]; then
-            echo -e "${RED}错误：可用磁盘空间不足 1GB，MariaDB 可能无法运行！请释放空间后重试。${RESET}"
-            read -p "按回车键返回主菜单..."
-            continue
-        fi
-
-        # 先单独启动 MariaDB
-        echo -e "${YELLOW}正在单独启动 MariaDB...${RESET}"
-        bash -c "cat > /home/wordpress/docker-compose.yml <<EOF
+        # 根据配置模式生成 docker-compose.yml
+        if [ "$MINIMAL_MODE" == "yes" ]; then
+            # 256MB 极简配置
+            echo -e "${YELLOW}正在配置 256MB 极简模式 WordPress...${RESET}"
+            bash -c "cat > /home/wordpress/docker-compose.yml <<EOF
 services:
+  nginx:
+    image: nginx:latest
+    container_name: wordpress_nginx
+    ports:
+      - \"$DEFAULT_PORT:80\"
+    volumes:
+      - ./html:/var/www/html
+      - ./conf.d:/etc/nginx/conf.d
+      - ./logs/nginx:/var/log/nginx
+    depends_on:
+      - wordpress
+    restart: unless-stopped
+  wordpress:
+    image: wordpress:php8.2-fpm
+    container_name: wordpress
+    volumes:
+      - ./html:/var/www/html
+    environment:
+      WORDPRESS_DB_HOST: mariadb:3306
+      WORDPRESS_DB_USER: wordpress
+      WORDPRESS_DB_PASSWORD: \"$db_user_passwd\"
+      WORDPRESS_DB_NAME: wordpress
+      PHP_FPM_PM_MAX_CHILDREN: 2
+    depends_on:
+      - mariadb
+    restart: unless-stopped
   mariadb:
     image: mariadb:10.5
     container_name: wordpress_mariadb
@@ -1687,7 +1744,7 @@ services:
       MYSQL_DATABASE: wordpress
       MYSQL_USER: wordpress
       MYSQL_PASSWORD: \"$db_user_passwd\"
-      MYSQL_INNODB_BUFFER_POOL_SIZE: 64M
+      MYSQL_INNODB_BUFFER_POOL_SIZE: 32M
     volumes:
       - ./mysql:/var/lib/mysql
       - ./logs/mariadb:/var/log/mysql
@@ -1695,47 +1752,11 @@ services:
     ports:
       - \"3306:3306\"
 EOF"
-        cd /home/wordpress && docker-compose up -d mariadb
-        if [ $? -ne 0 ]; then
-            echo -e "${RED}MariaDB 启动失败，请检查日志！${RESET}"
-            docker-compose logs mariadb
-            read -p "按回车键返回主菜单..."
-            continue
-        fi
-
-        # 等待 MariaDB 就绪
-        echo -e "${YELLOW}等待 MariaDB 初始化完成（最多 60 秒）...${RESET}"
-        TIMEOUT=60
-        INTERVAL=5
-        ELAPSED=0
-        while [ $ELAPSED -lt $TIMEOUT ]; do
-            MYSQL_PING_RESULT=$(docker exec wordpress_mariadb mysqladmin ping -h localhost -u wordpress -p"$db_user_passwd" 2>&1)
-            if [ $? -eq 0 ]; then
-                echo -e "${GREEN}MariaDB 初始化完成！${RESET}"
-                break
-            else
-                echo -e "${YELLOW}MariaDB 检查失败，当前尝试 $((ELAPSED / INTERVAL + 1))/12，错误信息：${RESET}"
-                echo "$MYSQL_PING_RESULT"
-            fi
-            sleep $INTERVAL
-            ELAPSED=$((ELAPSED + INTERVAL))
-        done
-
-        if [ $ELAPSED -ge $TIMEOUT ]; then
-            echo -e "${RED}MariaDB 未能在 60 秒内就绪，请检查日志！${RESET}"
-            docker-compose logs mariadb
-            echo -e "${YELLOW}容器状态：${RESET}"
-            docker ps -a
-            echo -e "${YELLOW}退出码：${RESET}"
-            docker inspect wordpress_mariadb --format '{{.State.ExitCode}}'
-            read -p "按回车键返回主菜单..."
-            continue
-        fi
-
-        # 配置完整服务（HTTP 或 HTTPS）
-        CERT_OK="no"
-        if [ "$ENABLE_HTTPS" == "yes" ]; then
-            bash -c "cat > /home/wordpress/docker-compose.yml <<EOF
+        else
+            # 标准配置（512MB 或以上）
+            echo -e "${YELLOW}正在配置标准模式 WordPress...${RESET}"
+            if [ "$ENABLE_HTTPS" == "yes" ]; then
+                bash -c "cat > /home/wordpress/docker-compose.yml <<EOF
 services:
   nginx:
     image: nginx:latest
@@ -1778,6 +1799,93 @@ services:
     ports:
       - \"3306:3306\"
 EOF"
+            else
+                bash -c "cat > /home/wordpress/docker-compose.yml <<EOF
+services:
+  nginx:
+    image: nginx:latest
+    container_name: wordpress_nginx
+    ports:
+      - \"$DEFAULT_PORT:80\"
+    volumes:
+      - ./html:/var/www/html
+      - ./conf.d:/etc/nginx/conf.d
+      - ./logs/nginx:/var/log/nginx
+    depends_on:
+      - wordpress
+    restart: unless-stopped
+  wordpress:
+    image: wordpress:php8.2-fpm
+    container_name: wordpress
+    volumes:
+      - ./html:/var/www/html
+    environment:
+      WORDPRESS_DB_HOST: mariadb:3306
+      WORDPRESS_DB_USER: wordpress
+      WORDPRESS_DB_PASSWORD: \"$db_user_passwd\"
+      WORDPRESS_DB_NAME: wordpress
+    depends_on:
+      - mariadb
+    restart: unless-stopped
+  mariadb:
+    image: mariadb:10.5
+    container_name: wordpress_mariadb
+    environment:
+      MYSQL_ROOT_PASSWORD: \"$db_root_passwd\"
+      MYSQL_DATABASE: wordpress
+      MYSQL_USER: wordpress
+      MYSQL_PASSWORD: \"$db_user_passwd\"
+      MYSQL_INNODB_BUFFER_POOL_SIZE: 64M
+    volumes:
+      - ./mysql:/var/lib/mysql
+      - ./logs/mariadb:/var/log/mysql
+    restart: unless-stopped
+    ports:
+      - \"3306:3306\"
+EOF"
+            fi
+        fi
+
+        # 启动 Docker Compose（初次启动 MariaDB）
+        cd /home/wordpress && docker-compose up -d mariadb
+        if [ $? -ne 0 ]; then
+            echo -e "${RED}MariaDB 启动失败，请检查日志！${RESET}"
+            docker-compose logs mariadb
+            read -p "按回车键返回主菜单..."
+            continue
+        fi
+
+        # 等待 MariaDB 就绪
+        echo -e "${YELLOW}等待 MariaDB 初始化完成（最多 60 秒）...${RESET}"
+        TIMEOUT=60
+        INTERVAL=5
+        ELAPSED=0
+        while [ $ELAPSED -lt $TIMEOUT ]; do
+            MYSQL_PING_RESULT=$(docker exec wordpress_mariadb mysqladmin ping -h localhost -u wordpress -p"$db_user_passwd" 2>&1)
+            if [ $? -eq 0 ]; then
+                echo -e "${GREEN}MariaDB 初始化完成！${RESET}"
+                break
+            else
+                echo -e "${YELLOW}MariaDB 检查失败，当前尝试 $((ELAPSED / INTERVAL + 1))/12，错误信息：${RESET}"
+                echo "$MYSQL_PING_RESULT"
+            fi
+            sleep $INTERVAL
+            ELAPSED=$((ELAPSED + INTERVAL))
+        done
+
+        if [ $ELAPSED -ge $TIMEOUT ]; then
+            echo -e "${RED}MariaDB 未能在 60 秒内就绪，请检查日志！${RESET}"
+            docker-compose logs mariadb
+            echo -e "${YELLOW}容器状态：${RESET}"
+            docker ps -a
+            echo -e "${YELLOW}退出码：${RESET}"
+            docker inspect wordpress_mariadb --format '{{.State.ExitCode}}'
+            read -p "按回车键返回主菜单..."
+            continue
+        fi
+
+        # 配置 Nginx 默认站点（仅在非极简模式下处理 HTTPS）
+        if [ "$MINIMAL_MODE" != "yes" ] && [ "$ENABLE_HTTPS" == "yes" ]; then
             TEMP_CONF=$(mktemp)
             cat > "$TEMP_CONF" <<EOF
 server {
@@ -1801,6 +1909,7 @@ EOF
             mv "$TEMP_CONF" /home/wordpress/conf.d/default.conf
             chmod 644 /home/wordpress/conf.d/default.conf
 
+            # 启动 HTTP 服务以申请证书
             cd /home/wordpress && docker-compose up -d
             if [ $? -ne 0 ]; then
                 echo -e "${RED}Docker Compose 启动失败（HTTP 阶段），请检查以下日志：${RESET}"
@@ -1844,8 +1953,8 @@ EOF
             cd /home/wordpress && docker-compose down
         fi
 
-        # 配置完整服务（HTTP 或 HTTPS）
-        if [ "$ENABLE_HTTPS" == "yes" ] && [ "$CERT_OK" == "yes" ]; then
+        # 配置最终 docker-compose.yml（含 HTTPS 或极简模式）
+        if [ "$MINIMAL_MODE" != "yes" ] && [ "$ENABLE_HTTPS" == "yes" ] && [ "$CERT_OK" == "yes" ]; then
             bash -c "cat > /home/wordpress/docker-compose.yml <<EOF
 services:
   nginx:
@@ -1901,55 +2010,7 @@ services:
       - nginx
     restart: unless-stopped
 EOF"
-        else
-            bash -c "cat > /home/wordpress/docker-compose.yml <<EOF
-services:
-  nginx:
-    image: nginx:latest
-    container_name: wordpress_nginx
-    ports:
-      - \"$DEFAULT_PORT:80\"
-    volumes:
-      - ./html:/var/www/html
-      - ./conf.d:/etc/nginx/conf.d
-      - ./logs/nginx:/var/log/nginx
-    depends_on:
-      - wordpress
-    restart: unless-stopped
-  wordpress:
-    image: wordpress:php8.2-fpm
-    container_name: wordpress
-    volumes:
-      - ./html:/var/www/html
-    environment:
-      WORDPRESS_DB_HOST: mariadb:3306
-      WORDPRESS_DB_USER: wordpress
-      WORDPRESS_DB_PASSWORD: \"$db_user_passwd\"
-      WORDPRESS_DB_NAME: wordpress
-    depends_on:
-      - mariadb
-    restart: unless-stopped
-  mariadb:
-    image: mariadb:10.5
-    container_name: wordpress_mariadb
-    environment:
-      MYSQL_ROOT_PASSWORD: \"$db_root_passwd\"
-      MYSQL_DATABASE: wordpress
-      MYSQL_USER: wordpress
-      MYSQL_PASSWORD: \"$db_user_passwd\"
-      MYSQL_INNODB_BUFFER_POOL_SIZE: 64M
-    volumes:
-      - ./mysql:/var/lib/mysql
-      - ./logs/mariadb:/var/log/mysql
-    restart: unless-stopped
-    ports:
-      - \"3306:3306\"
-EOF"
-        fi
-
-        # 配置 Nginx 默认站点
-        TEMP_CONF=$(mktemp)
-        if [ "$ENABLE_HTTPS" == "yes" ] && [ "$CERT_OK" == "yes" ]; then
+            TEMP_CONF=$(mktemp)
             cat > "$TEMP_CONF" <<EOF
 server {
     listen 80;
@@ -1979,7 +2040,11 @@ server {
     }
 }
 EOF
+            mv "$TEMP_CONF" /home/wordpress/conf.d/default.conf
+            chmod 644 /home/wordpress/conf.d/default.conf
         else
+            # 非 HTTPS 或极简模式
+            TEMP_CONF=$(mktemp)
             cat > "$TEMP_CONF" <<EOF
 server {
     listen 80;
@@ -1999,19 +2064,16 @@ server {
     }
 }
 EOF
+            mv "$TEMP_CONF" /home/wordpress/conf.d/default.conf
+            chmod 644 /home/wordpress/conf.d/default.conf
         fi
-        mv "$TEMP_CONF" /home/wordpress/conf.d/default.conf
-        chmod 644 /home/wordpress/conf.d/default.conf
 
-        # 启动 Docker Compose
+        # 启动所有服务
         cd /home/wordpress && docker-compose up -d
         if [ $? -ne 0 ]; then
             echo -e "${RED}Docker Compose 启动失败，请检查以下日志：${RESET}"
             docker-compose logs
             echo -e "${YELLOW}可能原因：镜像拉取失败、端口冲突或服务依赖问题${RESET}"
-            if [ "$ENABLE_HTTPS" == "yes" ] && [ "$CERT_OK" == "no" ]; then
-                echo -e "${RED}安装失败可能由于证书申请失败，请检查域名解析或网络配置！${RESET}"
-            fi
             read -p "按回车键返回主菜单..."
             continue
         fi
@@ -2060,7 +2122,7 @@ EOF
         fi
 
         CHECK_PORT=$DEFAULT_PORT
-        if [ "$ENABLE_HTTPS" == "yes" ] && [ "$CERT_OK" == "yes" ]; then
+        if [ "$MINIMAL_MODE" != "yes" ] && [ "$ENABLE_HTTPS" == "yes" ] && [ "$CERT_OK" == "yes" ]; then
             CHECK_PORT=$DEFAULT_SSL_PORT
             CHECK_URL="https://$DOMAIN:$CHECK_PORT"
         else
@@ -2105,14 +2167,16 @@ EOF"
             echo -e "${RED}配置 WordPress 服务失败，请手动检查！${RESET}"
         fi
 
-        # 禁用交换空间（可选）
-        echo -e "${YELLOW}MariaDB 已稳定运行，是否禁用交换空间以释放磁盘空间？（y/n，默认 n）：${RESET}"
-        read -p "请输入选择： " disable_swap
-        if [ "$disable_swap" == "y" ] || [ "$disable_swap" == "Y" ]; then
-            swapoff /swapfile
-            sed -i '/\/swapfile none swap sw 0 0/d' /etc/fstab
-            rm -f /swapfile
-            echo -e "${GREEN}交换空间已禁用并删除！${RESET}"
+        # 禁用交换空间（可选，仅在非极简模式下）
+        if [ "$MINIMAL_MODE" != "yes" ] && [ "$TOTAL_MEM" -ge 1024 ]; then
+            echo -e "${YELLOW}MariaDB 已稳定运行，是否禁用交换空间以释放磁盘空间？（y/n，默认 n）：${RESET}"
+            read -p "请输入选择： " disable_swap
+            if [ "$disable_swap" == "y" ] || [ "$disable_swap" == "Y" ]; then
+                swapoff /swapfile
+                sed -i '/\/swapfile none swap sw 0 0/d' /etc/fstab
+                rm -f /swapfile
+                echo -e "${GREEN}交换空间已禁用并删除！${RESET}"
+            fi
         fi
 
         server_ip=$(curl -s4 ifconfig.me)
@@ -2120,7 +2184,7 @@ EOF"
             server_ip="你的服务器IP"
         fi
         echo -e "${GREEN}WordPress 安装完成！${RESET}"
-        if [ "$ENABLE_HTTPS" == "yes" ] && [ "$CERT_OK" == "yes" ]; then
+        if [ "$MINIMAL_MODE" != "yes" ] && [ "$ENABLE_HTTPS" == "yes" ] && [ "$CERT_OK" == "yes" ]; then
             echo -e "${YELLOW}访问 https://$DOMAIN:$DEFAULT_SSL_PORT 开始 WordPress 配置${RESET}"
             echo -e "${YELLOW}后台地址：https://$DOMAIN:$DEFAULT_SSL_PORT/wp-admin${RESET}"
         else
@@ -2131,9 +2195,12 @@ EOF"
         echo -e "${YELLOW}WordPress 存放位置：/home/wordpress${RESET}"
         echo -e "${YELLOW}图片等文件存放位置：/home/wordpress/html/wp-content/uploads${RESET}"
         echo -e "${YELLOW}日志存储在 /home/wordpress/logs/nginx 和 /home/wordpress/logs/mariadb${RESET}"
-        if [ "$ENABLE_HTTPS" == "yes" ]; then
+        if [ "$MINIMAL_MODE" != "yes" ] && [ "$ENABLE_HTTPS" == "yes" ]; then
             echo -e "${YELLOW}证书存储在 /home/wordpress/certs${RESET}"
             echo -e "${YELLOW}请使用选项 4 查看证书详细信息${RESET}"
+        fi
+        if [ "$MINIMAL_MODE" == "yes" ]; then
+            echo -e "${YELLOW}注意：当前为 256MB 极简模式，性能较低，仅适合测试用途！${RESET}"
         fi
 
         # 询问是否配置定时备份
