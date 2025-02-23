@@ -1337,30 +1337,26 @@ EOF"
                         continue
                     fi
 
-                    # 检测运行中的 Docker 服务
-                    echo -e "${YELLOW}正在检测运行中的 Docker 服务...${RESET}"
-                    DOCKER_RUNNING=false
-                    if command -v docker > /dev/null 2>&1 && systemctl is-active docker > /dev/null 2>&1; then
-                        DOCKER_RUNNING=true
-                        echo -e "${YELLOW}检测到 Docker 服务正在运行${RESET}"
-                        if docker ps -q | grep -q "."; then
-                            echo -e "${YELLOW}检测到运行中的 Docker 容器${RESET}"
+                    # 检测并启动 Docker 服务
+                    echo -e "${YELLOW}正在检测 Docker 服务...${RESET}"
+                    if ! command -v docker > /dev/null 2>&1 || ! systemctl is-active docker > /dev/null 2>&1; then
+                        if ! command -v docker > /dev/null 2>&1; then
+                            echo -e "${YELLOW}安装 Docker...${RESET}"
+                            curl -fsSL https://get.docker.com | sh
                         fi
-                    elif command -v docker > /dev/null 2>&1; then
-                        echo -e "${YELLOW}Docker 已安装但未运行，正在启动...${RESET}"
+                        echo -e "${YELLOW}启动 Docker 服务...${RESET}"
                         sudo systemctl start docker
-                        if [ $? -eq 0 ]; then
-                            DOCKER_RUNNING=true
-                            echo -e "${YELLOW}Docker 服务启动成功${RESET}"
-                        else
+                        sudo systemctl enable docker
+                        if [ $? -ne 0 ]; then
                             echo -e "${RED}Docker 服务启动失败，请手动检查！${RESET}"
                             read -p "按回车键返回主菜单..."
                             continue
                         fi
                     fi
 
-                    # 询问用户是否停止运行中的 Docker 服务
-                    if [ "$DOCKER_RUNNING" = true ] && docker ps -q | grep -q "."; then
+                    # 检测运行中的 Docker 容器
+                    if docker ps -q | grep -q "."; then
+                        echo -e "${YELLOW}检测到运行中的 Docker 容器${RESET}"
                         read -p "是否停止并移除运行中的 Docker 容器以继续安装？（y/n，默认 n）： " stop_containers
                         if [ "$stop_containers" == "y" ] || [ "$stop_containers" == "Y" ]; then
                             echo -e "${YELLOW}正在停止并移除运行中的 Docker 容器...${RESET}"
@@ -1452,6 +1448,14 @@ EOF"
                                 fi
                             fi
 
+                            # 再次验证端口
+                            check_port "$DEFAULT_PORT"
+                            if [ $? -eq 1 ]; then
+                                echo -e "${RED}防火墙放行后端口 $DEFAULT_PORT 仍被占用，请检查其他服务或防火墙配置！${RESET}"
+                                read -p "按回车键返回主菜单..."
+                                continue
+                            fi
+
                             # 询问 MariaDB 用户信息
                             echo -e "${YELLOW}请设置 MariaDB 数据库用户信息：${RESET}"
                             read -p "请输入数据库 ROOT 密码（默认 'passwd'）： " db_root_passwd
@@ -1461,13 +1465,7 @@ EOF"
                             read -p "请输入数据库用户密码（默认 'wordpresspass'）： " db_user_passwd
                             db_user_passwd=${db_user_passwd:-wordpresspass}
 
-                            # 安装 Docker 和 Docker Compose
-                            if ! command -v docker > /dev/null 2>&1; then
-                                echo -e "${YELLOW}安装 Docker...${RESET}"
-                                curl -fsSL https://get.docker.com | sh
-                                sudo systemctl start docker
-                                sudo systemctl enable docker
-                            fi
+                            # 安装 Docker Compose（如果未安装）
                             if ! command -v docker-compose > /dev/null 2>&1; then
                                 echo -e "${YELLOW}安装 Docker Compose...${RESET}"
                                 curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
@@ -1475,7 +1473,7 @@ EOF"
                             fi
 
                             # 创建目录和配置 docker-compose.yml
-                            cd /home && mkdir -p wordpress/html wordpress/mysql wordpress/conf.d
+                            cd /home && mkdir -p wordpress/html wordpress/mysql wordpress/conf.d wordpress/logs/nginx wordpress/logs/mariadb
                             if [ $? -ne 0 ]; then
                                 echo -e "${RED}创建目录 /home/wordpress 失败，请检查权限或磁盘空间！${RESET}"
                                 read -p "按回车键返回主菜单..."
@@ -1493,20 +1491,23 @@ services:
     volumes:
       - ./html:/var/www/html
       - ./conf.d:/etc/nginx/conf.d
+      - ./logs/nginx:/var/log/nginx
     depends_on:
       - wordpress
+    restart: unless-stopped
   wordpress:
     image: wordpress:latest
     container_name: wordpress
     volumes:
       - ./html:/var/www/html
     environment:
-      WORDPRESS_DB_HOST: mariadb
+      WORDPRESS_DB_HOST: mariadb:3306
       WORDPRESS_DB_USER: \"$db_user\"
       WORDPRESS_DB_PASSWORD: \"$db_user_passwd\"
       WORDPRESS_DB_NAME: \"wordpress\"
     depends_on:
       - mariadb
+    restart: unless-stopped
   mariadb:
     image: mariadb:latest
     container_name: wordpress_mariadb
@@ -1517,6 +1518,8 @@ services:
       MYSQL_PASSWORD: \"$db_user_passwd\"
     volumes:
       - ./mysql:/var/lib/mysql
+      - ./logs/mariadb:/var/log/mysql
+    restart: unless-stopped
 EOF"
                             # 配置 Nginx 默认站点
                             sudo bash -c "cat > /home/wordpress/conf.d/default.conf <<EOF
@@ -1541,9 +1544,21 @@ EOF"
                             # 启动 Docker Compose
                             cd /home/wordpress && docker-compose up -d
                             if [ $? -ne 0 ]; then
-                                echo -e "${RED}Docker Compose 启动失败，请检查 Docker 服务或网络连接！${RESET}"
-                                echo -e "${YELLOW}日志提示：${RESET}"
+                                echo -e "${RED}Docker Compose 启动失败，请检查以下日志：${RESET}"
                                 docker-compose logs
+                                echo -e "${YELLOW}可能原因：镜像拉取失败、端口冲突或服务依赖问题${RESET}"
+                                read -p "按回车键返回主菜单..."
+                                continue
+                            fi
+
+                            # 等待服务就绪并检查端口
+                            echo -e "${YELLOW}等待服务初始化（约 30 秒）...${RESET}"
+                            sleep 30
+                            if ! curl -s -I "http://localhost:$DEFAULT_PORT" | grep -q "HTTP"; then
+                                echo -e "${RED}服务未正常启动（可能出现 HTTP ERROR 503），请检查以下日志：${RESET}"
+                                docker-compose logs
+                                echo -e "${YELLOW}可能原因：Nginx 或 PHP-FPM 未运行、数据库未就绪${RESET}"
+                                echo -e "${YELLOW}建议：检查日志后，重启服务（cd /home/wordpress && docker-compose down && docker-compose up -d）${RESET}"
                                 read -p "按回车键返回主菜单..."
                                 continue
                             fi
@@ -1555,10 +1570,18 @@ EOF"
                             echo -e "${GREEN}WordPress 安装完成！${RESET}"
                             echo -e "${YELLOW}访问 http://$server_ip:$DEFAULT_PORT 开始 WordPress 配置${RESET}"
                             echo -e "${YELLOW}数据库用户 '$db_user' 密码为 '$db_user_passwd', ROOT 密码为 '$db_root_passwd'${RESET}"
+                            echo -e "${YELLOW}日志存储在 /home/wordpress/logs/nginx 和 /home/wordpress/logs/mariadb${RESET}"
                             ;;
                         2)
                             # 卸载 WordPress
                             echo -e "${GREEN}正在卸载 WordPress...${RESET}"
+                            echo -e "${YELLOW}注意：卸载将删除 WordPress 数据，请确保已备份 /home/wordpress/html 和 /home/wordpress/mysql${RESET}"
+                            read -p "是否继续卸载？（y/n，默认 n）： " confirm_uninstall
+                            if [ "$confirm_uninstall" != "y" ] && [ "$confirm_uninstall" != "Y" ]; then
+                                echo -e "${YELLOW}取消卸载操作${RESET}"
+                                read -p "按回车键返回主菜单..."
+                                continue
+                            fi
                             cd /home/wordpress || true
                             if [ -f docker-compose.yml ]; then
                                 docker-compose down -v || true
