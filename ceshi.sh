@@ -2837,7 +2837,6 @@ EOF"
             esac
         fi
         ;;
-esac
         esac
     done
 }
