@@ -1320,6 +1320,7 @@ EOF"
                 read -p "按回车键返回主菜单..."
                 ;;
         21)
+            21)
                 # WordPress 安装（基于 Docker，支持域名绑定、HTTPS 和迁移）
                 echo -e "${GREEN}正在准备处理 WordPress 安装...${RESET}"
 
@@ -1529,6 +1530,13 @@ EOF"
                             read -p "请输入数据库用户密码（默认 'wordpresspass'）： " db_user_passwd
                             db_user_passwd=${db_user_passwd:-wordpresspass}
 
+                            # 检测是否使用默认值
+                            USING_DEFAULTS="no"
+                            if [ "$db_root_passwd" == "passwd" ] && [ "$db_user" == "wordpress" ] && [ "$db_user_passwd" == "wordpresspass" ]; then
+                                USING_DEFAULTS="yes"
+                                echo -e "${YELLOW}检测到使用默认数据库用户和密码（root: passwd, 用户: wordpress/wordpresspass）${RESET}"
+                            fi
+
                             # 安装 Docker Compose（如果未安装）
                             if ! command -v docker-compose > /dev/null 2>&1; then
                                 echo -e "${YELLOW}安装 Docker Compose...${RESET}"
@@ -1561,16 +1569,18 @@ services:
     depends_on:
       - wordpress
     restart: unless-stopped
+    networks:
+      - wordpress-net
   wordpress:
     image: wordpress:php8.2-fpm
     container_name: wordpress
     volumes:
       - ./html:/var/www/html
     environment:
-      WORDPRESS_DB_HOST: mariadb:3306
+      WORDPRESS_DB_HOST: mariadb
       WORDPRESS_DB_USER: \"$db_user\"
       WORDPRESS_DB_PASSWORD: \"$db_user_passwd\"
-      WORDPRESS_DB_NAME: \"wordpress\"
+      WORDPRESS_DB_NAME: wordpress
     depends_on:
       mariadb:
         condition: service_healthy
@@ -1580,12 +1590,14 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - wordpress-net
   mariadb:
     image: mariadb:latest
     container_name: wordpress_mariadb
     environment:
       MYSQL_ROOT_PASSWORD: \"$db_root_passwd\"
-      MYSQL_DATABASE: \"wordpress\"
+      MYSQL_DATABASE: wordpress
       MYSQL_USER: \"$db_user\"
       MYSQL_PASSWORD: \"$db_user_passwd\"
     volumes:
@@ -1597,6 +1609,11 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - wordpress-net
+networks:
+  wordpress-net:
+    driver: bridge
 EOF"
                                 TEMP_CONF=$(mktemp)
                                 cat > "$TEMP_CONF" <<EOF
@@ -1682,16 +1699,18 @@ services:
     depends_on:
       - wordpress
     restart: unless-stopped
+    networks:
+      - wordpress-net
   wordpress:
     image: wordpress:php8.2-fpm
     container_name: wordpress
     volumes:
       - ./html:/var/www/html
     environment:
-      WORDPRESS_DB_HOST: mariadb:3306
+      WORDPRESS_DB_HOST: mariadb
       WORDPRESS_DB_USER: \"$db_user\"
       WORDPRESS_DB_PASSWORD: \"$db_user_passwd\"
-      WORDPRESS_DB_NAME: \"wordpress\"
+      WORDPRESS_DB_NAME: wordpress
     depends_on:
       mariadb:
         condition: service_healthy
@@ -1701,12 +1720,14 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - wordpress-net
   mariadb:
     image: mariadb:latest
     container_name: wordpress_mariadb
     environment:
       MYSQL_ROOT_PASSWORD: \"$db_root_passwd\"
-      MYSQL_DATABASE: \"wordpress\"
+      MYSQL_DATABASE: wordpress
       MYSQL_USER: \"$db_user\"
       MYSQL_PASSWORD: \"$db_user_passwd\"
     volumes:
@@ -1718,6 +1739,8 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - wordpress-net
   certbot:
     image: certbot/certbot
     container_name: wordpress_certbot
@@ -1727,6 +1750,11 @@ services:
     entrypoint: \"/bin/sh -c 'trap : TERM INT; (while true; do certbot renew --quiet; sleep 12h; done) & wait'\"
     depends_on:
       - nginx
+    networks:
+      - wordpress-net
+networks:
+  wordpress-net:
+    driver: bridge
 EOF"
                             else
                                 sudo bash -c "cat > /home/wordpress/docker-compose.yml <<EOF
@@ -1743,16 +1771,18 @@ services:
     depends_on:
       - wordpress
     restart: unless-stopped
+    networks:
+      - wordpress-net
   wordpress:
     image: wordpress:php8.2-fpm
     container_name: wordpress
     volumes:
       - ./html:/var/www/html
     environment:
-      WORDPRESS_DB_HOST: mariadb:3306
+      WORDPRESS_DB_HOST: mariadb
       WORDPRESS_DB_USER: \"$db_user\"
       WORDPRESS_DB_PASSWORD: \"$db_user_passwd\"
-      WORDPRESS_DB_NAME: \"wordpress\"
+      WORDPRESS_DB_NAME: wordpress
     depends_on:
       mariadb:
         condition: service_healthy
@@ -1762,12 +1792,14 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - wordpress-net
   mariadb:
     image: mariadb:latest
     container_name: wordpress_mariadb
     environment:
       MYSQL_ROOT_PASSWORD: \"$db_root_passwd\"
-      MYSQL_DATABASE: \"wordpress\"
+      MYSQL_DATABASE: wordpress
       MYSQL_USER: \"$db_user\"
       MYSQL_PASSWORD: \"$db_user_passwd\"
     volumes:
@@ -1779,6 +1811,11 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - wordpress-net
+networks:
+  wordpress-net:
+    driver: bridge
 EOF"
                             fi
 
@@ -1883,6 +1920,17 @@ EOF
                                 echo -e "${YELLOW}可能原因：Nginx 或 PHP-FPM 未运行、数据库未就绪、证书生成失败${RESET}"
                                 if [ "$CERT_FAIL" == "yes" ]; then
                                     echo -e "${RED}可能因 Let's Encrypt 证书申请失败导致安装失败，请检查域名解析和网络设置${RESET}"
+                                fi
+                                # 测试数据库连接
+                                echo -e "${YELLOW}测试数据库连接...${RESET}"
+                                docker exec wordpress bash -c "mysql -h mariadb -u $db_user -p$db_user_passwd wordpress -e 'SHOW TABLES;' > /dev/null 2>&1"
+                                if [ $? -eq 0 ]; then
+                                    echo -e "${GREEN}数据库连接成功${RESET}"
+                                else
+                                    echo -e "${RED}数据库连接失败，请检查用户 '$db_user' 和密码 '$db_user_passwd' 是否正确，或 MariaDB 是否正常运行${RESET}"
+                                    if [ "$USING_DEFAULTS" == "yes" ]; then
+                                        echo -e "${RED}使用默认用户和密码 (wordpress/wordpresspass) 也无法连接，请检查 MariaDB 日志${RESET}"
+                                    fi
                                 fi
                                 echo -e "${YELLOW}建议：检查日志后，重启服务（cd /home/wordpress && docker-compose down && docker-compose up -d）${RESET}"
                                 read -p "按回车键返回主菜单..."
