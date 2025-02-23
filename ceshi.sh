@@ -1643,6 +1643,15 @@ case $operation_choice in
         fi
         touch wordpress/docker-compose.yml
 
+        # 检查系统资源
+        echo -e "${YELLOW}检查系统资源...${RESET}"
+        FREE_MEM=$(free -m | awk '/^Mem:/ {print $4}')
+        FREE_DISK=$(df -h /home | awk 'NR==2 {print $4}')
+        echo -e "${YELLOW}可用内存：$FREE_MEM MB，可用磁盘空间：$FREE_DISK${RESET}"
+        if [ "$FREE_MEM" -lt 256 ] || [ "${FREE_DISK%G}" -lt 1 ]; then
+            echo -e "${RED}警告：内存或磁盘空间不足，MariaDB 可能无法正常运行！${RESET}"
+        fi
+
         # 先单独启动 MariaDB
         echo -e "${YELLOW}正在单独启动 MariaDB...${RESET}"
         bash -c "cat > /home/wordpress/docker-compose.yml <<EOF
@@ -1680,9 +1689,10 @@ EOF"
             if [ $? -eq 0 ]; then
                 echo -e "${GREEN}MariaDB 初始化完成！${RESET}"
                 break
+            else
+                echo -e "${YELLOW}MariaDB 检查失败，当前尝试 $((ELAPSED / INTERVAL + 1))/12，错误信息：${RESET}"
+                echo "$MYSQL_PING_RESULT"
             fi
-            echo -e "${YELLOW}MariaDB 检查失败，当前尝试 $((ELAPSED / INTERVAL + 1))/12，错误信息：${RESET}"
-            echo "$MYSQL_PING_RESULT"
             sleep $INTERVAL
             ELAPSED=$((ELAPSED + INTERVAL))
         done
@@ -1817,7 +1827,7 @@ services:
     image: nginx:latest
     container_name: wordpress_nginx
     ports:
-      - \"$OPTIONAL_PORT:80\"
+      - \"$DEFAULT_PORT:80\"
       - \"$DEFAULT_SSL_PORT:443\"
     volumes:
       - ./html:/var/www/html
@@ -1993,6 +2003,16 @@ EOF
             sleep $INTERVAL
             ELAPSED=$((ELAPSED + INTERVAL))
         done
+
+        if [ $ELAPSED -ge $TIMEOUT ]; then
+            echo -e "${RED}服务未在 60 秒内完全启动，请检查以下信息：${RESET}"
+            echo -e "${YELLOW}容器状态：${RESET}"
+            docker ps -a
+            echo -e "${YELLOW}日志：${RESET}"
+            docker-compose logs
+            read -p "按回车键返回主菜单..."
+            continue
+        fi
 
         # 检查 MariaDB 是否正常运行
         echo -e "${YELLOW}检查 MariaDB 是否正常运行...${RESET}"
