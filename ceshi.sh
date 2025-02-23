@@ -1320,7 +1320,8 @@ EOF"
                 read -p "按回车键返回主菜单..."
                 ;;
         21)
-                # WordPress 安装（基于 Docker）
+            21)
+                # WordPress 安装（基于 Docker，支持域名绑定、HTTPS 和迁移）
                 echo -e "${GREEN}正在准备处理 WordPress 安装...${RESET}"
 
                 # 检查系统类型
@@ -1379,7 +1380,8 @@ EOF"
                     echo -e "${YELLOW}请选择操作：${RESET}"
                     echo "1) 安装 WordPress"
                     echo "2) 卸载 WordPress"
-                    read -p "请输入选项（1 或 2）： " operation_choice
+                    echo "3) 迁移 WordPress 到新服务器"
+                    read -p "请输入选项（1、2 或 3）： " operation_choice
 
                     case $operation_choice in
                         1)
@@ -1388,6 +1390,7 @@ EOF"
 
                             # 检查端口占用并选择可用端口
                             DEFAULT_PORT=80
+                            DEFAULT_SSL_PORT=443
                             check_port() {
                                 local port=$1
                                 if netstat -tuln | grep ":$port" > /dev/null; then
@@ -1403,10 +1406,10 @@ EOF"
                                 read -p "是否更换端口？（y/n，默认 y）： " change_port
                                 if [ "$change_port" != "n" ] && [ "$change_port" != "N" ]; then
                                     while true; do
-                                        read -p "请输入新的端口号（例如 8080）： " new_port
+                                        read -p "请输入新的 HTTP 端口号（例如 8080）： " new_port
                                         while ! [[ "$new_port" =~ ^[0-9]+$ ]] || [ "$new_port" -lt 1 ] || [ "$new_port" -gt 65535 ]; do
                                             echo -e "${RED}无效端口，请输入 1-65535 之间的数字！${RESET}"
-                                            read -p "请输入新的端口号（例如 8080）： " new_port
+                                            read -p "请输入新的 HTTP 端口号（例如 8080）： " new_port
                                         done
                                         check_port "$new_port"
                                         if [ $? -eq 0 ]; then
@@ -1432,7 +1435,6 @@ EOF"
                                     if [ $? -ne 0 ]; then
                                         echo -e "${YELLOW}正在放行端口 $DEFAULT_PORT...${RESET}"
                                         sudo ufw allow "$DEFAULT_PORT/tcp"
-                                        sudo ufw reload
                                     fi
                                 fi
                             elif command -v iptables > /dev/null 2>&1; then
@@ -1464,6 +1466,61 @@ EOF"
                                 continue
                             fi
 
+                            # 询问是否绑定域名和启用 HTTPS
+                            read -p "是否绑定域名？（y/n，默认 n）： " bind_domain
+                            DOMAIN="_"
+                            if [ "$bind_domain" == "y" ] || [ "$bind_domain" == "Y" ]; then
+                                read -p "请输入域名（例如 example.com）： " DOMAIN
+                                while [ -z "$DOMAIN" ]; do
+                                    echo -e "${RED}域名不能为空，请重新输入！${RESET}"
+                                    read -p "请输入域名（例如 example.com）： " DOMAIN
+                                done
+                                read -p "是否启用 HTTPS（需域名指向服务器 IP）？（y/n，默认 n）： " enable_https
+                                if [ "$enable_https" == "y" ] || [ "$enable_https" == "Y" ]; then
+                                    ENABLE_HTTPS="yes"
+                                    check_port "$DEFAULT_SSL_PORT"
+                                    if [ $? -eq 1 ]; then
+                                        echo -e "${RED}HTTPS 默认端口 $DEFAULT_SSL_PORT 已被占用！${RESET}"
+                                        read -p "请输入新的 HTTPS 端口号（例如 8443）： " new_ssl_port
+                                        while ! [[ "$new_ssl_port" =~ ^[0-9]+$ ]] || [ "$new_ssl_port" -lt 1 ] || [ "$new_ssl_port" -gt 65535 ]; do
+                                            echo -e "${RED}无效端口，请输入 1-65535 之间的数字！${RESET}"
+                                            read -p "请输入新的 HTTPS 端口号（例如 8443）： " new_ssl_port
+                                        done
+                                        check_port "$new_ssl_port"
+                                        if [ $? -eq 0 ]; then
+                                            DEFAULT_SSL_PORT=$new_ssl_port
+                                        else
+                                            echo -e "${RED}端口 $new_ssl_port 已被占用，无法继续安装！${RESET}"
+                                            read -p "按回车键返回主菜单..."
+                                            continue
+                                        fi
+                                    fi
+                                    # 放行 HTTPS 端口
+                                    if command -v ufw > /dev/null 2>&1; then
+                                        ufw status | grep -q "$DEFAULT_SSL_PORT"
+                                        if [ $? -ne 0 ]; then
+                                            echo -e "${YELLOW}正在放行 HTTPS 端口 $DEFAULT_SSL_PORT...${RESET}"
+                                            sudo ufw allow "$DEFAULT_SSL_PORT/tcp"
+                                            sudo ufw reload
+                                        fi
+                                    elif command -v iptables > /dev/null 2>&1; then
+                                        iptables -C INPUT -p tcp --dport "$DEFAULT_SSL_PORT" -j ACCEPT 2>/dev/null
+                                        if [ $? -ne 0 ]; then
+                                            echo -e "${YELLOW}正在放行 HTTPS 端口 $DEFAULT_SSL_PORT...${RESET}"
+                                            sudo iptables -A INPUT -p tcp --dport "$DEFAULT_SSL_PORT" -j ACCEPT
+                                            sudo iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
+                                        fi
+                                    elif command -v firewall-cmd > /dev/null 2>&1; then
+                                        firewall-cmd --list-ports | grep -q "$DEFAULT_SSL_PORT/tcp"
+                                        if [ $? -ne 0 ]; then
+                                            echo -e "${YELLOW}正在放行 HTTPS 端口 $DEFAULT_SSL_PORT...${RESET}"
+                                            sudo firewall-cmd --permanent --add-port="$DEFAULT_SSL_PORT/tcp"
+                                            sudo firewall-cmd --reload
+                                        fi
+                                    fi
+                                fi
+                            fi
+
                             # 询问 MariaDB 用户信息
                             echo -e "${YELLOW}请设置 MariaDB 数据库用户信息：${RESET}"
                             read -p "请输入数据库 ROOT 密码（默认 'passwd'）： " db_root_passwd
@@ -1481,14 +1538,78 @@ EOF"
                             fi
 
                             # 创建目录和配置 docker-compose.yml
-                            cd /home && mkdir -p wordpress/html wordpress/mysql wordpress/conf.d wordpress/logs/nginx wordpress/logs/mariadb
+                            cd /home && mkdir -p wordpress/html wordpress/mysql wordpress/conf.d wordpress/logs/nginx wordpress/logs/mariadb wordpress/certs
                             if [ $? -ne 0 ]; then
                                 echo -e "${RED}创建目录 /home/wordpress 失败，请检查权限或磁盘空间！${RESET}"
                                 read -p "按回车键返回主菜单..."
                                 continue
                             fi
                             touch wordpress/docker-compose.yml
-                            sudo bash -c "cat > /home/wordpress/docker-compose.yml <<EOF
+                            if [ "$ENABLE_HTTPS" == "yes" ]; then
+                                sudo bash -c "cat > /home/wordpress/docker-compose.yml <<EOF
+services:
+  nginx:
+    image: nginx:latest
+    container_name: wordpress_nginx
+    ports:
+      - \"$DEFAULT_PORT:80\"
+      - \"$DEFAULT_SSL_PORT:443\"
+    volumes:
+      - ./html:/var/www/html
+      - ./conf.d:/etc/nginx/conf.d
+      - ./logs/nginx:/var/log/nginx
+      - ./certs:/etc/nginx/certs
+    depends_on:
+      - wordpress
+    restart: unless-stopped
+  wordpress:
+    image: wordpress:php8.2-fpm
+    container_name: wordpress
+    volumes:
+      - ./html:/var/www/html
+    environment:
+      WORDPRESS_DB_HOST: mariadb:3306
+      WORDPRESS_DB_USER: \"$db_user\"
+      WORDPRESS_DB_PASSWORD: \"$db_user_passwd\"
+      WORDPRESS_DB_NAME: \"wordpress\"
+    depends_on:
+      mariadb:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: [\"CMD\", \"ps\", \"aux\", \"|\", \"grep\", \"php-fpm\"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+  mariadb:
+    image: mariadb:latest
+    container_name: wordpress_mariadb
+    environment:
+      MYSQL_ROOT_PASSWORD: \"$db_root_passwd\"
+      MYSQL_DATABASE: \"wordpress\"
+      MYSQL_USER: \"$db_user\"
+      MYSQL_PASSWORD: \"$db_user_passwd\"
+    volumes:
+      - ./mysql:/var/lib/mysql
+      - ./logs/mariadb:/var/log/mysql
+    restart: unless-stopped
+    healthcheck:
+      test: [\"CMD\", \"healthcheck.sh\", \"--connect\", \"--innodb_initialized\"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+  certbot:
+    image: certbot/certbot
+    container_name: wordpress_certbot
+    volumes:
+      - ./certs:/etc/letsencrypt
+      - ./html:/var/www/html
+    entrypoint: \"/bin/sh -c 'certbot certonly --webroot -w /var/www/html --force-renewal --email admin@$DOMAIN -d $DOMAIN --agree-tos --non-interactive && trap : TERM INT; (while true; do certbot renew --quiet; sleep 12h; done) & wait'\"
+    depends_on:
+      - nginx
+EOF"
+                            else
+                                sudo bash -c "cat > /home/wordpress/docker-compose.yml <<EOF
 services:
   nginx:
     image: nginx:latest
@@ -1539,27 +1660,61 @@ services:
       timeout: 5s
       retries: 5
 EOF"
-                            # 配置 Nginx 默认站点（使用临时文件避免格式问题）
+                            fi
+
+                            # 配置 Nginx 默认站点
                             TEMP_CONF=$(mktemp)
-                            cat > "$TEMP_CONF" <<'EOF'
+                            if [ "$ENABLE_HTTPS" == "yes" ]; then
+                                cat > "$TEMP_CONF" <<EOF
 server {
     listen 80;
-    server_name _;
+    server_name $DOMAIN;
+    return 301 https://\$host\$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    server_name $DOMAIN;
+
+    ssl_certificate /etc/nginx/certs/live/$DOMAIN/fullchain.pem;
+    ssl_certificate_key /etc/nginx/certs/live/$DOMAIN/privkey.pem;
+
     root /var/www/html;
     index index.php index.html index.htm;
 
     location / {
-        try_files $uri $uri/ /index.php?$args;
+        try_files \$uri \$uri/ /index.php?\$args;
     }
 
-    location ~ \.php$ {
+    location ~ \\.php\$ {
         fastcgi_pass wordpress:9000;
         fastcgi_index index.php;
-        fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
         include fastcgi_params;
     }
 }
 EOF
+                            else
+                                cat > "$TEMP_CONF" <<EOF
+server {
+    listen 80;
+    server_name $DOMAIN;
+    root /var/www/html;
+    index index.php index.html index.htm;
+
+    location / {
+        try_files \$uri \$uri/ /index.php?\$args;
+    }
+
+    location ~ \\.php\$ {
+        fastcgi_pass wordpress:9000;
+        fastcgi_index index.php;
+        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
+        include fastcgi_params;
+    }
+}
+EOF
+                            fi
                             sudo mv "$TEMP_CONF" /home/wordpress/conf.d/default.conf
                             sudo chmod 644 /home/wordpress/conf.d/default.conf
 
@@ -1594,10 +1749,20 @@ EOF
                                 docker ps -a
                                 echo -e "${YELLOW}日志：${RESET}"
                                 docker-compose logs
-                                echo -e "${YELLOW}可能原因：Nginx 或 PHP-FPM 未运行、数据库未就绪${RESET}"
+                                echo -e "${YELLOW}可能原因：Nginx 或 PHP-FPM 未运行、数据库未就绪、证书生成失败${RESET}"
                                 echo -e "${YELLOW}建议：检查日志后，重启服务（cd /home/wordpress && docker-compose down && docker-compose up -d）${RESET}"
                                 read -p "按回车键返回主菜单..."
                                 continue
+                            fi
+
+                            # 检查证书到期时间（如果启用 HTTPS）
+                            if [ "$ENABLE_HTTPS" == "yes" ]; then
+                                CERT_EXPIRY=$(docker exec wordpress_certbot openssl x509 -enddate -noout -in /etc/letsencrypt/live/$DOMAIN/fullchain.pem 2>/dev/null | cut -d'=' -f2)
+                                if [ -n "$CERT_EXPIRY" ]; then
+                                    echo -e "${YELLOW}证书到期时间：$CERT_EXPIRY（自动续签已启用，每 12 小时检查一次）${RESET}"
+                                else
+                                    echo -e "${RED}证书生成可能失败，请检查 wordpress_certbot 日志${RESET}"
+                                fi
                             fi
 
                             server_ip=$(curl -s4 ifconfig.me)
@@ -1605,14 +1770,23 @@ EOF
                                 server_ip="你的服务器IP"
                             fi
                             echo -e "${GREEN}WordPress 安装完成！${RESET}"
-                            echo -e "${YELLOW}访问 http://$server_ip:$DEFAULT_PORT 开始 WordPress 配置${RESET}"
+                            if [ "$ENABLE_HTTPS" == "yes" ]; then
+                                echo -e "${YELLOW}访问 https://$DOMAIN:$DEFAULT_SSL_PORT 开始 WordPress 配置${RESET}"
+                            else
+                                echo -e "${YELLOW}访问 http://$server_ip:$DEFAULT_PORT 开始 WordPress 配置${RESET}"
+                            fi
                             echo -e "${YELLOW}数据库用户 '$db_user' 密码为 '$db_user_passwd', ROOT 密码为 '$db_root_passwd'${RESET}"
+                            echo -e "${YELLOW}WordPress 存放位置：/home/wordpress${RESET}"
+                            echo -e "${YELLOW}图片等文件存放位置：/home/wordpress/html/wp-content/uploads${RESET}"
                             echo -e "${YELLOW}日志存储在 /home/wordpress/logs/nginx 和 /home/wordpress/logs/mariadb${RESET}"
+                            if [ "$ENABLE_HTTPS" == "yes" ]; then
+                                echo -e "${YELLOW}证书存储在 /home/wordpress/certs${RESET}"
+                            fi
                             ;;
                         2)
                             # 卸载 WordPress
                             echo -e "${GREEN}正在卸载 WordPress...${RESET}"
-                            echo -e "${YELLOW}注意：卸载将删除 WordPress 数据，请确保已备份 /home/wordpress/html 和 /home/wordpress/mysql${RESET}"
+                            echo -e "${YELLOW}注意：卸载将删除 WordPress 数据和证书，请确保已备份 /home/wordpress/html、/home/wordpress/mysql 和 /home/wordpress/certs${RESET}"
                             read -p "是否继续卸载？（y/n，默认 n）： " confirm_uninstall
                             if [ "$confirm_uninstall" != "y" ] && [ "$confirm_uninstall" != "Y" ]; then
                                 echo -e "${YELLOW}取消卸载操作${RESET}"
@@ -1625,7 +1799,7 @@ EOF
                                 echo -e "${YELLOW}已停止并移除 WordPress 容器和卷${RESET}"
                             fi
                             # 检查并移除相关容器
-                            for container in wordpress_nginx wordpress wordpress_mariadb; do
+                            for container in wordpress_nginx wordpress wordpress_mariadb wordpress_certbot; do
                                 if docker ps -a | grep -q "$container"; then
                                     docker stop "$container" || true
                                     docker rm "$container" || true
@@ -1639,7 +1813,7 @@ EOF
                                 echo -e "${RED}删除 /home/wordpress 目录失败，请手动检查！${RESET}"
                             fi
                             # 询问是否移除镜像
-                            for image in nginx:latest wordpress:php8.2-fpm mariadb:latest; do
+                            for image in nginx:latest wordpress:php8.2-fpm mariadb:latest certbot/certbot; do
                                 if docker images | grep -q "$(echo $image | cut -d: -f1)"; then
                                     read -p "是否移除 WordPress 的 Docker 镜像（$image）？（y/n，默认 n）： " remove_image
                                     if [ "$remove_image" == "y" ] || [ "$remove_image" == "Y" ]; then
@@ -1654,13 +1828,91 @@ EOF
                             done
                             echo -e "${GREEN}WordPress 卸载完成！${RESET}"
                             ;;
+                        3)
+                            # 迁移 WordPress 到新服务器
+                            echo -e "${GREEN}正在准备迁移 WordPress 到新服务器...${RESET}"
+                            if [ ! -d "/home/wordpress" ] || [ ! -f "/home/wordpress/docker-compose.yml" ]; then
+                                echo -e "${RED}本地未找到 WordPress 安装目录 (/home/wordpress)，请先安装！${RESET}"
+                                read -p "按回车键返回主菜单..."
+                                continue
+                            fi
+
+                            read -p "请输入新服务器的 IP 地址： " NEW_SERVER_IP
+                            while [ -z "$NEW_SERVER_IP" ] || ! ping -c 1 "$NEW_SERVER_IP" > /dev/null 2>&1; do
+                                echo -e "${RED}IP 地址无效或无法连接，请重新输入！${RESET}"
+                                read -p "请输入新服务器的 IP 地址： " NEW_SERVER_IP
+                            done
+
+                            read -p "请输入新服务器的 SSH 用户名（默认 root）： " SSH_USER
+                            SSH_USER=${SSH_USER:-root}
+
+                            read -p "请输入新服务器的 SSH 密码（或留空使用 SSH 密钥）： " SSH_PASS
+                            if [ -z "$SSH_PASS" ]; then
+                                echo -e "${YELLOW}将使用 SSH 密钥连接，请确保已在 ~/.ssh/config 中配置或使用默认密钥${RESET}"
+                            fi
+
+                            # 打包 WordPress 数据
+                            echo -e "${YELLOW}正在打包 WordPress 数据...${RESET}"
+                            tar -czf /tmp/wordpress_backup.tar.gz -C /home wordpress
+
+                            # 传输到新服务器
+                            echo -e "${YELLOW}正在传输 WordPress 数据到新服务器 $NEW_SERVER_IP...${RESET}"
+                            if [ -n "$SSH_PASS" ]; then
+                                sshpass -p "$SSH_PASS" scp -r /tmp/wordpress_backup.tar.gz "$SSH_USER@$NEW_SERVER_IP:/tmp/"
+                            else
+                                scp -r /tmp/wordpress_backup.tar.gz "$SSH_USER@$NEW_SERVER_IP:/tmp/"
+                            fi
+                            if [ $? -ne 0 ]; then
+                                echo -e "${RED}数据传输失败，请检查 SSH 连接或权限！${RESET}"
+                                rm -f /tmp/wordpress_backup.tar.gz
+                                read -p "按回车键返回主菜单..."
+                                continue
+                            fi
+
+                            # 在新服务器上部署
+                            echo -e "${YELLOW}正在新服务器上部署 WordPress...${RESET}"
+                            DEPLOY_SCRIPT=$(mktemp)
+                            cat > "$DEPLOY_SCRIPT" <<EOF
+#!/bin/bash
+apt update && apt install -y curl docker.io
+curl -fsSL https://get.docker.com | sh
+systemctl start docker
+systemctl enable docker
+curl -L "https://github.com/docker/compose/releases/download/v2.20.0/docker-compose-\$(uname -s)-\$(uname -m)" -o /usr/local/bin/docker-compose
+chmod +x /usr/local/bin/docker-compose
+mkdir -p /home/wordpress
+tar -xzf /tmp/wordpress_backup.tar.gz -C /home
+cd /home/wordpress && docker-compose up -d
+rm -f /tmp/wordpress_backup.tar.gz
+EOF
+                            if [ -n "$SSH_PASS" ]; then
+                                sshpass -p "$SSH_PASS" scp "$DEPLOY_SCRIPT" "$SSH_USER@$NEW_SERVER_IP:/tmp/deploy.sh"
+                                sshpass -p "$SSH_PASS" ssh "$SSH_USER@$NEW_SERVER_IP" "bash /tmp/deploy.sh && rm -f /tmp/deploy.sh"
+                            else
+                                scp "$DEPLOY_SCRIPT" "$SSH_USER@$NEW_SERVER_IP:/tmp/deploy.sh"
+                                ssh "$SSH_USER@$NEW_SERVER_IP" "bash /tmp/deploy.sh && rm -f /tmp/deploy.sh"
+                            fi
+                            if [ $? -ne 0 ]; then
+                                echo -e "${RED}新服务器部署失败，请检查 SSH 连接或日志！${RESET}"
+                                rm -f /tmp/wordpress_backup.tar.gz "$DEPLOY_SCRIPT"
+                                read -p "按回车键返回主菜单..."
+                                continue
+                            fi
+
+                            # 清理临时文件
+                            rm -f /tmp/wordpress_backup.tar.gz "$DEPLOY_SCRIPT"
+
+                            echo -e "${GREEN}WordPress 迁移完成！${RESET}"
+                            echo -e "${YELLOW}在新服务器 $NEW_SERVER_IP 上访问 WordPress，端口与原配置相同${RESET}"
+                            echo -e "${YELLOW}请确保新服务器防火墙已放行相关端口${RESET}"
+                            ;;
                         *)
-                            echo -e "${RED}无效选项，请输入 1 或 2！${RESET}"
+                            echo -e "${RED}无效选项，请输入 1、2 或 3！${RESET}"
                             ;;
                     esac
                 fi
                 read -p "按回车键返回主菜单..."
-                ;; 
+                ;;
         esac
     done
 }
