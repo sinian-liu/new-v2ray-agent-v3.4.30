@@ -1481,7 +1481,6 @@ EOF"
                             fi
                             touch wordpress/docker-compose.yml
                             sudo bash -c "cat > /home/wordpress/docker-compose.yml <<EOF
-version: '3'
 services:
   nginx:
     image: nginx:latest
@@ -1493,10 +1492,11 @@ services:
       - ./conf.d:/etc/nginx/conf.d
       - ./logs/nginx:/var/log/nginx
     depends_on:
-      - wordpress
+      wordpress:
+        condition: service_healthy
     restart: unless-stopped
   wordpress:
-    image: wordpress:latest
+    image: wordpress:php8.2-fpm
     container_name: wordpress
     volumes:
       - ./html:/var/www/html
@@ -1506,8 +1506,14 @@ services:
       WORDPRESS_DB_PASSWORD: \"$db_user_passwd\"
       WORDPRESS_DB_NAME: \"wordpress\"
     depends_on:
-      - mariadb
+      mariadb:
+        condition: service_healthy
     restart: unless-stopped
+    healthcheck:
+      test: [\"CMD\", \"php-fpm-healthcheck\"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
   mariadb:
     image: mariadb:latest
     container_name: wordpress_mariadb
@@ -1520,6 +1526,11 @@ services:
       - ./mysql:/var/lib/mysql
       - ./logs/mariadb:/var/log/mysql
     restart: unless-stopped
+    healthcheck:
+      test: [\"CMD\", \"healthcheck.sh\", \"--connect\", \"--innodb_initialized\"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 EOF"
                             # 配置 Nginx 默认站点
                             sudo bash -c "cat > /home/wordpress/conf.d/default.conf <<EOF
@@ -1536,6 +1547,7 @@ server {
     location ~ \\.php\$ {
         fastcgi_pass wordpress:9000;
         fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
+        fastcgi_index index.php;
         include fastcgi_params;
     }
 }
@@ -1602,7 +1614,7 @@ EOF"
                                 echo -e "${RED}删除 /home/wordpress 目录失败，请手动检查！${RESET}"
                             fi
                             # 询问是否移除镜像
-                            for image in nginx:latest wordpress:latest mariadb:latest; do
+                            for image in nginx:latest wordpress:php8.2-fpm mariadb:latest; do
                                 if docker images | grep -q "$(echo $image | cut -d: -f1)"; then
                                     read -p "是否移除 WordPress 的 Docker 镜像（$image）？（y/n，默认 n）： " remove_image
                                     if [ "$remove_image" == "y" ] || [ "$remove_image" == "Y" ]; then
