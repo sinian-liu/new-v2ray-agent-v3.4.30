@@ -1532,8 +1532,9 @@ services:
       timeout: 5s
       retries: 5
 EOF"
-                            # 配置 Nginx 默认站点
-                            sudo bash -c "cat > /home/wordpress/conf.d/default.conf <<EOF
+                            # 配置 Nginx 默认站点（使用临时文件避免格式问题）
+                            TEMP_CONF=$(mktemp)
+                            cat > "$TEMP_CONF" <<EOF
 server {
     listen 80;
     server_name _;
@@ -1551,7 +1552,9 @@ server {
         include fastcgi_params;
     }
 }
-EOF"
+EOF
+                            sudo mv "$TEMP_CONF" /home/wordpress/conf.d/default.conf
+                            sudo chmod 644 /home/wordpress/conf.d/default.conf
 
                             # 验证 Nginx 配置
                             docker run --rm -v /home/wordpress/conf.d:/etc/nginx/conf.d nginx:latest nginx -t -c /etc/nginx/nginx.conf
