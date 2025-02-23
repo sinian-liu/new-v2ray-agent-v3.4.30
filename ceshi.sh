@@ -1433,7 +1433,7 @@ case $operation_choice in
                     continue
                 fi
                 cd /home/wordpress
-                for image in nginx:latest wordpress:php8.2-fpm mariadb:latest certbot/certbot; do
+                for image in nginx:latest wordpress:php8.2-fpm mariadb:10.5 certbot/certbot; do
                     if ! docker images | grep -q "$(echo $image | cut -d: -f1)"; then
                         echo -e "${YELLOW}拉取缺失的镜像 $image...${RESET}"
                         docker pull "$image"
@@ -1676,10 +1676,13 @@ EOF"
         INTERVAL=5
         ELAPSED=0
         while [ $ELAPSED -lt $TIMEOUT ]; do
-            if docker exec wordpress_mariadb mysqladmin ping -h localhost -u wordpress -p"$db_user_passwd" > /dev/null 2>&1; then
+            MYSQL_PING_RESULT=$(docker exec wordpress_mariadb mysqladmin ping -h localhost -u wordpress -p"$db_user_passwd" 2>&1)
+            if [ $? -eq 0 ]; then
                 echo -e "${GREEN}MariaDB 初始化完成！${RESET}"
                 break
             fi
+            echo -e "${YELLOW}MariaDB 检查失败，当前尝试 $((ELAPSED / INTERVAL + 1))/12，错误信息：${RESET}"
+            echo "$MYSQL_PING_RESULT"
             sleep $INTERVAL
             ELAPSED=$((ELAPSED + INTERVAL))
         done
@@ -1814,7 +1817,7 @@ services:
     image: nginx:latest
     container_name: wordpress_nginx
     ports:
-      - \"$DEFAULT_PORT:80\"
+      - \"$OPTIONAL_PORT:80\"
       - \"$DEFAULT_SSL_PORT:443\"
     volumes:
       - ./html:/var/www/html
@@ -1992,8 +1995,12 @@ EOF
         done
 
         # 检查 MariaDB 是否正常运行
-        if ! docker exec wordpress_mariadb mysqladmin ping -h localhost -u wordpress -p"$db_user_passwd" > /dev/null 2>&1; then
-            echo -e "${RED}MariaDB 服务未正常启动，请检查数据库配置或日志！${RESET}"
+        echo -e "${YELLOW}检查 MariaDB 是否正常运行...${RESET}"
+        MYSQL_PING_RESULT=$(docker exec wordpress_mariadb mysqladmin ping -h localhost -u wordpress -p"$db_user_passwd" 2>&1)
+        if [ $? -ne 0 ]; then
+            echo -e "${RED}MariaDB 服务未正常启动，错误信息：${RESET}"
+            echo "$MYSQL_PING_RESULT"
+            echo -e "${YELLOW}MariaDB 日志：${RESET}"
             docker-compose logs mariadb
             echo -e "${YELLOW}容器状态：${RESET}"
             docker ps -a
@@ -2001,6 +2008,8 @@ EOF
             docker inspect wordpress_mariadb --format '{{.State.ExitCode}}'
             read -p "按回车键返回主菜单..."
             continue
+        else
+            echo -e "${GREEN}MariaDB 连接正常！${RESET}"
         fi
 
         CHECK_PORT=$DEFAULT_PORT
