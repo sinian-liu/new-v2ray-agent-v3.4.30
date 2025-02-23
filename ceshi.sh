@@ -1434,7 +1434,6 @@ EOF"
                                         continue
                                     fi
                                     cd /home/wordpress
-                                    # 检查并拉取镜像
                                     for image in nginx:latest wordpress:php8.2-fpm mariadb:latest certbot/certbot; do
                                         if ! docker images | grep -q "$(echo $image | cut -d: -f1)"; then
                                             echo -e "${YELLOW}拉取缺失的镜像 $image...${RESET}"
@@ -1608,14 +1607,32 @@ EOF"
                                 fi
                             fi
 
-                            # 询问 MariaDB 用户信息
+                            # 询问 MariaDB 用户信息（必须输入）
                             echo -e "${YELLOW}请设置 MariaDB 数据库用户信息：${RESET}"
-                            read -p "请输入数据库 ROOT 密码（默认 'passwd'）： " db_root_passwd
-                            db_root_passwd=${db_root_passwd:-passwd}
-                            read -p "请输入数据库用户名（默认 'wordpress'）： " db_user
-                            db_user=${db_user:-wordpress}
-                            read -p "请输入数据库用户密码（默认 'wordpresspass'）： " db_user_passwd
-                            db_user_passwd=${db_user_passwd:-wordpresspass}
+                            while true; do
+                                read -p "请输入数据库 ROOT 密码： " db_root_passwd
+                                if [ -n "$db_root_passwd" ]; then
+                                    break
+                                else
+                                    echo -e "${RED}ROOT 密码不能为空，请重新输入！${RESET}"
+                                fi
+                            done
+                            while true; do
+                                read -p "请输入数据库用户名： " db_user
+                                if [ -n "$db_user" ]; then
+                                    break
+                                else
+                                    echo -e "${RED}用户名不能为空，请重新输入！${RESET}"
+                                fi
+                            done
+                            while true; do
+                                read -p "请输入数据库用户密码： " db_user_passwd
+                                if [ -n "$db_user_passwd" ]; then
+                                    break
+                                else
+                                    echo -e "${RED}用户密码不能为空，请重新输入！${RESET}"
+                                fi
+                            done
 
                             # 安装 Docker Compose（如果未安装）
                             if ! command -v docker-compose > /dev/null 2>&1; then
@@ -1659,7 +1676,7 @@ services:
       WORDPRESS_DB_HOST: mariadb:3306
       WORDPRESS_DB_USER: \"$db_user\"
       WORDPRESS_DB_PASSWORD: \"$db_user_passwd\"
-      WORDPRESS_DB_NAME: \"wordpress\"
+      WORDPRESS_DB_NAME: wordpress
     depends_on:
       mariadb:
         condition: service_healthy
@@ -1674,7 +1691,7 @@ services:
     container_name: wordpress_mariadb
     environment:
       MYSQL_ROOT_PASSWORD: \"$db_root_passwd\"
-      MYSQL_DATABASE: \"wordpress\"
+      MYSQL_DATABASE: wordpress
       MYSQL_USER: \"$db_user\"
       MYSQL_PASSWORD: \"$db_user_passwd\"
     volumes:
@@ -1682,7 +1699,7 @@ services:
       - ./logs/mariadb:/var/log/mysql
     restart: unless-stopped
     healthcheck:
-      test: [\"CMD\", \"healthcheck.sh\", \"--connect\", \"--innodb_initialized\"]
+      test: [\"CMD\", \"mysqladmin\", \"ping\", \"-h\", \"localhost\", \"-u\", \"$db_user\", \"-p$db_user_passwd\"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -1782,7 +1799,7 @@ services:
       WORDPRESS_DB_HOST: mariadb:3306
       WORDPRESS_DB_USER: \"$db_user\"
       WORDPRESS_DB_PASSWORD: \"$db_user_passwd\"
-      WORDPRESS_DB_NAME: \"wordpress\"
+      WORDPRESS_DB_NAME: wordpress
     depends_on:
       mariadb:
         condition: service_healthy
@@ -1797,7 +1814,7 @@ services:
     container_name: wordpress_mariadb
     environment:
       MYSQL_ROOT_PASSWORD: \"$db_root_passwd\"
-      MYSQL_DATABASE: \"wordpress\"
+      MYSQL_DATABASE: wordpress
       MYSQL_USER: \"$db_user\"
       MYSQL_PASSWORD: \"$db_user_passwd\"
     volumes:
@@ -1805,7 +1822,7 @@ services:
       - ./logs/mariadb:/var/log/mysql
     restart: unless-stopped
     healthcheck:
-      test: [\"CMD\", \"healthcheck.sh\", \"--connect\", \"--innodb_initialized\"]
+      test: [\"CMD\", \"mysqladmin\", \"ping\", \"-h\", \"localhost\", \"-u\", \"$db_user\", \"-p$db_user_passwd\"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -1844,7 +1861,7 @@ services:
       WORDPRESS_DB_HOST: mariadb:3306
       WORDPRESS_DB_USER: \"$db_user\"
       WORDPRESS_DB_PASSWORD: \"$db_user_passwd\"
-      WORDPRESS_DB_NAME: \"wordpress\"
+      WORDPRESS_DB_NAME: wordpress
     depends_on:
       mariadb:
         condition: service_healthy
@@ -1859,7 +1876,7 @@ services:
     container_name: wordpress_mariadb
     environment:
       MYSQL_ROOT_PASSWORD: \"$db_root_passwd\"
-      MYSQL_DATABASE: \"wordpress\"
+      MYSQL_DATABASE: wordpress
       MYSQL_USER: \"$db_user\"
       MYSQL_PASSWORD: \"$db_user_passwd\"
     volumes:
@@ -1867,7 +1884,7 @@ services:
       - ./logs/mariadb:/var/log/mysql
     restart: unless-stopped
     healthcheck:
-      test: [\"CMD\", \"healthcheck.sh\", \"--connect\", \"--innodb_initialized\"]
+      test: [\"CMD\", \"mysqladmin\", \"ping\", \"-h\", \"localhost\", \"-u\", \"$db_user\", \"-p$db_user_passwd\"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -1958,6 +1975,14 @@ EOF
                                 ELAPSED=$((ELAPSED + INTERVAL))
                             done
 
+                            # 检查 MariaDB 是否正常运行
+                            if ! docker exec wordpress_mariadb mysqladmin ping -h localhost -u "$db_user" -p"$db_user_passwd" > /dev/null 2>&1; then
+                                echo -e "${RED}MariaDB 服务未正常启动，请检查数据库配置或日志！${RESET}"
+                                docker-compose logs mariadb
+                                read -p "按回车键返回主菜单..."
+                                continue
+                            fi
+
                             CHECK_PORT=$DEFAULT_PORT
                             if [ "$ENABLE_HTTPS" == "yes" ] && [ "$CERT_OK" == "yes" ]; then
                                 CHECK_PORT=$DEFAULT_SSL_PORT
@@ -1967,15 +1992,12 @@ EOF
                             fi
 
                             if ! curl -s -I "$CHECK_URL" | grep -q "HTTP"; then
-                                echo -e "${RED}服务未正常启动（可能出现 HTTP ERROR 503），请检查以下信息：${RESET}"
+                                echo -e "${RED}服务未正常启动（可能出现 HTTP ERROR 503 或数据库连接错误），请检查以下信息：${RESET}"
                                 echo -e "${YELLOW}容器状态：${RESET}"
                                 docker ps -a
                                 echo -e "${YELLOW}日志：${RESET}"
                                 docker-compose logs
-                                echo -e "${YELLOW}可能原因：Nginx 或 PHP-FPM 未运行、数据库未就绪、证书生成失败${RESET}"
-                                if [ "$ENABLE_HTTPS" == "yes" ] && [ "$CERT_OK" == "no" ]; then
-                                    echo -e "${RED}安装失败可能由于证书申请失败，请检查域名解析或网络配置！${RESET}"
-                                fi
+                                echo -e "${YELLOW}可能原因：Nginx 或 PHP-FPM 未运行、数据库未就绪${RESET}"
                                 echo -e "${YELLOW}建议：检查日志后，重启服务（cd /home/wordpress && docker-compose down && docker-compose up -d）${RESET}"
                                 read -p "按回车键返回主菜单..."
                                 continue
@@ -2031,9 +2053,154 @@ EOF"
                             # 询问是否配置定时备份
                             read -p "是否配置定时备份 WordPress 到其他服务器？（y/n，默认 n）： " enable_backup
                             if [ "$enable_backup" == "y" ] || [ "$enable_backup" == "Y" ]; then
-                                operation_choice=5  # 跳转到选项 5
-                            fi
-                            if [ "$operation_choice" != "5" ]; then
+                                # 直接执行选项 5 的逻辑
+                                echo -e "${GREEN}正在设置 WordPress 定时备份...${RESET}"
+                                if [ ! -d "/home/wordpress" ] || [ ! -f "/home/wordpress/docker-compose.yml" ]; then
+                                    echo -e "${RED}本地未找到 WordPress 安装目录 (/home/wordpress)，请先安装！${RESET}"
+                                    read -p "按回车键返回主菜单..."
+                                    continue
+                                fi
+
+                                read -p "请输入备份目标服务器的 IP 地址： " BACKUP_SERVER_IP
+                                while [ -z "$BACKUP_SERVER_IP" ] || ! ping -c 1 "$BACKUP_SERVER_IP" > /dev/null 2>&1; do
+                                    echo -e "${RED}IP 地址无效或无法连接，请重新输入！${RESET}"
+                                    read -p "请输入备份目标服务器的 IP 地址： " BACKUP_SERVER_IP
+                                done
+
+                                read -p "请输入目标服务器的 SSH 用户名（默认 root）： " BACKUP_SSH_USER
+                                BACKUP_SSH_USER=${BACKUP_SSH_USER:-root}
+
+                                read -p "请输入目标服务器的 SSH 密码（或留空使用 SSH 密钥）： " BACKUP_SSH_PASS
+                                if [ -z "$BACKUP_SSH_PASS" ]; then
+                                    echo -e "${YELLOW}将使用 SSH 密钥备份，请确保密钥已配置${RESET}"
+                                    read -p "请输入本地 SSH 密钥路径（默认 ~/.ssh/id_rsa）： " BACKUP_SSH_KEY
+                                    BACKUP_SSH_KEY=${BACKUP_SSH_KEY:-~/.ssh/id_rsa}
+                                    if [ ! -f "$BACKUP_SSH_KEY" ]; then
+                                        echo -e "${RED}SSH 密钥文件 $BACKUP_SSH_KEY 不存在，请检查路径！${RESET}"
+                                        read -p "按回车键返回主菜单..."
+                                        continue
+                                    fi
+                                fi
+
+                                # 安装 sshpass（如果使用密码且未安装）
+                                if [ -n "$BACKUP_SSH_PASS" ] && ! command -v sshpass > /dev/null 2>&1; then
+                                    echo -e "${YELLOW}检测到需要 sshpass，正在安装...${RESET}"
+                                    if [ "$SYSTEM" == "centos" ]; then
+                                        yum install -y epel-release
+                                        yum install -y sshpass
+                                    else
+                                        apt update && apt install -y sshpass
+                                    fi
+                                    if [ $? -ne 0 ]; then
+                                        echo -e "${RED}sshpass 安装失败，请手动安装后重试！${RESET}"
+                                        read -p "按回车键返回主菜单..."
+                                        continue
+                                    fi
+                                fi
+
+                                # 测试 SSH 连接
+                                echo -e "${YELLOW}测试 SSH 连接到 $BACKUP_SERVER_IP...${RESET}"
+                                if [ -n "$BACKUP_SSH_PASS" ]; then
+                                    sshpass -p "$BACKUP_SSH_PASS" ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no "$BACKUP_SSH_USER@$BACKUP_SERVER_IP" "echo SSH 连接成功" 2>/tmp/ssh_error
+                                    SSH_TEST=$?
+                                else
+                                    ssh -i "$BACKUP_SSH_KEY" -o ConnectTimeout=10 -o StrictHostKeyChecking=no "$BACKUP_SSH_USER@$BACKUP_SERVER_IP" "echo SSH 连接成功" 2>/tmp/ssh_error
+                                    SSH_TEST=$?
+                                fi
+                                if [ $SSH_TEST -ne 0 ]; then
+                                    echo -e "${RED}SSH 连接失败！错误信息如下：${RESET}"
+                                    cat /tmp/ssh_error
+                                    echo -e "${YELLOW}请检查 IP、用户名、密码/密钥或目标服务器 SSH 配置！${RESET}"
+                                    rm -f /tmp/ssh_error
+                                    read -p "按回车键返回主菜单..."
+                                    continue
+                                fi
+                                rm -f /tmp/ssh_error
+                                echo -e "${GREEN}SSH 连接成功！${RESET}"
+
+                                # 选择备份周期
+                                echo -e "${YELLOW}请选择备份周期（默认 每天）：${RESET}"
+                                echo "1) 每天（每天备份一次）"
+                                echo "2) 每周（每周备份一次）"
+                                echo "3) 每月（每月备份一次）"
+                                echo "4) 立即备份（仅执行一次备份，不设置定时任务）"
+                                read -p "请输入选项（1、2、3 或 4，默认 1）： " backup_interval_choice
+                                case $backup_interval_choice in
+                                    2) BACKUP_INTERVAL="每周"; CRON_BASE="0 2 * * 0" ;; # 每周日凌晨 2 点
+                                    3) BACKUP_INTERVAL="每月"; CRON_BASE="0 2 1 * *" ;; # 每月 1 日凌晨 2 点
+                                    4) BACKUP_INTERVAL="立即备份"; CRON_BASE="" ;;
+                                    *|1) BACKUP_INTERVAL="每天"; CRON_BASE="0 2 * * *" ;; # 每天凌晨 2 点
+                                esac
+
+                                if [ "$BACKUP_INTERVAL" != "立即备份" ]; then
+                                    # 选择备份时间
+                                    read -p "请输入备份时间 - 小时（0-23，默认 2）： " BACKUP_HOUR
+                                    BACKUP_HOUR=${BACKUP_HOUR:-2}
+                                    while ! [[ "$BACKUP_HOUR" =~ ^[0-9]+$ ]] || [ "$BACKUP_HOUR" -lt 0 ] || [ "$BACKUP_HOUR" -gt 23 ]; do
+                                        echo -e "${RED}小时必须为 0-23 之间的数字，请重新输入！${RESET}"
+                                        read -p "请输入备份时间 - 小时（0-23，默认 2）： " BACKUP_HOUR
+                                    done
+
+                                    read -p "请输入备份时间 - 分钟（0-59，默认 0）： " BACKUP_MINUTE
+                                    BACKUP_MINUTE=${BACKUP_MINUTE:-0}
+                                    while ! [[ "$BACKUP_MINUTE" =~ ^[0-9]+$ ]] || [ "$BACKUP_MINUTE" -lt 0 ] || [ "$BACKUP_MINUTE" -gt 59 ]; do
+                                        echo -e "${RED}分钟必须为 0-59 之间的数字，请重新输入！${RESET}"
+                                        read -p "请输入备份时间 - 分钟（0-59，默认 0）： " BACKUP_MINUTE
+                                    done
+
+                                    CRON_TIME="$BACKUP_MINUTE $BACKUP_HOUR ${CRON_BASE#* * *}" # 组合分钟、小时和周期
+                                fi
+
+                                # 创建备份脚本
+                                bash -c "cat > /usr/local/bin/wordpress_backup.sh <<EOF
+#!/bin/bash
+TIMESTAMP=\$(date +%Y%m%d_%H%M%S)
+BACKUP_FILE=/tmp/wordpress_backup_\$TIMESTAMP.tar.gz
+tar -czf \$BACKUP_FILE -C /home wordpress
+if [ -n \"$BACKUP_SSH_PASS\" ]; then
+    sshpass -p \"$BACKUP_SSH_PASS\" scp -o StrictHostKeyChecking=no \$BACKUP_FILE $BACKUP_SSH_USER@$BACKUP_SERVER_IP:~/wordpress_backups/
+else
+    scp -i \"$BACKUP_SSH_KEY\" -o StrictHostKeyChecking=no \$BACKUP_FILE $BACKUP_SSH_USER@$BACKUP_SERVER_IP:~/wordpress_backups/
+fi
+if [ \$? -eq 0 ]; then
+    echo \"WordPress 备份成功：\$TIMESTAMP\" >> /var/log/wordpress_backup.log
+else
+    echo \"WordPress 备份失败：\$TIMESTAMP\" >> /var/log/wordpress_backup.log
+fi
+rm -f \$BACKUP_FILE
+EOF"
+                                chmod +x /usr/local/bin/wordpress_backup.sh
+
+                                # 配置目标服务器备份目录
+                                if [ -n "$BACKUP_SSH_PASS" ]; then
+                                    sshpass -p "$BACKUP_SSH_PASS" ssh -o StrictHostKeyChecking=no "$BACKUP_SSH_USER@$BACKUP_SERVER_IP" "mkdir -p ~/wordpress_backups"
+                                else
+                                    ssh -i "$BACKUP_SSH_KEY" -o StrictHostKeyChecking=no "$BACKUP_SSH_USER@$BACKUP_SERVER_IP" "mkdir -p ~/wordpress_backups"
+                                fi
+
+                                # 如果选择立即备份，直接执行
+                                if [ "$BACKUP_INTERVAL" == "立即备份" ]; then
+                                    echo -e "${YELLOW}正在执行立即备份...${RESET}"
+                                    /usr/local/bin/wordpress_backup.sh
+                                    if [ $? -eq 0 ]; then
+                                        echo -e "${GREEN}立即备份完成！备份文件已传输至 $BACKUP_SSH_USER@$BACKUP_SERVER_IP:~/wordpress_backups${RESET}"
+                                        echo -e "${YELLOW}请检查 /var/log/wordpress_backup.log 查看备份日志${RESET}"
+                                    else
+                                        echo -e "${RED}立即备份失败，请检查网络或服务器配置！${RESET}"
+                                        echo -e "${YELLOW}详情见 /var/log/wordpress_backup.log${RESET}"
+                                    fi
+                                else
+                                    # 设置 cron 任务
+                                    (crontab -l 2>/dev/null | grep -v "wordpress_backup.sh"; echo "$CRON_TIME /usr/local/bin/wordpress_backup.sh") | crontab -
+                                    if [ $? -eq 0 ]; then
+                                        echo -e "${GREEN}定时备份已设置为 $BACKUP_INTERVAL，每$BACKUP_INTERVAL $BACKUP_HOUR:$BACKUP_MINUTE 执行，备份目标：$BACKUP_SSH_USER@$BACKUP_SERVER_IP:~/wordpress_backups${RESET}"
+                                        echo -e "${YELLOW}备份日志存储在 /var/log/wordpress_backup.log${RESET}"
+                                    else
+                                        echo -e "${RED}设置定时备份失败，请手动检查 crontab！${RESET}"
+                                    fi
+                                fi
+                                read -p "按回车键返回主菜单..."
+                            else
                                 read -p "按回车键返回主菜单..."
                             fi
                             ;;
@@ -2108,7 +2275,7 @@ EOF"
                             # 从本地 docker-compose.yml 获取原始端口和域名
                             ORIGINAL_PORT=$(grep -oP '(?<=ports:.*- ")[0-9]+:80' /home/wordpress/docker-compose.yml | cut -d':' -f1 || echo "$DEFAULT_PORT")
                             ORIGINAL_SSL_PORT=$(grep -oP '(?<=ports:.*- ")[0-9]+:443' /home/wordpress/docker-compose.yml | cut -d':' -f1 || echo "$DEFAULT_SSL_PORT")
-                            ORIGINAL_DOMAIN=$(grep -o 'server_name.*;' /home/wordpress/conf.d/default.conf | sed -e 's/server_name \(.*\);/\1/' | head -n 1 || echo "_")
+                            ORIGINAL_DOMAIN=$(sed -n 's/^\s*server_name\s*\([^;]*\);/\1/p' /home/wordpress/conf.d/default.conf | head -n 1 || echo "_")
 
                             read -p "请输入新服务器的 IP 地址： " NEW_SERVER_IP
                             while [ -z "$NEW_SERVER_IP" ] || ! ping -c 1 "$NEW_SERVER_IP" > /dev/null 2>&1; do
@@ -2273,7 +2440,6 @@ EOF
                             echo -e "${YELLOW}正在新服务器上部署 WordPress...${RESET}"
                             DEPLOY_SCRIPT=$(mktemp)
                             if [ "$NEW_DOMAIN" != "$ORIGINAL_DOMAIN" ] || [ "$ENABLE_HTTPS" == "yes" ]; then
-                                # 如果更换域名或启用 HTTPS，修改配置文件并重新生成证书
                                 cat > "$DEPLOY_SCRIPT" <<EOF
 #!/bin/bash
 if ! command -v docker > /dev/null 2>&1; then
@@ -2469,7 +2635,7 @@ EOF
                                 continue
                             fi
 
-                            # 获取当前域名（使用 sed 替代 grep -P）
+                            # 获取当前域名
                             CURRENT_DOMAIN=$(sed -n 's/^\s*server_name\s*\([^;]*\);/\1/p' /home/wordpress/conf.d/default.conf | head -n 1 || echo "未知")
                             if [ "$CURRENT_DOMAIN" = "未知" ]; then
                                 echo -e "${RED}无法从配置文件中提取域名，请检查 /home/wordpress/conf.d/default.conf！${RESET}"
