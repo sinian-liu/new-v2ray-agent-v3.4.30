@@ -1338,8 +1338,26 @@ EOF"
                     echo -e "${RED}无法识别系统，无法继续操作！${RESET}"
                     read -p "按回车键返回主菜单..."
                 else
-                    # 检测网络连接
-                    ping -c 1 google.com > /dev/null 2>&1
+                    # 检测网络连接（增强版）
+                    check_network() {
+                        local targets=("google.com" "8.8.8.8" "baidu.com")
+                        local retries=3
+                        local success=0
+                        for target in "${targets[@]}"; do
+                            for ((i=1; i<=retries; i++)); do
+                                ping -c 1 "$target" > /dev/null 2>&1
+                                if [ $? -eq 0 ]; then
+                                    success=1
+                                    break
+                                fi
+                                sleep 2
+                            done
+                            [ $success -eq 1 ] && break
+                        done
+                        return $((1 - success))
+                    }
+                    echo -e "${YELLOW}检测网络连接...${RESET}"
+                    check_network
                     if [ $? -ne 0 ]; then
                         echo -e "${RED}网络连接失败，请检查网络后重试！${RESET}"
                         read -p "按回车键返回主菜单..."
@@ -1457,7 +1475,12 @@ EOF"
                                     netstat -tuln | grep ":$port" > /dev/null
                                 else
                                     echo -e "${RED}未找到 ss 或 netstat，请安装 net-tools 并重试！${RESET}"
-                                    return 1
+                                    if [ "$SYSTEM" == "centos" ]; then
+                                        yum install -y net-tools
+                                    else
+                                        apt install -y net-tools
+                                    fi
+                                    netstat -tuln | grep ":$port" > /dev/null
                                 fi
                             }
 
@@ -2108,17 +2131,20 @@ EOF"
                                 fi
                             fi
 
-                            # 询问是否更换域名
-                            echo -e "${YELLOW}原始域名为：$ORIGINAL_DOMAIN${RESET}"
-                            read -p "是否更换新域名？（y/n，默认 n）： " change_domain
-                            NEW_DOMAIN="$ORIGINAL_DOMAIN"
-                            if [ "$change_domain" == "y" ] || [ "$change_domain" == "Y" ]; then
-                                read -p "请输入新域名（例如 newexample.com）： " NEW_DOMAIN
-                                while [ -z "$NEW_DOMAIN" ]; do
-                                    echo -e "${RED}新域名不能为空，请重新输入！${RESET}"
-                                    read -p "请输入新域名（例如 newexample.com）： " NEW_DOMAIN
-                                done
-                                echo -e "${YELLOW}将使用新域名 $NEW_DOMAIN 进行迁移${RESET}"
+                            # 安装 sshpass（如果使用密码且未安装）
+                            if [ -n "$SSH_PASS" ] && ! command -v sshpass > /dev/null 2>&1; then
+                                echo -e "${YELLOW}检测到需要 sshpass，正在安装...${RESET}"
+                                if [ "$SYSTEM" == "centos" ]; then
+                                    yum install -y epel-release
+                                    yum install -y sshpass
+                                else
+                                    apt update && apt install -y sshpass
+                                fi
+                                if [ $? -ne 0 ]; then
+                                    echo -e "${RED}sshpass 安装失败，请手动安装后重试！${RESET}"
+                                    read -p "按回车键返回主菜单..."
+                                    continue
+                                fi
                             fi
 
                             # 测试 SSH 连接
@@ -2133,7 +2159,7 @@ EOF"
                             if [ $SSH_TEST -ne 0 ]; then
                                 echo -e "${RED}SSH 连接失败！错误信息如下：${RESET}"
                                 cat /tmp/ssh_error
-                                echo -e "${YELLOW}请检查 IP、用户名、密码/密钥或新服务器 SSH 配置！${RESET}"
+                                echo -e "${YELLOW}请检查 IP、用户名、密码/密钥或目标服务器 SSH 配置！${RESET}"
                                 rm -f /tmp/ssh_error
                                 read -p "按回车键返回主菜单..."
                                 continue
@@ -2503,6 +2529,22 @@ EOF
                                 BACKUP_SSH_KEY=${BACKUP_SSH_KEY:-~/.ssh/id_rsa}
                                 if [ ! -f "$BACKUP_SSH_KEY" ]; then
                                     echo -e "${RED}SSH 密钥文件 $BACKUP_SSH_KEY 不存在，请检查路径！${RESET}"
+                                    read -p "按回车键返回主菜单..."
+                                    continue
+                                fi
+                            fi
+
+                            # 安装 sshpass（如果使用密码且未安装）
+                            if [ -n "$BACKUP_SSH_PASS" ] && ! command -v sshpass > /dev/null 2>&1; then
+                                echo -e "${YELLOW}检测到需要 sshpass，正在安装...${RESET}"
+                                if [ "$SYSTEM" == "centos" ]; then
+                                    yum install -y epel-release
+                                    yum install -y sshpass
+                                else
+                                    apt update && apt install -y sshpass
+                                fi
+                                if [ $? -ne 0 ]; then
+                                    echo -e "${RED}sshpass 安装失败，请手动安装后重试！${RESET}"
                                     read -p "按回车键返回主菜单..."
                                     continue
                                 fi
