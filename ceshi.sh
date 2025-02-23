@@ -1320,7 +1320,6 @@ EOF"
                 read -p "按回车键返回主菜单..."
                 ;;
         21)
-            21)
                 # WordPress 安装（基于 Docker）
                 echo -e "${GREEN}正在准备处理 WordPress 安装...${RESET}"
 
@@ -1334,6 +1333,14 @@ EOF"
                     ping -c 1 google.com > /dev/null 2>&1
                     if [ $? -ne 0 ]; then
                         echo -e "${RED}网络连接失败，请检查网络后重试！${RESET}"
+                        read -p "按回车键返回主菜单..."
+                        continue
+                    fi
+
+                    # 检查磁盘空间
+                    DISK_SPACE=$(df -h / | awk 'NR==2 {print $4}' | cut -d'G' -f1)
+                    if [ -z "$DISK_SPACE" ] || [ "$DISK_SPACE" -lt 5 ]; then
+                        echo -e "${RED}磁盘空间不足（需至少 5G），请清理后再试！当前可用空间：$DISK_SPACE${RESET}"
                         read -p "按回车键返回主菜单..."
                         continue
                     fi
@@ -1469,7 +1476,7 @@ EOF"
                             # 安装 Docker Compose（如果未安装）
                             if ! command -v docker-compose > /dev/null 2>&1; then
                                 echo -e "${YELLOW}安装 Docker Compose...${RESET}"
-                                curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+                                curl -L "https://github.com/docker/compose/releases/download/v2.20.0/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
                                 chmod +x /usr/local/bin/docker-compose
                             fi
 
@@ -1510,7 +1517,7 @@ services:
         condition: service_healthy
     restart: unless-stopped
     healthcheck:
-      test: [\"CMD\", \"curl\", \"-f\", \"http://localhost:9000\"]
+      test: [\"CMD\", \"ps\", \"aux\", \"|\", \"grep\", \"php-fpm\"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -1566,11 +1573,26 @@ EOF
                                 continue
                             fi
 
-                            # 等待服务就绪并检查端口
-                            echo -e "${YELLOW}等待服务初始化（约 60 秒）...${RESET}"
-                            sleep 60
+                            # 等待服务就绪并动态检查容器状态
+                            echo -e "${YELLOW}等待服务初始化（最多 120 秒）...${RESET}"
+                            TIMEOUT=120
+                            INTERVAL=10
+                            ELAPSED=0
+                            while [ $ELAPSED -lt $TIMEOUT ]; do
+                                if docker ps -a --format '{{.Names}} {{.Status}}' | grep -q "wordpress_nginx.*Up" && \
+                                   docker ps -a --format '{{.Names}} {{.Status}}' | grep -q "wordpress.*Up" && \
+                                   docker ps -a --format '{{.Names}} {{.Status}}' | grep -q "wordpress_mariadb.*Up"; then
+                                    break
+                                fi
+                                sleep $INTERVAL
+                                ELAPSED=$((ELAPSED + INTERVAL))
+                            done
+
                             if ! curl -s -I "http://localhost:$DEFAULT_PORT" | grep -q "HTTP"; then
-                                echo -e "${RED}服务未正常启动（可能出现 HTTP ERROR 503），请检查以下日志：${RESET}"
+                                echo -e "${RED}服务未正常启动（可能出现 HTTP ERROR 503），请检查以下信息：${RESET}"
+                                echo -e "${YELLOW}容器状态：${RESET}"
+                                docker ps -a
+                                echo -e "${YELLOW}日志：${RESET}"
                                 docker-compose logs
                                 echo -e "${YELLOW}可能原因：Nginx 或 PHP-FPM 未运行、数据库未就绪${RESET}"
                                 echo -e "${YELLOW}建议：检查日志后，重启服务（cd /home/wordpress && docker-compose down && docker-compose up -d）${RESET}"
@@ -1638,7 +1660,7 @@ EOF
                     esac
                 fi
                 read -p "按回车键返回主菜单..."
-                ;;
+                ;; 
         esac
     done
 }
