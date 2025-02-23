@@ -1493,7 +1493,7 @@ services:
       - ./logs/nginx:/var/log/nginx
     depends_on:
       wordpress:
-        condition: service_healthy
+        condition: service_started
     restart: unless-stopped
   wordpress:
     image: wordpress:php8.2-fpm
@@ -1510,10 +1510,10 @@ services:
         condition: service_healthy
     restart: unless-stopped
     healthcheck:
-      test: [\"CMD\", \"php-fpm-healthcheck\"]
+      test: [\"CMD\", \"curl\", \"-f\", \"http://localhost:9000\"]
       interval: 10s
-      timeout: 3s
-      retries: 3
+      timeout: 5s
+      retries: 5
   mariadb:
     image: mariadb:latest
     container_name: wordpress_mariadb
