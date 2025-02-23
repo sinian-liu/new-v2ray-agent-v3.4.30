@@ -2828,15 +2828,15 @@ EOF"
                             echo -e "${RED}设置定时备份失败，请手动检查 crontab！${RESET}"
                         fi
                     fi
-                    read -p "按回车键返回主菜单..."
-                    ;;
-                *)
-                    echo -e "${RED}无效选项，请输入 1、2、3、4 或 5！${RESET}"
-                    read -p "按回车键返回主菜单..."
-                    ;;
-            esac
-        fi
-        ;;
+                            read -p "按回车键返回主菜单..."
+                            ;;
+                        *)
+                            echo -e "${RED}无效选项，请输入 1、2、3、4 或 5！${RESET}"
+                            read -p "按回车键返回主菜单..."
+                            ;;
+                    esac
+                fi
+                ;;
         esac
     done
 }
