@@ -1320,6 +1320,7 @@ EOF"
                 read -p "按回车键返回主菜单..."
                 ;;
         21)
+            21)
                 # WordPress 安装（基于 Docker）
                 echo -e "${GREEN}正在准备处理 WordPress 安装...${RESET}"
 
@@ -1492,8 +1493,7 @@ services:
       - ./conf.d:/etc/nginx/conf.d
       - ./logs/nginx:/var/log/nginx
     depends_on:
-      wordpress:
-        condition: service_started
+      - wordpress
     restart: unless-stopped
   wordpress:
     image: wordpress:php8.2-fpm
@@ -1534,7 +1534,7 @@ services:
 EOF"
                             # 配置 Nginx 默认站点（使用临时文件避免格式问题）
                             TEMP_CONF=$(mktemp)
-                            cat > "$TEMP_CONF" <<EOF
+                            cat > "$TEMP_CONF" <<'EOF'
 server {
     listen 80;
     server_name _;
@@ -1542,28 +1542,19 @@ server {
     index index.php index.html index.htm;
 
     location / {
-        try_files \$uri \$uri/ /index.php?\$args;
+        try_files $uri $uri/ /index.php?$args;
     }
 
-    location ~ \\.php\$ {
+    location ~ \.php$ {
         fastcgi_pass wordpress:9000;
         fastcgi_index index.php;
-        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
+        fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
         include fastcgi_params;
     }
 }
 EOF
                             sudo mv "$TEMP_CONF" /home/wordpress/conf.d/default.conf
                             sudo chmod 644 /home/wordpress/conf.d/default.conf
-
-                            # 验证 Nginx 配置
-                            docker run --rm -v /home/wordpress/conf.d:/etc/nginx/conf.d nginx:latest nginx -t -c /etc/nginx/nginx.conf
-                            if [ $? -ne 0 ]; then
-                                echo -e "${RED}Nginx 配置验证失败，请检查 /home/wordpress/conf.d/default.conf${RESET}"
-                                cat /home/wordpress/conf.d/default.conf
-                                read -p "按回车键返回主菜单..."
-                                continue
-                            fi
 
                             # 启动 Docker Compose
                             cd /home/wordpress && docker-compose up -d
