@@ -1643,49 +1643,7 @@ case $operation_choice in
         fi
         touch wordpress/docker-compose.yml
 
-        # 先单独启动 MariaDB 服务以确保初始化完成
-        echo -e "${YELLOW}正在单独启动 MariaDB 以确保初始化完成...${RESET}"
-        bash -c "cat > /home/wordpress/docker-compose.yml <<EOF
-services:
-  mariadb:
-    image: mariadb:latest
-    container_name: wordpress_mariadb
-    environment:
-      MYSQL_ROOT_PASSWORD: \"$db_root_passwd\"
-      MYSQL_DATABASE: wordpress
-      MYSQL_USER: wordpress
-      MYSQL_PASSWORD: \"$db_user_passwd\"
-    volumes:
-      - ./mysql:/var/lib/mysql
-      - ./logs/mariadb:/var/log/mysql
-    restart: unless-stopped
-    healthcheck:
-      test: [\"CMD\", \"mysqladmin\", \"ping\", \"-h\", \"localhost\", \"-u\", \"wordpress\", \"-p$db_user_passwd\"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 60s
-EOF"
-        cd /home/wordpress && docker-compose up -d mariadb
-        if [ $? -ne 0 ]; then
-            echo -e "${RED}MariaDB 启动失败，请检查日志！${RESET}"
-            docker-compose logs mariadb
-            read -p "按回车键返回主菜单..."
-            continue
-        fi
-
-        # 无限循环等待 MariaDB 健康检查通过
-        echo -e "${YELLOW}等待 MariaDB 初始化完成...${RESET}"
-        while true; do
-            if docker inspect wordpress_mariadb --format '{{.State.Health.Status}}' | grep -q "healthy"; then
-                echo -e "${GREEN}MariaDB 初始化完成！${RESET}"
-                break
-            fi
-            echo -e "${YELLOW}MariaDB 仍在初始化中，请稍候（检查间隔 10 秒）...${RESET}"
-            sleep 10
-        done
-
-        # 生成完整的 docker-compose.yml（HTTP 或 HTTPS）
+        # 生成完整的 docker-compose.yml（无健康检查）
         CERT_OK="no"
         if [ "$ENABLE_HTTPS" == "yes" ]; then
             bash -c "cat > /home/wordpress/docker-compose.yml <<EOF
@@ -1713,14 +1671,8 @@ services:
       WORDPRESS_DB_PASSWORD: \"$db_user_passwd\"
       WORDPRESS_DB_NAME: wordpress
     depends_on:
-      mariadb:
-        condition: service_healthy
+      - mariadb
     restart: unless-stopped
-    healthcheck:
-      test: [\"CMD\", \"bash\", \"-c\", \"ps aux | grep php-fpm || exit 1\"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
   mariadb:
     image: mariadb:latest
     container_name: wordpress_mariadb
@@ -1733,12 +1685,6 @@ services:
       - ./mysql:/var/lib/mysql
       - ./logs/mariadb:/var/log/mysql
     restart: unless-stopped
-    healthcheck:
-      test: [\"CMD\", \"mysqladmin\", \"ping\", \"-h\", \"localhost\", \"-u\", \"wordpress\", \"-p$db_user_passwd\"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 60s
 EOF"
             TEMP_CONF=$(mktemp)
             cat > "$TEMP_CONF" <<EOF
@@ -1835,14 +1781,8 @@ services:
       WORDPRESS_DB_PASSWORD: \"$db_user_passwd\"
       WORDPRESS_DB_NAME: wordpress
     depends_on:
-      mariadb:
-        condition: service_healthy
+      - mariadb
     restart: unless-stopped
-    healthcheck:
-      test: [\"CMD\", \"bash\", \"-c\", \"ps aux | grep php-fpm || exit 1\"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
   mariadb:
     image: mariadb:latest
     container_name: wordpress_mariadb
@@ -1855,12 +1795,6 @@ services:
       - ./mysql:/var/lib/mysql
       - ./logs/mariadb:/var/log/mysql
     restart: unless-stopped
-    healthcheck:
-      test: [\"CMD\", \"mysqladmin\", \"ping\", \"-h\", \"localhost\", \"-u\", \"wordpress\", \"-p$db_user_passwd\"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 60s
   certbot:
     image: certbot/certbot
     container_name: wordpress_certbot
@@ -1898,14 +1832,8 @@ services:
       WORDPRESS_DB_PASSWORD: \"$db_user_passwd\"
       WORDPRESS_DB_NAME: wordpress
     depends_on:
-      mariadb:
-        condition: service_healthy
+      - mariadb
     restart: unless-stopped
-    healthcheck:
-      test: [\"CMD\", \"bash\", \"-c\", \"ps aux | grep php-fpm || exit 1\"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
   mariadb:
     image: mariadb:latest
     container_name: wordpress_mariadb
@@ -1918,12 +1846,6 @@ services:
       - ./mysql:/var/lib/mysql
       - ./logs/mariadb:/var/log/mysql
     restart: unless-stopped
-    healthcheck:
-      test: [\"CMD\", \"mysqladmin\", \"ping\", \"-h\", \"localhost\", \"-u\", \"wordpress\", \"-p$db_user_passwd\"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 60s
 EOF"
         fi
 
@@ -1997,9 +1919,9 @@ EOF
         fi
 
         # 等待服务就绪并动态检查容器状态
-        echo -e "${YELLOW}等待服务初始化（最多 120 秒）...${RESET}"
-        TIMEOUT=120
-        INTERVAL=10
+        echo -e "${YELLOW}等待服务初始化（最多 60 秒）...${RESET}"
+        TIMEOUT=60
+        INTERVAL=5
         ELAPSED=0
         while [ $ELAPSED -lt $TIMEOUT ]; do
             if docker ps -a --format '{{.Names}} {{.Status}}' | grep -q "wordpress_nginx.*Up" && \
