@@ -154,6 +154,7 @@ show_menu() {
         echo -e "${YELLOW}18.安装 Docker${RESET}"
         echo -e "${YELLOW}19.SSH 防暴力破解检测${RESET}"
         echo -e "${YELLOW}20.Speedtest测速面板${RESET}"
+        echo -e "${YELLOW}21.WordPress 安装（基于 Docker）${RESET}"
         echo -e "${GREEN}=============================================${RESET}"
 
         read -p "请输入选项 (输入 'q' 退出): " option
@@ -1310,6 +1311,288 @@ EOF"
                                 fi
                             fi
                             echo -e "${GREEN}Speedtest 测速面板卸载完成！${RESET}"
+                            ;;
+                        *)
+                            echo -e "${RED}无效选项，请输入 1 或 2！${RESET}"
+                            ;;
+                    esac
+                fi
+                read -p "按回车键返回主菜单..."
+                ;;
+        21)
+                # WordPress 安装（基于 Docker）
+                echo -e "${GREEN}正在准备处理 WordPress 安装...${RESET}"
+
+                # 检查系统类型
+                check_system
+                if [ "$SYSTEM" == "unknown" ]; then
+                    echo -e "${RED}无法识别系统，无法继续操作！${RESET}"
+                    read -p "按回车键返回主菜单..."
+                else
+                    # 检测网络连接
+                    ping -c 1 google.com > /dev/null 2>&1
+                    if [ $? -ne 0 ]; then
+                        echo -e "${RED}网络连接失败，请检查网络后重试！${RESET}"
+                        read -p "按回车键返回主菜单..."
+                        continue
+                    fi
+
+                    # 检测运行中的 Docker 服务
+                    echo -e "${YELLOW}正在检测运行中的 Docker 服务...${RESET}"
+                    DOCKER_RUNNING=false
+                    if command -v docker > /dev/null 2>&1 && systemctl is-active docker > /dev/null 2>&1; then
+                        DOCKER_RUNNING=true
+                        echo -e "${YELLOW}检测到 Docker 服务正在运行${RESET}"
+                        if docker ps -q | grep -q "."; then
+                            echo -e "${YELLOW}检测到运行中的 Docker 容器${RESET}"
+                        fi
+                    elif command -v docker > /dev/null 2>&1; then
+                        echo -e "${YELLOW}Docker 已安装但未运行，正在启动...${RESET}"
+                        sudo systemctl start docker
+                        if [ $? -eq 0 ]; then
+                            DOCKER_RUNNING=true
+                            echo -e "${YELLOW}Docker 服务启动成功${RESET}"
+                        else
+                            echo -e "${RED}Docker 服务启动失败，请手动检查！${RESET}"
+                            read -p "按回车键返回主菜单..."
+                            continue
+                        fi
+                    fi
+
+                    # 询问用户是否停止运行中的 Docker 服务
+                    if [ "$DOCKER_RUNNING" = true ] && docker ps -q | grep -q "."; then
+                        read -p "是否停止并移除运行中的 Docker 容器以继续安装？（y/n，默认 n）： " stop_containers
+                        if [ "$stop_containers" == "y" ] || [ "$stop_containers" == "Y" ]; then
+                            echo -e "${YELLOW}正在停止并移除运行中的 Docker 容器...${RESET}"
+                            docker stop $(docker ps -q) || true
+                            docker rm $(docker ps -aq) || true
+                        else
+                            echo -e "${RED}保留运行中的容器，可能导致安装冲突，建议手动清理后再试！${RESET}"
+                        fi
+                    fi
+
+                    # 提示用户选择操作
+                    echo -e "${YELLOW}请选择操作：${RESET}"
+                    echo "1) 安装 WordPress"
+                    echo "2) 卸载 WordPress"
+                    read -p "请输入选项（1 或 2）： " operation_choice
+
+                    case $operation_choice in
+                        1)
+                            # 安装 WordPress
+                            echo -e "${GREEN}正在安装 WordPress...${RESET}"
+
+                            # 检查端口占用并选择可用端口
+                            DEFAULT_PORT=80
+                            check_port() {
+                                local port=$1
+                                if netstat -tuln | grep ":$port" > /dev/null; then
+                                    return 1
+                                else
+                                    return 0
+                                fi
+                            }
+
+                            check_port "$DEFAULT_PORT"
+                            if [ $? -eq 1 ]; then
+                                echo -e "${RED}端口 $DEFAULT_PORT 已被占用！${RESET}"
+                                read -p "是否更换端口？（y/n，默认 y）： " change_port
+                                if [ "$change_port" != "n" ] && [ "$change_port" != "N" ]; then
+                                    while true; do
+                                        read -p "请输入新的端口号（例如 8080）： " new_port
+                                        while ! [[ "$new_port" =~ ^[0-9]+$ ]] || [ "$new_port" -lt 1 ] || [ "$new_port" -gt 65535 ]; do
+                                            echo -e "${RED}无效端口，请输入 1-65535 之间的数字！${RESET}"
+                                            read -p "请输入新的端口号（例如 8080）： " new_port
+                                        done
+                                        check_port "$new_port"
+                                        if [ $? -eq 0 ]; then
+                                            DEFAULT_PORT=$new_port
+                                            break
+                                        else
+                                            echo -e "${RED}端口 $new_port 已被占用，请选择其他端口！${RESET}"
+                                        fi
+                                    done
+                                else
+                                    echo -e "${RED}端口 $DEFAULT_PORT 被占用，无法继续安装！${RESET}"
+                                    read -p "按回车键返回主菜单..."
+                                    continue
+                                fi
+                            fi
+
+                            # 检查并放行防火墙端口
+                            if command -v ufw > /dev/null 2>&1; then
+                                ufw status | grep -q "Status: active"
+                                if [ $? -eq 0 ]; then
+                                    echo -e "${YELLOW}检测到 UFW 防火墙正在运行...${RESET}"
+                                    ufw status | grep -q "$DEFAULT_PORT"
+                                    if [ $? -ne 0 ]; then
+                                        echo -e "${YELLOW}正在放行端口 $DEFAULT_PORT...${RESET}"
+                                        sudo ufw allow "$DEFAULT_PORT/tcp"
+                                        sudo ufw reload
+                                    fi
+                                fi
+                            elif command -v iptables > /dev/null 2>&1; then
+                                echo -e "${YELLOW}检测到 iptables 防火墙...${RESET}"
+                                iptables -C INPUT -p tcp --dport "$DEFAULT_PORT" -j ACCEPT 2>/dev/null
+                                if [ $? -ne 0 ]; then
+                                    echo -e "${YELLOW}正在放行端口 $DEFAULT_PORT...${RESET}"
+                                    sudo iptables -A INPUT -p tcp --dport "$DEFAULT_PORT" -j ACCEPT
+                                    sudo iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
+                                fi
+                            elif command -v firewall-cmd > /dev/null 2>&1; then
+                                firewall-cmd --state | grep -q "running"
+                                if [ $? -eq 0 ]; then
+                                    echo -e "${YELLOW}检测到 firewalld 防火墙...${RESET}"
+                                    firewall-cmd --list-ports | grep -q "$DEFAULT_PORT/tcp"
+                                    if [ $? -ne 0 ]; then
+                                        echo -e "${YELLOW}正在放行端口 $DEFAULT_PORT...${RESET}"
+                                        sudo firewall-cmd --permanent --add-port="$DEFAULT_PORT/tcp"
+                                        sudo firewall-cmd --reload
+                                    fi
+                                fi
+                            fi
+
+                            # 询问 MariaDB 用户信息
+                            echo -e "${YELLOW}请设置 MariaDB 数据库用户信息：${RESET}"
+                            read -p "请输入数据库 ROOT 密码（默认 'passwd'）： " db_root_passwd
+                            db_root_passwd=${db_root_passwd:-passwd}
+                            read -p "请输入数据库用户名（默认 'wordpress'）： " db_user
+                            db_user=${db_user:-wordpress}
+                            read -p "请输入数据库用户密码（默认 'wordpresspass'）： " db_user_passwd
+                            db_user_passwd=${db_user_passwd:-wordpresspass}
+
+                            # 安装 Docker 和 Docker Compose
+                            if ! command -v docker > /dev/null 2>&1; then
+                                echo -e "${YELLOW}安装 Docker...${RESET}"
+                                curl -fsSL https://get.docker.com | sh
+                                sudo systemctl start docker
+                                sudo systemctl enable docker
+                            fi
+                            if ! command -v docker-compose > /dev/null 2>&1; then
+                                echo -e "${YELLOW}安装 Docker Compose...${RESET}"
+                                curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+                                chmod +x /usr/local/bin/docker-compose
+                            fi
+
+                            # 创建目录和配置 docker-compose.yml
+                            cd /home && mkdir -p wordpress/html wordpress/mysql wordpress/conf.d
+                            if [ $? -ne 0 ]; then
+                                echo -e "${RED}创建目录 /home/wordpress 失败，请检查权限或磁盘空间！${RESET}"
+                                read -p "按回车键返回主菜单..."
+                                continue
+                            fi
+                            touch wordpress/docker-compose.yml
+                            sudo bash -c "cat > /home/wordpress/docker-compose.yml <<EOF
+version: '3'
+services:
+  nginx:
+    image: nginx:latest
+    container_name: wordpress_nginx
+    ports:
+      - \"$DEFAULT_PORT:80\"
+    volumes:
+      - ./html:/var/www/html
+      - ./conf.d:/etc/nginx/conf.d
+    depends_on:
+      - wordpress
+  wordpress:
+    image: wordpress:latest
+    container_name: wordpress
+    volumes:
+      - ./html:/var/www/html
+    environment:
+      WORDPRESS_DB_HOST: mariadb
+      WORDPRESS_DB_USER: \"$db_user\"
+      WORDPRESS_DB_PASSWORD: \"$db_user_passwd\"
+      WORDPRESS_DB_NAME: \"wordpress\"
+    depends_on:
+      - mariadb
+  mariadb:
+    image: mariadb:latest
+    container_name: wordpress_mariadb
+    environment:
+      MYSQL_ROOT_PASSWORD: \"$db_root_passwd\"
+      MYSQL_DATABASE: \"wordpress\"
+      MYSQL_USER: \"$db_user\"
+      MYSQL_PASSWORD: \"$db_user_passwd\"
+    volumes:
+      - ./mysql:/var/lib/mysql
+EOF"
+                            # 配置 Nginx 默认站点
+                            sudo bash -c "cat > /home/wordpress/conf.d/default.conf <<EOF
+server {
+    listen 80;
+    server_name _;
+    root /var/www/html;
+    index index.php index.html index.htm;
+
+    location / {
+        try_files \$uri \$uri/ /index.php?\$args;
+    }
+
+    location ~ \\.php\$ {
+        fastcgi_pass wordpress:9000;
+        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
+        include fastcgi_params;
+    }
+}
+EOF"
+
+                            # 启动 Docker Compose
+                            cd /home/wordpress && docker-compose up -d
+                            if [ $? -ne 0 ]; then
+                                echo -e "${RED}Docker Compose 启动失败，请检查 Docker 服务或网络连接！${RESET}"
+                                echo -e "${YELLOW}日志提示：${RESET}"
+                                docker-compose logs
+                                read -p "按回车键返回主菜单..."
+                                continue
+                            fi
+
+                            server_ip=$(curl -s4 ifconfig.me)
+                            if [ -z "$server_ip" ]; then
+                                server_ip="你的服务器IP"
+                            fi
+                            echo -e "${GREEN}WordPress 安装完成！${RESET}"
+                            echo -e "${YELLOW}访问 http://$server_ip:$DEFAULT_PORT 开始 WordPress 配置${RESET}"
+                            echo -e "${YELLOW}数据库用户 '$db_user' 密码为 '$db_user_passwd', ROOT 密码为 '$db_root_passwd'${RESET}"
+                            ;;
+                        2)
+                            # 卸载 WordPress
+                            echo -e "${GREEN}正在卸载 WordPress...${RESET}"
+                            cd /home/wordpress || true
+                            if [ -f docker-compose.yml ]; then
+                                docker-compose down -v || true
+                                echo -e "${YELLOW}已停止并移除 WordPress 容器和卷${RESET}"
+                            fi
+                            # 检查并移除相关容器
+                            for container in wordpress_nginx wordpress wordpress_mariadb; do
+                                if docker ps -a | grep -q "$container"; then
+                                    docker stop "$container" || true
+                                    docker rm "$container" || true
+                                    echo -e "${YELLOW}已移除容器 $container${RESET}"
+                                fi
+                            done
+                            sudo rm -rf /home/wordpress
+                            if [ $? -eq 0 ]; then
+                                echo -e "${YELLOW}已删除 /home/wordpress 目录${RESET}"
+                            else
+                                echo -e "${RED}删除 /home/wordpress 目录失败，请手动检查！${RESET}"
+                            fi
+                            # 询问是否移除镜像
+                            for image in nginx:latest wordpress:latest mariadb:latest; do
+                                if docker images | grep -q "$(echo $image | cut -d: -f1)"; then
+                                    read -p "是否移除 WordPress 的 Docker 镜像（$image）？（y/n，默认 n）： " remove_image
+                                    if [ "$remove_image" == "y" ] || [ "$remove_image" == "Y" ]; then
+                                        docker rmi "$image" || true
+                                        if [ $? -eq 0 ]; then
+                                            echo -e "${YELLOW}已移除镜像 $image${RESET}"
+                                        else
+                                            echo -e "${RED}移除镜像 $image 失败，可能被其他容器使用！${RESET}"
+                                        fi
+                                    fi
+                                fi
+                            done
+                            echo -e "${GREEN}WordPress 卸载完成！${RESET}"
                             ;;
                         *)
                             echo -e "${RED}无效选项，请输入 1 或 2！${RESET}"
