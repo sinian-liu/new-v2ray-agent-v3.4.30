@@ -1546,12 +1546,21 @@ server {
 
     location ~ \\.php\$ {
         fastcgi_pass wordpress:9000;
-        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
         fastcgi_index index.php;
+        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
         include fastcgi_params;
     }
 }
 EOF"
+
+                            # 验证 Nginx 配置
+                            docker run --rm -v /home/wordpress/conf.d:/etc/nginx/conf.d nginx:latest nginx -t -c /etc/nginx/nginx.conf
+                            if [ $? -ne 0 ]; then
+                                echo -e "${RED}Nginx 配置验证失败，请检查 /home/wordpress/conf.d/default.conf${RESET}"
+                                cat /home/wordpress/conf.d/default.conf
+                                read -p "按回车键返回主菜单..."
+                                continue
+                            fi
 
                             # 启动 Docker Compose
                             cd /home/wordpress && docker-compose up -d
@@ -1564,8 +1573,8 @@ EOF"
                             fi
 
                             # 等待服务就绪并检查端口
-                            echo -e "${YELLOW}等待服务初始化（约 30 秒）...${RESET}"
-                            sleep 30
+                            echo -e "${YELLOW}等待服务初始化（约 60 秒）...${RESET}"
+                            sleep 60
                             if ! curl -s -I "http://localhost:$DEFAULT_PORT" | grep -q "HTTP"; then
                                 echo -e "${RED}服务未正常启动（可能出现 HTTP ERROR 503），请检查以下日志：${RESET}"
                                 docker-compose logs
