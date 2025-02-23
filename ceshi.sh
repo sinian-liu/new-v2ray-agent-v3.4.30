@@ -1643,7 +1643,59 @@ case $operation_choice in
         fi
         touch wordpress/docker-compose.yml
 
-        # 生成完整的 docker-compose.yml（无健康检查）
+        # 先单独启动 MariaDB
+        echo -e "${YELLOW}正在单独启动 MariaDB...${RESET}"
+        bash -c "cat > /home/wordpress/docker-compose.yml <<EOF
+services:
+  mariadb:
+    image: mariadb:10.5
+    container_name: wordpress_mariadb
+    environment:
+      MYSQL_ROOT_PASSWORD: \"$db_root_passwd\"
+      MYSQL_DATABASE: wordpress
+      MYSQL_USER: wordpress
+      MYSQL_PASSWORD: \"$db_user_passwd\"
+    volumes:
+      - ./mysql:/var/lib/mysql
+      - ./logs/mariadb:/var/log/mysql
+    restart: unless-stopped
+    ports:
+      - \"3306:3306\"
+EOF"
+        cd /home/wordpress && docker-compose up -d mariadb
+        if [ $? -ne 0 ]; then
+            echo -e "${RED}MariaDB 启动失败，请检查日志！${RESET}"
+            docker-compose logs mariadb
+            read -p "按回车键返回主菜单..."
+            continue
+        fi
+
+        # 等待 MariaDB 就绪
+        echo -e "${YELLOW}等待 MariaDB 初始化完成（最多 60 秒）...${RESET}"
+        TIMEOUT=60
+        INTERVAL=5
+        ELAPSED=0
+        while [ $ELAPSED -lt $TIMEOUT ]; do
+            if docker exec wordpress_mariadb mysqladmin ping -h localhost -u wordpress -p"$db_user_passwd" > /dev/null 2>&1; then
+                echo -e "${GREEN}MariaDB 初始化完成！${RESET}"
+                break
+            fi
+            sleep $INTERVAL
+            ELAPSED=$((ELAPSED + INTERVAL))
+        done
+
+        if [ $ELAPSED -ge $TIMEOUT ]; then
+            echo -e "${RED}MariaDB 未能在 60 秒内就绪，请检查日志！${RESET}"
+            docker-compose logs mariadb
+            echo -e "${YELLOW}容器状态：${RESET}"
+            docker ps -a
+            echo -e "${YELLOW}退出码：${RESET}"
+            docker inspect wordpress_mariadb --format '{{.State.ExitCode}}'
+            read -p "按回车键返回主菜单..."
+            continue
+        fi
+
+        # 配置完整服务（HTTP 或 HTTPS）
         CERT_OK="no"
         if [ "$ENABLE_HTTPS" == "yes" ]; then
             bash -c "cat > /home/wordpress/docker-compose.yml <<EOF
@@ -1674,7 +1726,7 @@ services:
       - mariadb
     restart: unless-stopped
   mariadb:
-    image: mariadb:latest
+    image: mariadb:10.5
     container_name: wordpress_mariadb
     environment:
       MYSQL_ROOT_PASSWORD: \"$db_root_passwd\"
@@ -1685,6 +1737,8 @@ services:
       - ./mysql:/var/lib/mysql
       - ./logs/mariadb:/var/log/mysql
     restart: unless-stopped
+    ports:
+      - \"3306:3306\"
 EOF"
             TEMP_CONF=$(mktemp)
             cat > "$TEMP_CONF" <<EOF
@@ -1720,7 +1774,7 @@ EOF
             # 等待 HTTP 服务就绪并申请证书
             echo -e "${YELLOW}等待 HTTP 服务初始化（最多 60 秒）...${RESET}"
             TIMEOUT=60
-            INTERVAL=10
+            INTERVAL=5
             ELAPSED=0
             while [ $ELAPSED -lt $TIMEOUT ]; do
                 if curl -s -I "http://localhost:$DEFAULT_PORT" | grep -q "HTTP"; then
@@ -1784,7 +1838,7 @@ services:
       - mariadb
     restart: unless-stopped
   mariadb:
-    image: mariadb:latest
+    image: mariadb:10.5
     container_name: wordpress_mariadb
     environment:
       MYSQL_ROOT_PASSWORD: \"$db_root_passwd\"
@@ -1795,6 +1849,8 @@ services:
       - ./mysql:/var/lib/mysql
       - ./logs/mariadb:/var/log/mysql
     restart: unless-stopped
+    ports:
+      - \"3306:3306\"
   certbot:
     image: certbot/certbot
     container_name: wordpress_certbot
@@ -1835,7 +1891,7 @@ services:
       - mariadb
     restart: unless-stopped
   mariadb:
-    image: mariadb:latest
+    image: mariadb:10.5
     container_name: wordpress_mariadb
     environment:
       MYSQL_ROOT_PASSWORD: \"$db_root_passwd\"
@@ -1846,6 +1902,8 @@ services:
       - ./mysql:/var/lib/mysql
       - ./logs/mariadb:/var/log/mysql
     restart: unless-stopped
+    ports:
+      - \"3306:3306\"
 EOF"
         fi
 
@@ -1905,7 +1963,7 @@ EOF
         mv "$TEMP_CONF" /home/wordpress/conf.d/default.conf
         chmod 644 /home/wordpress/conf.d/default.conf
 
-        # 启动完整的 Docker Compose 服务
+        # 启动 Docker Compose
         cd /home/wordpress && docker-compose up -d
         if [ $? -ne 0 ]; then
             echo -e "${RED}Docker Compose 启动失败，请检查以下日志：${RESET}"
@@ -1937,6 +1995,10 @@ EOF
         if ! docker exec wordpress_mariadb mysqladmin ping -h localhost -u wordpress -p"$db_user_passwd" > /dev/null 2>&1; then
             echo -e "${RED}MariaDB 服务未正常启动，请检查数据库配置或日志！${RESET}"
             docker-compose logs mariadb
+            echo -e "${YELLOW}容器状态：${RESET}"
+            docker ps -a
+            echo -e "${YELLOW}退出码：${RESET}"
+            docker inspect wordpress_mariadb --format '{{.State.ExitCode}}'
             read -p "按回车键返回主菜单..."
             continue
         fi
