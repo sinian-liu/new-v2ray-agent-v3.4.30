@@ -51,11 +51,9 @@ install_dependencies() {
     echo -e "${YELLOW}检测系统类型...${NC}"
     if grep -qi "ubuntu\|debian" /etc/os-release; then
         echo "检测到系统: Ubuntu/Debian"
-        # 安装基本依赖
         apt update -y || { echo -e "${RED}apt update 失败，请检查网络${NC}"; exit 1; }
-        apt install -y socat jq qrencode lsb-release curl unzip systemd openssl dnsutils || { echo -e "${RED}基本依赖安装失败${NC}"; exit 1; }
+        apt install -y socat jq qrencode lsb-release curl unzip systemd openssl dnsutils net-tools || { echo -e "${RED}基本依赖安装失败${NC}"; exit 1; }
         
-        # 安装 Caddy
         echo -e "${YELLOW}安装 Caddy...${NC}"
         apt install -y debian-keyring debian-archive-keyring apt-transport-https
         curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor | tee /usr/share/keyrings/caddy-stable-archive-keyring.gpg >/dev/null || { echo -e "${RED}GPG 密钥导入失败${NC}"; exit 1; }
@@ -64,7 +62,7 @@ install_dependencies() {
         apt install -y caddy || { echo -e "${RED}Caddy 安装失败${NC}"; exit 1; }
     elif grep -qi "centos" /etc/os-release; then
         echo "检测到系统: CentOS"
-        yum install -y epel-release && yum install -y socat jq qrencode curl unzip systemd openssl bind-utils || { echo -e "${RED}依赖安装失败${NC}"; exit 1; }
+        yum install -y epel-release && yum install -y socat jq qrencode curl unzip systemd openssl bind-utils net-tools || { echo -e "${RED}依赖安装失败${NC}"; exit 1; }
         yum install -y caddy || { echo -e "${RED}Caddy 安装失败，请检查 CentOS 源${NC}"; exit 1; }
     else
         echo -e "${RED}不支持的系统${NC}"
@@ -108,7 +106,6 @@ install_caddy() {
             read -p "请输入你的邮箱（用于证书申请）: " EMAIL
         done
     fi
-    # 清理旧配置
     rm -f "$CADDY_CONFIG"
     mkdir -p /etc/caddy
     cat > "$CADDY_CONFIG" <<EOF
@@ -122,7 +119,12 @@ $DOMAIN:443 {
 }
 EOF
     systemctl restart caddy || { 
-        echo -e "${RED}Caddy 重启失败，请检查日志 (systemctl status caddy)${NC}"
+        echo -e "${RED}Caddy 重启失败，请检查日志${NC}"
+        systemctl status caddy
+        exit 1
+    }
+    systemctl status caddy >/dev/null 2>&1 || { 
+        echo -e "${RED}Caddy 服务启动失败，请检查日志${NC}"
         systemctl status caddy
         exit 1
     }
@@ -142,15 +144,15 @@ generate_config() {
     local inbounds=""
     for proto in "${protocols[@]}"; do
         case $proto in
-            1) inbounds+='{"port": 8443, "protocol": "vless", "settings": {"clients": '$(jq -r '.users | map({"id": .uuid})' "$USER_FILE")', "decryption": "none"}, "streamSettings": {"network": "tcp", "security": "tls", "tlsSettings": {"certificates": [{"certificateFile": "/var/lib/caddy/acme/acme-v02.api.letsencrypt.org-directory/'"$DOMAIN"'/'"$DOMAIN"'.crt", "keyFile": "/var/lib/caddy/acme/acme-v02.api.letsencrypt.org-directory/'"$DOMAIN"'/'"$DOMAIN"'.key"}]}},' ;;
-            2) inbounds+='{"port": 8443, "protocol": "vless", "settings": {"clients": '$(jq -r '.users | map({"id": .uuid})' "$USER_FILE")', "decryption": "none"}, "streamSettings": {"network": "tcp", "security": "tls", "vision": true, "tlsSettings": {"certificates": [{"certificateFile": "/var/lib/caddy/acme/acme-v02.api.letsencrypt.org-directory/'"$DOMAIN"'/'"$DOMAIN"'.crt", "keyFile": "/var/lib/caddy/acme/acme-v02.api.letsencrypt.org-directory/'"$DOMAIN"'/'"$DOMAIN"'.key"}]}},' ;;
-            3) inbounds+='{"port": 8443, "protocol": "vless", "settings": {"clients": '$(jq -r '.users | map({"id": .uuid})' "$USER_FILE")', "decryption": "none"}, "streamSettings": {"network": "ws", "security": "tls", "tlsSettings": {"certificates": [{"certificateFile": "/var/lib/caddy/acme/acme-v02.api.letsencrypt.org-directory/'"$DOMAIN"'/'"$DOMAIN"'.crt", "keyFile": "/var/lib/caddy/acme/acme-v02.api.letsencrypt.org-directory/'"$DOMAIN"'/'"$DOMAIN"'.key"}]}, "wsSettings": {"path": "/vless"}},' ;;
-            4) inbounds+='{"port": 8443, "protocol": "vless", "settings": {"clients": '$(jq -r '.users | map({"id": .uuid})' "$USER_FILE")', "decryption": "none"}, "streamSettings": {"network": "grpc", "security": "tls", "tlsSettings": {"certificates": [{"certificateFile": "/var/lib/caddy/acme/acme-v02.api.letsencrypt.org-directory/'"$DOMAIN"'/'"$DOMAIN"'.crt", "keyFile": "/var/lib/caddy/acme/acme-v02.api.letsencrypt.org-directory/'"$DOMAIN"'/'"$DOMAIN"'.key"}]}, "grpcSettings": {"serviceName": "vless-grpc"}},' ;;
-            5) inbounds+='{"port": 8443, "protocol": "vless", "settings": {"clients": '$(jq -r '.users | map({"id": .uuid})' "$USER_FILE")', "decryption": "none"}, "streamSettings": {"network": "http", "security": "tls", "tlsSettings": {"certificates": [{"certificateFile": "/var/lib/caddy/acme/acme-v02.api.letsencrypt.org-directory/'"$DOMAIN"'/'"$DOMAIN"'.crt", "keyFile": "/var/lib/caddy/acme/acme-v02.api.letsencrypt.org-directory/'"$DOMAIN"'/'"$DOMAIN"'.key"}]}, "httpSettings": {"path": "/h2"}},' ;;
-            6) inbounds+='{"port": 8443, "protocol": "vmess", "settings": {"clients": '$(jq -r '.users | map({"id": .uuid})' "$USER_FILE")'}, "streamSettings": {"network": "ws", "security": "tls", "tlsSettings": {"certificates": [{"certificateFile": "/var/lib/caddy/acme/acme-v02.api.letsencrypt.org-directory/'"$DOMAIN"'/'"$DOMAIN"'.crt", "keyFile": "/var/lib/caddy/acme/acme-v02.api.letsencrypt.org-directory/'"$DOMAIN"'/'"$DOMAIN"'.key"}]}, "wsSettings": {"path": "/vmess"}},' ;;
+            1) inbounds+='{"port": 8443, "protocol": "vless", "settings": {"clients": '$(jq -c '.users | map({"id": .uuid})' "$USER_FILE")', "decryption": "none"}, "streamSettings": {"network": "tcp", "security": "tls", "tlsSettings": {"certificates": [{"certificateFile": "/var/lib/caddy/acme/acme-v02.api.letsencrypt.org-directory/'"$DOMAIN"'/'"$DOMAIN"'.crt", "keyFile": "/var/lib/caddy/acme/acme-v02.api.letsencrypt.org-directory/'"$DOMAIN"'/'"$DOMAIN"'.key"}]}},' ;;
+            2) inbounds+='{"port": 8443, "protocol": "vless", "settings": {"clients": '$(jq -c '.users | map({"id": .uuid})' "$USER_FILE")', "decryption": "none"}, "streamSettings": {"network": "tcp", "security": "tls", "vision": true, "tlsSettings": {"certificates": [{"certificateFile": "/var/lib/caddy/acme/acme-v02.api.letsencrypt.org-directory/'"$DOMAIN"'/'"$DOMAIN"'.crt", "keyFile": "/var/lib/caddy/acme/acme-v02.api.letsencrypt.org-directory/'"$DOMAIN"'/'"$DOMAIN"'.key"}]}},' ;;
+            3) inbounds+='{"port": 8443, "protocol": "vless", "settings": {"clients": '$(jq -c '.users | map({"id": .uuid})' "$USER_FILE")', "decryption": "none"}, "streamSettings": {"network": "ws", "security": "tls", "tlsSettings": {"certificates": [{"certificateFile": "/var/lib/caddy/acme/acme-v02.api.letsencrypt.org-directory/'"$DOMAIN"'/'"$DOMAIN"'.crt", "keyFile": "/var/lib/caddy/acme/acme-v02.api.letsencrypt.org-directory/'"$DOMAIN"'/'"$DOMAIN"'.key"}]}, "wsSettings": {"path": "/vless"}},' ;;
+            4) inbounds+='{"port": 8443, "protocol": "vless", "settings": {"clients": '$(jq -c '.users | map({"id": .uuid})' "$USER_FILE")', "decryption": "none"}, "streamSettings": {"network": "grpc", "security": "tls", "tlsSettings": {"certificates": [{"certificateFile": "/var/lib/caddy/acme/acme-v02.api.letsencrypt.org-directory/'"$DOMAIN"'/'"$DOMAIN"'.crt", "keyFile": "/var/lib/caddy/acme/acme-v02.api.letsencrypt.org-directory/'"$DOMAIN"'/'"$DOMAIN"'.key"}]}, "grpcSettings": {"serviceName": "vless-grpc"}},' ;;
+            5) inbounds+='{"port": 8443, "protocol": "vless", "settings": {"clients": '$(jq -c '.users | map({"id": .uuid})' "$USER_FILE")', "decryption": "none"}, "streamSettings": {"network": "http", "security": "tls", "tlsSettings": {"certificates": [{"certificateFile": "/var/lib/caddy/acme/acme-v02.api.letsencrypt.org-directory/'"$DOMAIN"'/'"$DOMAIN"'.crt", "keyFile": "/var/lib/caddy/acme/acme-v02.api.letsencrypt.org-directory/'"$DOMAIN"'/'"$DOMAIN"'.key"}]}, "httpSettings": {"path": "/h2"}},' ;;
+            6) inbounds+='{"port": 8443, "protocol": "vmess", "settings": {"clients": '$(jq -c '.users | map({"id": .uuid})' "$USER_FILE")'}, "streamSettings": {"network": "ws", "security": "tls", "tlsSettings": {"certificates": [{"certificateFile": "/var/lib/caddy/acme/acme-v02.api.letsencrypt.org-directory/'"$DOMAIN"'/'"$DOMAIN"'.crt", "keyFile": "/var/lib/caddy/acme/acme-v02.api.letsencrypt.org-directory/'"$DOMAIN"'/'"$DOMAIN"'.key"}]}, "wsSettings": {"path": "/vmess"}},' ;;
         esac
     done
-    inbounds=${inbounds%,} # 移除最后一个逗号
+    inbounds=${inbounds%,}
     cat > "$CONFIG_DIR/config.json" <<EOF
 {
   "log": {"loglevel": "warning"},
@@ -158,7 +160,11 @@ generate_config() {
   "outbounds": [{"protocol": "freedom"}]
 }
 EOF
-    systemctl restart xray || echo -e "${RED}Xray 重启失败${NC}"
+    systemctl restart xray || { 
+        echo -e "${RED}Xray 重启失败，请检查日志${NC}"
+        systemctl status xray
+        exit 1
+    }
 }
 
 # 主安装流程
@@ -197,7 +203,6 @@ main_install() {
     echo "alias sinian='bash $SCRIPT_PATH'" >> /root/.bashrc
     source /root/.bashrc
     
-    # 随机创建测试用户
     init_users
     uuid=$(generate_uuid)
     max_id=$(jq -r '[.users[].id] | max // 0' "$USER_FILE")
@@ -218,6 +223,12 @@ main_install() {
 add_user() {
     init_users
     read -p "输入新用户名: " username
+    if [ -z "$username" ]; then
+        echo -e "${RED}用户名不能为空，请重新输入${NC}"
+        while [ -z "$username" ]; do
+            read -p "输入新用户名: " username
+        done
+    fi
     read -p "输入 UUID（回车自动生成）: " uuid
     if [ -z "$uuid" ]; then
         uuid=$(generate_uuid)
@@ -330,7 +341,7 @@ user_menu() {
         fi
         case $choice in
             1) add_user ;;
-            2) jq -r '.users[] | "ID: \(.id) - 名称: \(.name) - UUID: \(.uuid) - 过期时间: \(.expire_time) - 状态: \(.status | if . == \"enabled\" then \"已启用\" else \"已禁用\" end)"' "$USER_FILE"; echo -e "\n操作完成。按回车键返回主菜单..."; read ;;
+            2) jq -r '.users[] | "ID: " + (.id | tostring) + " - 名称: " + .name + " - UUID: " + .uuid + " - 过期时间: " + .expire_time + " - 状态: " + (if .status == "enabled" then "已启用" else "已禁用" end)' "$USER_FILE"; echo -e "\n操作完成。按回车键返回主菜单..."; read ;;
             3) list_disabled_users ;;
             4) renew_user ;;
             5) view_user_link ;;
