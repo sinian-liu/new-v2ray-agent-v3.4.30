@@ -89,20 +89,10 @@ install_dependencies() {
             curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor | tee /usr/share/keyrings/caddy-stable-archive-keyring.gpg >/dev/null || { echo -e "${RED}GPG 密钥导入失败${NC}"; exit 1; }
             echo "deb [signed-by=/usr/share/keyrings/caddy-stable-archive-keyring.gpg] https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main" | tee /etc/apt/sources.list.d/caddy-stable.list
             apt update -y || { echo -e "${RED}Caddy 仓库更新失败，请检查网络或 GPG 密钥${NC}"; exit 1; }
+            apt install -y caddy || { echo -e "${RED}Caddy 安装失败${NC}"; exit 1; }
         fi
-    elif grep -qi "centos" /etc/os-release; then
-        echo "检测到系统: CentOS"
-        yum install -y epel-release || { echo -e "${RED}EPEL 安装失败${NC}"; exit 1; }
-        
-        local deps="socat jq qrencode curl unzip systemd openssl bind-utils net-tools"
-        for dep in $deps; do
-            if ! check_dependency "$dep"; then
-                echo -e "${YELLOW}安装 $dep...${NC}"
-                yum install -y "$dep" || { echo -e "${RED}$dep 安装失败${NC}"; exit 1; }
-            fi
-        done
     else
-        echo -e "${RED}不支持的系统${NC}"
+        echo -e "${RED}仅支持 Ubuntu/Debian 系统${NC}"
         exit 1
     fi
 }
@@ -136,7 +126,7 @@ check_and_handle_port() {
                 pid=$(netstat -tulnp | grep ":$port" | awk '{print $7}' | cut -d'/' -f1)
                 sudo kill -9 "$pid"
                 echo -e "${YELLOW}正在释放端口 $port...${NC}"
-                sleep 1  # 等待进程终止
+                sleep 1
                 if netstat -tulnp | grep -q ":$port"; then
                     echo -e "${RED}端口 $port 释放失败，请手动处理${NC}"
                     exit 1
@@ -156,7 +146,7 @@ check_and_handle_port() {
     fi
 }
 
-# 配置 Caddy
+# 配置 Caddy（参考 v2ray-agent）
 install_caddy() {
     echo -e "${YELLOW}安装并配置 Caddy...${NC}"
     if [ -f "/usr/bin/caddy" ]; then
@@ -175,9 +165,11 @@ install_caddy() {
     cat > "$CADDY_CONFIG" <<EOF
 $DOMAIN:443 {
     tls $EMAIL
-    reverse_proxy localhost:8443 {
-        transport http {
-            versions h2
+    route {
+        reverse_proxy localhost:8443 {
+            transport http {
+                versions h2 h2c
+            }
         }
     }
 }
@@ -187,15 +179,16 @@ EOF
         systemctl status caddy
         exit 1
     }
-    systemctl status caddy >/dev/null 2>&1 || { 
+    if ! systemctl is-active caddy >/dev/null 2>&1; then
         echo -e "${RED}Caddy 服务启动失败，请检查日志${NC}"
         systemctl status caddy
         exit 1
-    }
-    echo -e "${GREEN}Caddy 配置完成，证书已自动申请并支持续签${NC}"
+    else
+        echo -e "${GREEN}Caddy 配置完成，证书已自动申请并支持续签${NC}"
+    fi
 }
 
-# 安装 Xray
+# 安装 Xray（参考 v2ray-agent）
 install_xray() {
     echo -e "${YELLOW}安装 Xray-core...${NC}"
     if [ -f "/usr/local/bin/xray" ]; then
@@ -203,27 +196,25 @@ install_xray() {
         if [ "$reinstall_xray" = "y" ]; then
             rm -f /usr/local/bin/xray
             rm -rf /usr/local/etc/xray/*
-            bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install || { echo -e "${RED}Xray 安装失败${NC}"; exit 1; }
+            bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install -u root || { echo -e "${RED}Xray 安装失败${NC}"; exit 1; }
         else
             echo -e "${GREEN}使用现有 Xray 配置${NC}"
         fi
     else
-        bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install || { echo -e "${RED}Xray 安装失败${NC}"; exit 1; }
+        bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install -u root || { echo -e "${RED}Xray 安装失败${NC}"; exit 1; }
     fi
     check_and_handle_port 8443
     systemctl stop xray >/dev/null 2>&1
 }
 
-# 生成 Xray 配置（使用 jq 生成完整 JSON）
+# 生成 Xray 配置（参考 v2ray-agent）
 generate_config() {
     local protocols=("$@")
-    # 确保 users.json 存在
     if [ ! -f "$USER_FILE" ]; then
         echo -e "${RED}用户文件 $USER_FILE 不存在，正在初始化...${NC}"
         init_users
     fi
     
-    # 创建基础 JSON 配置
     temp_config="/tmp/xray_config.json"
     echo '{
       "log": {"loglevel": "warning"},
@@ -231,7 +222,6 @@ generate_config() {
       "outbounds": [{"protocol": "freedom"}]
     }' > "$temp_config"
     
-    # 添加 inbounds 配置
     for proto in "${protocols[@]}"; do
         case $proto in
             1)
@@ -267,10 +257,8 @@ generate_config() {
         esac
     done
     
-    # 调试输出
     echo -e "${YELLOW}生成的配置文件内容:${NC}"
     cat "$temp_config"
-    # 验证 JSON 格式
     if ! jq . "$temp_config" >/dev/null 2>&1; then
         echo -e "${RED}Xray 配置文件生成失败，JSON 格式无效${NC}"
         echo -e "${RED}错误详情:${NC}"
@@ -284,7 +272,6 @@ generate_config() {
         systemctl status xray
         exit 1
     }
-    # 验证服务是否真正启动
     if ! systemctl is-active xray >/dev/null 2>&1; then
         echo -e "${RED}Xray 服务启动失败，请检查日志${NC}"
         systemctl status xray
@@ -306,7 +293,6 @@ main_install() {
     read -p "请输入选项: " proto_input
     IFS=' ' read -r -a protocols <<< "$proto_input"
     
-    # 根据协议选择生成正确的链接类型
     protocol_type="tcp"
     if [[ " ${protocols[*]} " =~ " 3 " ]] || [[ " ${protocols[*]} " =~ " 6 " ]]; then
         protocol_type="ws"
@@ -325,7 +311,6 @@ main_install() {
     install_caddy
     install_xray
     
-    # 在生成配置前初始化用户文件和创建测试用户
     init_users
     uuid=$(generate_uuid)
     max_id=$(jq -r '[.users[].id] | max // 0' "$USER_FILE")
