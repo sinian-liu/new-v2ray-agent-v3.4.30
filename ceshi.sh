@@ -199,13 +199,15 @@ EOF
         echo -e "${GREEN}Caddy 配置完成，证书已自动申请并支持续签${NC}"
     fi
     if ! netstat -tulnp | grep -q "0.0.0.0:443.*caddy"; then
-        echo -e "${RED}Caddy 未正确监听 0.0.0.0:443，尝试禁用 IPv6${NC}"
-        sysctl -w net.ipv6.conf.all.disable_ipv6=1
-        sysctl -w net.ipv6.conf.default.disable_ipv6=1
+        echo -e "${RED}Caddy 未正确监听 0.0.0.0:443${NC}"
+        # 检查当前监听状态
+        netstat -tulnp | grep 443
+        echo -e "${YELLOW}尝试手动重启并检查日志${NC}"
         systemctl restart caddy
         sleep 2
         if ! netstat -tulnp | grep -q "0.0.0.0:443.*caddy"; then
-            echo -e "${RED}Caddy 仍未监听 0.0.0.0:443，请检查配置${NC}"
+            echo -e "${RED}Caddy 仍未监听 0.0.0.0:443，请检查以下日志${NC}"
+            journalctl -u caddy.service -b
             exit 1
         fi
     fi
