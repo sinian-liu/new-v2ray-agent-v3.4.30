@@ -29,7 +29,12 @@ generate_uuid() {
 generate_client_link() {
     local username=$1
     local uuid=$2
-    vless_link="vless://$uuid@$DOMAIN:443?encryption=none&security=tls&type=tcp#$username"
+    local protocol=$3
+    if [ "$protocol" == "ws" ]; then
+        vless_link="vless://$uuid@$DOMAIN:443?encryption=none&security=tls&type=ws&path=/vless#$username"
+    else
+        vless_link="vless://$uuid@$DOMAIN:443?encryption=none&security=tls&type=tcp#$username"
+    fi
     subscribe_url="https://$DOMAIN/subscribe/$username.yml"
     echo -e "\n${YELLOW}用户 $username 的链接和订阅:${NC}"
     echo -e "VLESS 链接: $vless_link"
@@ -231,32 +236,32 @@ generate_config() {
         case $proto in
             1)
                 jq --argjson clients "$(jq -c '.users | map({"id": .uuid})' "$USER_FILE")" \
-                   '.inbounds += [{"port": 8443, "protocol": "vless", "settings": {"clients": $clients, "decryption": "none"}, "streamSettings": {"network": "tcp", "security": "tls", "tlsSettings": {"certificates": [{"certificateFile": "/var/lib/caddy/acme/acme-v02.api.letsencrypt.org-directory/'"$DOMAIN"'/'"$DOMAIN"'.crt", "keyFile": "/var/lib/caddy/acme/acme-v02.api.letsencrypt.org-directory/'"$DOMAIN"'/'"$DOMAIN"'.key"}]}}}]' \
+                   '.inbounds += [{"port": 8443, "protocol": "vless", "settings": {"clients": $clients, "decryption": "none"}, "streamSettings": {"network": "tcp", "security": "none"}}]' \
                    "$temp_config" > "$temp_config.tmp" && mv "$temp_config.tmp" "$temp_config"
                 ;;
             2)
                 jq --argjson clients "$(jq -c '.users | map({"id": .uuid})' "$USER_FILE")" \
-                   '.inbounds += [{"port": 8443, "protocol": "vless", "settings": {"clients": $clients, "decryption": "none"}, "streamSettings": {"network": "tcp", "security": "tls", "vision": true, "tlsSettings": {"certificates": [{"certificateFile": "/var/lib/caddy/acme/acme-v02.api.letsencrypt.org-directory/'"$DOMAIN"'/'"$DOMAIN"'.crt", "keyFile": "/var/lib/caddy/acme/acme-v02.api.letsencrypt.org-directory/'"$DOMAIN"'/'"$DOMAIN"'.key"}]}}}]' \
+                   '.inbounds += [{"port": 8443, "protocol": "vless", "settings": {"clients": $clients, "decryption": "none"}, "streamSettings": {"network": "tcp", "security": "none", "vision": true}}]' \
                    "$temp_config" > "$temp_config.tmp" && mv "$temp_config.tmp" "$temp_config"
                 ;;
             3)
                 jq --argjson clients "$(jq -c '.users | map({"id": .uuid})' "$USER_FILE")" \
-                   '.inbounds += [{"port": 8443, "protocol": "vless", "settings": {"clients": $clients, "decryption": "none"}, "streamSettings": {"network": "ws", "security": "tls", "tlsSettings": {"certificates": [{"certificateFile": "/var/lib/caddy/acme/acme-v02.api.letsencrypt.org-directory/'"$DOMAIN"'/'"$DOMAIN"'.crt", "keyFile": "/var/lib/caddy/acme/acme-v02.api.letsencrypt.org-directory/'"$DOMAIN"'/'"$DOMAIN"'.key"}]}, "wsSettings": {"path": "/vless"}}}]' \
+                   '.inbounds += [{"port": 8443, "protocol": "vless", "settings": {"clients": $clients, "decryption": "none"}, "streamSettings": {"network": "ws", "security": "none", "wsSettings": {"path": "/vless"}}}]' \
                    "$temp_config" > "$temp_config.tmp" && mv "$temp_config.tmp" "$temp_config"
                 ;;
             4)
                 jq --argjson clients "$(jq -c '.users | map({"id": .uuid})' "$USER_FILE")" \
-                   '.inbounds += [{"port": 8443, "protocol": "vless", "settings": {"clients": $clients, "decryption": "none"}, "streamSettings": {"network": "grpc", "security": "tls", "tlsSettings": {"certificates": [{"certificateFile": "/var/lib/caddy/acme/acme-v02.api.letsencrypt.org-directory/'"$DOMAIN"'/'"$DOMAIN"'.crt", "keyFile": "/var/lib/caddy/acme/acme-v02.api.letsencrypt.org-directory/'"$DOMAIN"'/'"$DOMAIN"'.key"}]}, "grpcSettings": {"serviceName": "vless-grpc"}}}]' \
+                   '.inbounds += [{"port": 8443, "protocol": "vless", "settings": {"clients": $clients, "decryption": "none"}, "streamSettings": {"network": "grpc", "security": "none", "grpcSettings": {"serviceName": "vless-grpc"}}}]' \
                    "$temp_config" > "$temp_config.tmp" && mv "$temp_config.tmp" "$temp_config"
                 ;;
             5)
                 jq --argjson clients "$(jq -c '.users | map({"id": .uuid})' "$USER_FILE")" \
-                   '.inbounds += [{"port": 8443, "protocol": "vless", "settings": {"clients": $clients, "decryption": "none"}, "streamSettings": {"network": "http", "security": "tls", "tlsSettings": {"certificates": [{"certificateFile": "/var/lib/caddy/acme/acme-v02.api.letsencrypt.org-directory/'"$DOMAIN"'/'"$DOMAIN"'.crt", "keyFile": "/var/lib/caddy/acme/acme-v02.api.letsencrypt.org-directory/'"$DOMAIN"'/'"$DOMAIN"'.key"}]}, "httpSettings": {"path": "/h2"}}}]' \
+                   '.inbounds += [{"port": 8443, "protocol": "vless", "settings": {"clients": $clients, "decryption": "none"}, "streamSettings": {"network": "http", "security": "none", "httpSettings": {"path": "/h2"}}}]' \
                    "$temp_config" > "$temp_config.tmp" && mv "$temp_config.tmp" "$temp_config"
                 ;;
             6)
                 jq --argjson clients "$(jq -c '.users | map({"id": .uuid})' "$USER_FILE")" \
-                   '.inbounds += [{"port": 8443, "protocol": "vmess", "settings": {"clients": $clients}, "streamSettings": {"network": "ws", "security": "tls", "tlsSettings": {"certificates": [{"certificateFile": "/var/lib/caddy/acme/acme-v02.api.letsencrypt.org-directory/'"$DOMAIN"'/'"$DOMAIN"'.crt", "keyFile": "/var/lib/caddy/acme/acme-v02.api.letsencrypt.org-directory/'"$DOMAIN"'/'"$DOMAIN"'.key"}]}, "wsSettings": {"path": "/vmess"}}}]' \
+                   '.inbounds += [{"port": 8443, "protocol": "vmess", "settings": {"clients": $clients}, "streamSettings": {"network": "ws", "security": "none", "wsSettings": {"path": "/vmess"}}}]' \
                    "$temp_config" > "$temp_config.tmp" && mv "$temp_config.tmp" "$temp_config"
                 ;;
         esac
@@ -279,11 +284,14 @@ generate_config() {
         systemctl status xray
         exit 1
     }
-    systemctl status xray >/dev/null 2>&1 || { 
+    # 验证服务是否真正启动
+    if ! systemctl is-active xray >/dev/null 2>&1; then
         echo -e "${RED}Xray 服务启动失败，请检查日志${NC}"
         systemctl status xray
         exit 1
-    }
+    else
+        echo -e "${GREEN}Xray 服务已成功启动${NC}"
+    fi
 }
 
 # 主安装流程
@@ -297,6 +305,12 @@ main_install() {
     echo "6. VMess+TLS+WS"
     read -p "请输入选项: " proto_input
     IFS=' ' read -r -a protocols <<< "$proto_input"
+    
+    # 根据协议选择生成正确的链接类型
+    protocol_type="tcp"
+    if [[ " ${protocols[*]} " =~ " 3 " ]] || [[ " ${protocols[*]} " =~ " 6 " ]]; then
+        protocol_type="ws"
+    fi
     
     read -p "请输入你的域名: " DOMAIN
     read -p "请输入你的邮箱（用于证书申请）: " EMAIL
@@ -321,7 +335,7 @@ main_install() {
         '.users += [{"id": $id, "name": "自用", "uuid": $uuid, "expire_time": $expire_time, "status": "enabled"}]' "$USER_FILE" > tmp.json && mv tmp.json "$USER_FILE"
     echo -e "${GREEN}创建测试用户 自用 用于验证链接...${NC}"
     echo -e "用户 自用 已添加，ID: $new_id，UUID: $uuid，过期时间: $expire_time"
-    generate_client_link "自用" "$uuid"
+    generate_client_link "自用" "$uuid" "$protocol_type"
     
     generate_config "${protocols[@]}"
     
@@ -365,7 +379,7 @@ add_user() {
     jq --arg username "$username" --arg uuid "$uuid" --argjson id "$new_id" --arg expire_time "$expire_time" \
         '.users += [{"id": $id, "name": $username, "uuid": $uuid, "expire_time": $expire_time, "status": "enabled"}]' "$USER_FILE" > tmp.json && mv tmp.json "$USER_FILE"
     echo -e "${GREEN}用户 $username 已添加，ID: $new_id，UUID: $uuid，过期时间: $expire_time${NC}"
-    generate_client_link "$username" "$uuid"
+    generate_client_link "$username" "$uuid" "ws"
     echo -e "\n操作完成。按回车键返回主菜单..."
     read
 }
@@ -405,7 +419,7 @@ renew_user() {
     jq --arg name "$username" --arg new_expire_time "$new_expire_time" \
         '(.users[] | select(.name == $name)).expire_time = $new_expire_time | (.users[] | select(.name == $name)).status = "enabled"' "$USER_FILE" > tmp.json && mv tmp.json "$USER_FILE"
     echo -e "${GREEN}用户 $username 已续费，新的过期时间: $new_expire_time，状态: 已启用${NC}"
-    generate_client_link "$username" "$uuid"
+    generate_client_link "$username" "$uuid" "ws"
     echo -e "\n操作完成。按回车键返回主菜单..."
     read
 }
@@ -416,7 +430,7 @@ view_user_link() {
     read -p "输入要查看链接的用户名: " username
     uuid=$(jq -r --arg username "$username" '.users[] | select(.name == $username) | .uuid' "$USER_FILE")
     if [ -n "$uuid" ]; then
-        generate_client_link "$username" "$uuid"
+        generate_client_link "$username" "$uuid" "ws"
     else
         echo -e "${RED}用户 $username 不存在${NC}"
     fi
@@ -427,7 +441,7 @@ view_user_link() {
 # 查询证书有效期
 check_cert_validity() {
     echo -e "${YELLOW}查询证书有效期...${NC}"
-    cert_path="/var/lib/caddy/acme/acme-v02.api.letsencrypt.org-directory/$DOMAIN/$DOMAIN.crt"
+    cert_path="/var/lib/caddy/.local/share/caddy/certificates/acme-v02.api.letsencrypt.org-directory/$DOMAIN/$DOMAIN.crt"
     if [ -f "$cert_path" ]; then
         start_date=$(openssl x509 -in "$cert_path" -noout -startdate | cut -d= -f2)
         end_date=$(openssl x509 -in "$cert_path" -noout -enddate | cut -d= -f2)
@@ -437,7 +451,7 @@ check_cert_validity() {
         echo "有效期: $days_left 天"
         echo "有效期至: $end_date"
     else
-        echo -e "${RED}证书文件不存在${NC}"
+        echo -e "${RED}证书文件不存在，请检查 Caddy 配置${NC}"
     fi
     echo -e "\n操作完成。按回车键返回主菜单..."
     read
