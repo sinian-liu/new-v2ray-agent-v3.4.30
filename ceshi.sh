@@ -115,8 +115,8 @@ install_dependencies_and_caddy() {
 
 # 检查域名和 IP 绑定
 check_domain_ip() {
-    local server_ip=$(curl -s -4 ifconfig.me)  # 强制使用 IPv4 获取公网 IP
-    local domain_ip=$(dig +short -4 "$DOMAIN" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -n 1)  # 强制 IPv4 解析
+    local server_ip=$(curl -s -4 ifconfig.me)
+    local domain_ip=$(dig +short -4 "$DOMAIN" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -n 1)
     echo -e "${YELLOW}检查域名和 IP 绑定情况...${NC}"
     echo "服务器公网 IP: $server_ip"
     echo "域名 $DOMAIN 解析 IP: $domain_ip"
@@ -169,12 +169,6 @@ install_caddy() {
     cat > "$CADDY_CONFIG" <<EOF
 {
     admin 127.0.0.1:2019
-    servers {
-        protocol {
-            allow_h2c true
-            strict_sni_host false
-        }
-    }
 }
 $DOMAIN:443 {
     bind 0.0.0.0
