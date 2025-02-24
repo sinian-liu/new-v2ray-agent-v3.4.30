@@ -206,7 +206,7 @@ install_xray() {
         bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install || { echo -e "${RED}Xray 安装失败${NC}"; exit 1; }
     fi
     check_and_handle_port 8443
-    systemctl stop xray
+    systemctl stop xray >/dev/null 2>&1
 }
 
 # 生成 Xray 配置
@@ -224,15 +224,30 @@ generate_config() {
         esac
     done
     inbounds=${inbounds%,}
-    cat > "$CONFIG_DIR/config.json" <<EOF
+    # 生成临时文件并验证
+    temp_config="/tmp/xray_config.json"
+    cat > "$temp_config" <<EOF
 {
   "log": {"loglevel": "warning"},
   "inbounds": [$inbounds],
   "outbounds": [{"protocol": "freedom"}]
 }
 EOF
+    # 验证 JSON 格式
+    if ! jq . "$temp_config" >/dev/null 2>&1; then
+        echo -e "${RED}Xray 配置文件生成失败，请检查语法${NC}"
+        cat "$temp_config"
+        rm -f "$temp_config"
+        exit 1
+    fi
+    mv "$temp_config" "$CONFIG_DIR/config.json"
     systemctl restart xray || { 
         echo -e "${RED}Xray 重启失败，请检查日志${NC}"
+        systemctl status xray
+        exit 1
+    }
+    systemctl status xray >/dev/null 2>&1 || { 
+        echo -e "${RED}Xray 服务启动失败，请检查日志${NC}"
         systemctl status xray
         exit 1
     }
