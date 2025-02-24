@@ -146,7 +146,7 @@ check_and_handle_port() {
     fi
 }
 
-# 配置 Caddy（参考 v2ray-agent）
+# 配置 Caddy
 install_caddy() {
     echo -e "${YELLOW}安装并配置 Caddy...${NC}"
     if [ -f "/usr/bin/caddy" ]; then
@@ -188,7 +188,7 @@ EOF
     fi
 }
 
-# 安装 Xray（参考 v2ray-agent）
+# 安装 Xray
 install_xray() {
     echo -e "${YELLOW}安装 Xray-core...${NC}"
     if [ -f "/usr/local/bin/xray" ]; then
@@ -207,7 +207,7 @@ install_xray() {
     systemctl stop xray >/dev/null 2>&1
 }
 
-# 生成 Xray 配置（参考 v2ray-agent）
+# 生成 Xray 配置
 generate_config() {
     local protocols=("$@")
     if [ ! -f "$USER_FILE" ]; then
@@ -222,35 +222,36 @@ generate_config() {
       "outbounds": [{"protocol": "freedom"}]
     }' > "$temp_config"
     
+    clients=$(jq -c '.users | map({"id": .uuid})' "$USER_FILE")
     for proto in "${protocols[@]}"; do
         case $proto in
             1)
-                jq --argjson clients "$(jq -c '.users | map({"id": .uuid})' "$USER_FILE")" \
+                jq --argjson clients "$clients" \
                    '.inbounds += [{"port": 8443, "protocol": "vless", "settings": {"clients": $clients, "decryption": "none"}, "streamSettings": {"network": "tcp", "security": "none"}}]' \
                    "$temp_config" > "$temp_config.tmp" && mv "$temp_config.tmp" "$temp_config"
                 ;;
             2)
-                jq --argjson clients "$(jq -c '.users | map({"id": .uuid})' "$USER_FILE")" \
-                   '.inbounds += [{"port": 8443, "protocol": "vless", "settings": {"clients": $clients, "decryption": "none"}, "streamSettings": {"network": "tcp", "security": "none", "vision": true}}]' \
+                jq --argjson clients "$clients" \
+                   '.inbounds += [{"port": 8443, "protocol": "vless", "settings": {"clients": $clients, "decryption": "none"}, "streamSettings": {"network": "tcp", "security": "none", "xtlsSettings": {"minVersion": "1.2", "maxVersion": "1.2"}}}]' \
                    "$temp_config" > "$temp_config.tmp" && mv "$temp_config.tmp" "$temp_config"
                 ;;
             3)
-                jq --argjson clients "$(jq -c '.users | map({"id": .uuid})' "$USER_FILE")" \
+                jq --argjson clients "$clients" \
                    '.inbounds += [{"port": 8443, "protocol": "vless", "settings": {"clients": $clients, "decryption": "none"}, "streamSettings": {"network": "ws", "security": "none", "wsSettings": {"path": "/vless"}}}]' \
                    "$temp_config" > "$temp_config.tmp" && mv "$temp_config.tmp" "$temp_config"
                 ;;
             4)
-                jq --argjson clients "$(jq -c '.users | map({"id": .uuid})' "$USER_FILE")" \
+                jq --argjson clients "$clients" \
                    '.inbounds += [{"port": 8443, "protocol": "vless", "settings": {"clients": $clients, "decryption": "none"}, "streamSettings": {"network": "grpc", "security": "none", "grpcSettings": {"serviceName": "vless-grpc"}}}]' \
                    "$temp_config" > "$temp_config.tmp" && mv "$temp_config.tmp" "$temp_config"
                 ;;
             5)
-                jq --argjson clients "$(jq -c '.users | map({"id": .uuid})' "$USER_FILE")" \
+                jq --argjson clients "$clients" \
                    '.inbounds += [{"port": 8443, "protocol": "vless", "settings": {"clients": $clients, "decryption": "none"}, "streamSettings": {"network": "http", "security": "none", "httpSettings": {"path": "/h2"}}}]' \
                    "$temp_config" > "$temp_config.tmp" && mv "$temp_config.tmp" "$temp_config"
                 ;;
             6)
-                jq --argjson clients "$(jq -c '.users | map({"id": .uuid})' "$USER_FILE")" \
+                jq --argjson clients "$clients" \
                    '.inbounds += [{"port": 8443, "protocol": "vmess", "settings": {"clients": $clients}, "streamSettings": {"network": "ws", "security": "none", "wsSettings": {"path": "/vmess"}}}]' \
                    "$temp_config" > "$temp_config.tmp" && mv "$temp_config.tmp" "$temp_config"
                 ;;
@@ -294,9 +295,12 @@ main_install() {
     IFS=' ' read -r -a protocols <<< "$proto_input"
     
     protocol_type="tcp"
-    if [[ " ${protocols[*]} " =~ " 3 " ]] || [[ " ${protocols[*]} " =~ " 6 " ]]; then
-        protocol_type="ws"
-    fi
+    for proto in "${protocols[@]}"; do
+        if [ "$proto" = "3" ] || [ "$proto" = "6" ]; then
+            protocol_type="ws"
+            break
+        fi
+    done
     
     read -p "请输入你的域名: " DOMAIN
     read -p "请输入你的邮箱（用于证书申请）: " EMAIL
