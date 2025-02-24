@@ -165,13 +165,13 @@ install_caddy() {
     check_and_handle_port 443
     cat > "$CADDY_CONFIG" <<EOF
 {
-    "admin": {
-        "listen": "127.0.0.1:2019"
+    admin {
+        listen 127.0.0.1:2019
     }
 }
 $DOMAIN:443 {
     bind 0.0.0.0
-    tls $EMAIL
+    tls "$EMAIL"
     route {
         reverse_proxy 127.0.0.1:8443 {
             transport http {
