@@ -75,7 +75,6 @@ install_dependencies_and_caddy() {
     if grep -qi "ubuntu\|debian" /etc/os-release; then
         echo "检测到系统: Ubuntu/Debian"
         
-        # 检查 apt 锁并等待
         echo -e "${YELLOW}检查 apt 是否被占用...${NC}"
         while sudo fuser /var/lib/apt/lists/lock >/dev/null 2>&1 || sudo fuser /var/cache/apt/archives/lock >/dev/null 2>&1 || sudo fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do
             echo -e "${RED}apt 正在被其他进程占用，等待 5 秒...${NC}"
@@ -107,7 +106,6 @@ install_dependencies_and_caddy() {
             apt update -y || { echo -e "${RED}Caddy 仓库更新失败，请检查网络或 GPG 密钥${NC}"; exit 1; }
             apt install -y caddy || { echo -e "${RED}Caddy 安装失败${NC}"; exit 1; }
         fi
-        # 标记首次运行完成
         touch "$FIRST_RUN_FILE"
     else
         echo -e "${RED}仅支持 Ubuntu/Debian 系统${NC}"
@@ -117,8 +115,8 @@ install_dependencies_and_caddy() {
 
 # 检查域名和 IP 绑定
 check_domain_ip() {
-    local server_ip=$(curl -s ifconfig.me)
-    local domain_ip=$(dig +short "$DOMAIN" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -n 1)
+    local server_ip=$(curl -s -4 ifconfig.me)  # 强制使用 IPv4 获取公网 IP
+    local domain_ip=$(dig +short -4 "$DOMAIN" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -n 1)  # 强制 IPv4 解析
     echo -e "${YELLOW}检查域名和 IP 绑定情况...${NC}"
     echo "服务器公网 IP: $server_ip"
     echo "域名 $DOMAIN 解析 IP: $domain_ip"
@@ -171,6 +169,12 @@ install_caddy() {
     cat > "$CADDY_CONFIG" <<EOF
 {
     admin 127.0.0.1:2019
+    servers {
+        protocol {
+            allow_h2c true
+            strict_sni_host false
+        }
+    }
 }
 $DOMAIN:443 {
     bind 0.0.0.0
@@ -187,11 +191,13 @@ EOF
     systemctl restart caddy || { 
         echo -e "${RED}Caddy 重启失败，请检查日志${NC}"
         systemctl status caddy
+        journalctl -u caddy.service -b
         exit 1
     }
     if ! systemctl is-active caddy >/dev/null 2>&1; then
         echo -e "${RED}Caddy 服务启动失败，请检查日志${NC}"
         systemctl status caddy
+        journalctl -u caddy.service -b
         exit 1
     else
         echo -e "${GREEN}Caddy 配置完成，证书已自动申请并支持续签${NC}"
@@ -225,7 +231,10 @@ generate_config() {
       "inbounds": [],
       "outbounds": [
         {
-          "protocol": "freedom"
+          "protocol": "freedom",
+          "settings": {
+            "domainStrategy": "UseIPv4"
+          }
         }
       ]
     }' > "$temp_config"
@@ -277,16 +286,18 @@ generate_config() {
     systemctl restart xray || { 
         echo -e "${RED}Xray 重启失败，请检查日志${NC}"
         systemctl status xray
+        journalctl -u xray.service -b
         exit 1
     }
     if ! systemctl is-active xray >/dev/null 2>&1; then
         echo -e "${RED}Xray 服务启动失败，请检查日志${NC}"
         systemctl status xray
+        journalctl -u xray.service -b
         exit 1
     else
         echo -e "${GREEN}Xray 服务已成功启动${NC}"
     fi
-    echo "$random_path" > "$CONFIG_DIR/last_path"  # 保存随机 Path
+    echo "$random_path" > "$CONFIG_DIR/last_path"
 }
 
 # 主安装流程
@@ -357,7 +368,7 @@ reinstall_xray_service() {
         random_path=$(generate_random_path)
         echo "$random_path" > "$CONFIG_DIR/last_path"
     fi
-    generate_config "3"  # 默认重新安装使用 VLESS+WS
+    generate_config "3"
     echo -e "${GREEN}Xray 服务重新安装完成${NC}"
     echo -e "\n操作完成。按回车键返回主菜单..."
     read
@@ -487,7 +498,6 @@ check_cert_validity() {
 
 # 主菜单
 main_menu() {
-    # 首次运行安装依赖和 Caddy
     if [ ! -f "$FIRST_RUN_FILE" ]; then
         install_dependencies_and_caddy
     fi
