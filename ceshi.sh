@@ -19,10 +19,16 @@ CADDY_CONFIG="/etc/caddy/Caddyfile"
 SCRIPT_PATH="/etc/v2ray-agent/xray_install.sh"
 DOMAIN=""
 EMAIL=""
+FIRST_RUN_FILE="/etc/v2ray-agent/.first_run"
 
 # 生成 UUID
 generate_uuid() {
     cat /proc/sys/kernel/random/uuid
+}
+
+# 生成随机 Path
+generate_random_path() {
+    echo "/vless-$(openssl rand -hex 3)"
 }
 
 # 生成客户端链接和订阅
@@ -31,8 +37,9 @@ generate_client_link() {
     local uuid=$2
     local protocol=$3
     local domain=$4
+    local path=$5
     if [ "$protocol" == "ws" ]; then
-        vless_link="vless://$uuid@$domain:443?encryption=none&security=tls&type=ws&path=/vless&sni=$domain#$username"
+        vless_link="vless://$uuid@$domain:443?encryption=none&security=tls&type=ws&path=$path&sni=$domain#$username"
     else
         vless_link="vless://$uuid@$domain:443?encryption=none&security=tls&type=tcp&sni=$domain#$username"
     fi
@@ -56,18 +63,25 @@ init_users() {
 check_dependency() {
     local pkg=$1
     if command -v "$pkg" >/dev/null 2>&1 || dpkg -l | grep -q "$pkg"; then
-        echo -e "${GREEN}$pkg 已安装，跳过${NC}"
         return 0
     else
         return 1
     fi
 }
 
-# 检测系统类型并安装依赖
-install_dependencies() {
+# 安装依赖和 Caddy（仅首次运行）
+install_dependencies_and_caddy() {
     echo -e "${YELLOW}检测系统类型...${NC}"
     if grep -qi "ubuntu\|debian" /etc/os-release; then
         echo "检测到系统: Ubuntu/Debian"
+        
+        # 检查 apt 锁并等待
+        echo -e "${YELLOW}检查 apt 是否被占用...${NC}"
+        while sudo fuser /var/lib/apt/lists/lock >/dev/null 2>&1 || sudo fuser /var/cache/apt/archives/lock >/dev/null 2>&1 || sudo fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do
+            echo -e "${RED}apt 正在被其他进程占用，等待 5 秒...${NC}"
+            sleep 5
+        done
+        
         apt update -y || { echo -e "${RED}apt update 失败，请检查网络${NC}"; exit 1; }
         
         local deps="socat jq qrencode lsb-release curl unzip systemd openssl dnsutils net-tools"
@@ -87,11 +101,14 @@ install_dependencies() {
             fi
         done
         if ! check_dependency "caddy"; then
+            echo -e "${YELLOW}安装 Caddy...${NC}"
             curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor | tee /usr/share/keyrings/caddy-stable-archive-keyring.gpg >/dev/null || { echo -e "${RED}GPG 密钥导入失败${NC}"; exit 1; }
             echo "deb [signed-by=/usr/share/keyrings/caddy-stable-archive-keyring.gpg] https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main" | tee /etc/apt/sources.list.d/caddy-stable.list
             apt update -y || { echo -e "${RED}Caddy 仓库更新失败，请检查网络或 GPG 密钥${NC}"; exit 1; }
             apt install -y caddy || { echo -e "${RED}Caddy 安装失败${NC}"; exit 1; }
         fi
+        # 标记首次运行完成
+        touch "$FIRST_RUN_FILE"
     else
         echo -e "${RED}仅支持 Ubuntu/Debian 系统${NC}"
         exit 1
@@ -150,24 +167,10 @@ check_and_handle_port() {
 # 配置 Caddy（强制 IPv4）
 install_caddy() {
     echo -e "${YELLOW}安装并配置 Caddy...${NC}"
-    if [ -f "/usr/bin/caddy" ]; then
-        read -p "Caddy 已安装，是否重新安装？（y/n）: " reinstall_caddy
-        if [ "$reinstall_caddy" = "y" ]; then
-            apt purge -y caddy
-            rm -f "$CADDY_CONFIG"
-            apt install -y caddy || { echo -e "${RED}Caddy 安装失败${NC}"; exit 1; }
-        else
-            echo -e "${GREEN}使用现有 Caddy 配置${NC}"
-        fi
-    else
-        apt install -y caddy || { echo -e "${RED}Caddy 安装失败${NC}"; exit 1; }
-    fi
     check_and_handle_port 443
     cat > "$CADDY_CONFIG" <<EOF
 {
-    admin {
-        listen 127.0.0.1:2019
-    }
+    admin 127.0.0.1:2019
 }
 $DOMAIN:443 {
     bind 0.0.0.0
@@ -198,25 +201,17 @@ EOF
 # 安装 Xray
 install_xray() {
     echo -e "${YELLOW}安装 Xray-core...${NC}"
-    if [ -f "/usr/local/bin/xray" ]; then
-        read -p "Xray 已安装，是否重新安装？（y/n）: " reinstall_xray
-        if [ "$reinstall_xray" = "y" ]; then
-            rm -f /usr/local/bin/xray
-            rm -rf /usr/local/etc/xray/*
-            bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install -u root || { echo -e "${RED}Xray 安装失败${NC}"; exit 1; }
-        else
-            echo -e "${GREEN}使用现有 Xray 配置${NC}"
-        fi
-    else
-        bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install -u root || { echo -e "${RED}Xray 安装失败${NC}"; exit 1; }
-    fi
+    rm -f /usr/local/bin/xray
+    rm -rf /usr/local/etc/xray/*
+    bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install -u root || { echo -e "${RED}Xray 安装失败${NC}"; exit 1; }
     check_and_handle_port 8443
     systemctl stop xray >/dev/null 2>&1
 }
 
-# 生成 Xray 配置（强制 IPv4，不显示内容）
+# 生成 Xray 配置（强制 IPv4，随机 Path）
 generate_config() {
     local protocols=("$@")
+    local random_path=$(generate_random_path)
     if [ ! -f "$USER_FILE" ]; then
         echo -e "${RED}用户文件 $USER_FILE 不存在，正在初始化...${NC}"
         init_users
@@ -249,8 +244,8 @@ generate_config() {
                    "$temp_config" > "$temp_config.tmp" && mv "$temp_config.tmp" "$temp_config"
                 ;;
             3)
-                jq --argjson clients "$clients" \
-                   '.inbounds += [{"listen": "0.0.0.0", "port": 8443, "protocol": "vless", "settings": {"clients": $clients, "decryption": "none"}, "streamSettings": {"network": "ws", "security": "none", "wsSettings": {"path": "/vless"}}}]' \
+                jq --argjson clients "$clients" --arg path "$random_path" \
+                   '.inbounds += [{"listen": "0.0.0.0", "port": 8443, "protocol": "vless", "settings": {"clients": $clients, "decryption": "none"}, "streamSettings": {"network": "ws", "security": "none", "wsSettings": {"path": $path}}}]' \
                    "$temp_config" > "$temp_config.tmp" && mv "$temp_config.tmp" "$temp_config"
                 ;;
             4)
@@ -264,8 +259,8 @@ generate_config() {
                    "$temp_config" > "$temp_config.tmp" && mv "$temp_config.tmp" "$temp_config"
                 ;;
             6)
-                jq --argjson clients "$clients" \
-                   '.inbounds += [{"listen": "0.0.0.0", "port": 8443, "protocol": "vmess", "settings": {"clients": $clients}, "streamSettings": {"network": "ws", "security": "none", "wsSettings": {"path": "/vmess"}}}]' \
+                jq --argjson clients "$clients" --arg path "$random_path" \
+                   '.inbounds += [{"listen": "0.0.0.0", "port": 8443, "protocol": "vmess", "settings": {"clients": $clients}, "streamSettings": {"network": "ws", "security": "none", "wsSettings": {"path": $path}}}]' \
                    "$temp_config" > "$temp_config.tmp" && mv "$temp_config.tmp" "$temp_config"
                 ;;
         esac
@@ -291,6 +286,7 @@ generate_config() {
     else
         echo -e "${GREEN}Xray 服务已成功启动${NC}"
     fi
+    echo "$random_path" > "$CONFIG_DIR/last_path"  # 保存随机 Path
 }
 
 # 主安装流程
@@ -333,9 +329,10 @@ main_install() {
         '.users += [{"id": $id, "name": "自用", "uuid": $uuid, "expire_time": $expire_time, "status": "enabled"}]' "$USER_FILE" > tmp.json && mv tmp.json "$USER_FILE"
     echo -e "${GREEN}创建测试用户 自用 用于验证链接...${NC}"
     echo -e "用户 自用 已添加，ID: $new_id，UUID: $uuid，过期时间: $expire_time"
-    generate_client_link "自用" "$uuid" "$protocol_type" "$DOMAIN"
     
     generate_config "${protocols[@]}"
+    random_path=$(cat "$CONFIG_DIR/last_path")
+    generate_client_link "自用" "$uuid" "$protocol_type" "$DOMAIN" "$random_path"
     
     systemctl enable xray caddy
     
@@ -346,6 +343,22 @@ main_install() {
     source /root/.bashrc
     
     echo -e "${GREEN}安装完成！请输入 'sinian' 打开脚本${NC}"
+    echo -e "\n操作完成。按回车键返回主菜单..."
+    read
+}
+
+# 重新安装 Xray 服务
+reinstall_xray_service() {
+    echo -e "${YELLOW}开始重新安装 Xray 服务...${NC}"
+    install_xray
+    if [ -f "$CONFIG_DIR/last_path" ]; then
+        random_path=$(cat "$CONFIG_DIR/last_path")
+    else
+        random_path=$(generate_random_path)
+        echo "$random_path" > "$CONFIG_DIR/last_path"
+    fi
+    generate_config "3"  # 默认重新安装使用 VLESS+WS
+    echo -e "${GREEN}Xray 服务重新安装完成${NC}"
     echo -e "\n操作完成。按回车键返回主菜单..."
     read
 }
@@ -377,7 +390,8 @@ add_user() {
     jq --arg username "$username" --arg uuid "$uuid" --argjson id "$new_id" --arg expire_time "$expire_time" \
         '.users += [{"id": $id, "name": $username, "uuid": $uuid, "expire_time": $expire_time, "status": "enabled"}]' "$USER_FILE" > tmp.json && mv tmp.json "$USER_FILE"
     echo -e "${GREEN}用户 $username 已添加，ID: $new_id，UUID: $uuid，过期时间: $expire_time${NC}"
-    generate_client_link "$username" "$uuid" "ws" "$DOMAIN"
+    random_path=$(cat "$CONFIG_DIR/last_path" 2>/dev/null || echo "/vless-default")
+    generate_client_link "$username" "$uuid" "ws" "$DOMAIN" "$random_path"
     echo -e "\n操作完成。按回车键返回主菜单..."
     read
 }
@@ -431,7 +445,8 @@ renew_user() {
     jq --arg name "$username" --arg new_expire_time "$new_expire_time" \
         '(.users[] | select(.name == $name)).expire_time = $new_expire_time | (.users[] | select(.name == $name)).status = "enabled"' "$USER_FILE" > tmp.json && mv tmp.json "$USER_FILE"
     echo -e "${GREEN}用户 $username 已续费，新的过期时间: $new_expire_time，状态: 已启用${NC}"
-    generate_client_link "$username" "$uuid" "ws" "$DOMAIN"
+    random_path=$(cat "$CONFIG_DIR/last_path" 2>/dev/null || echo "/vless-default")
+    generate_client_link "$username" "$uuid" "ws" "$DOMAIN" "$random_path"
     echo -e "\n操作完成。按回车键返回主菜单..."
     read
 }
@@ -442,7 +457,8 @@ view_user_link() {
     read -p "输入要查看链接的用户名: " username
     uuid=$(jq -r --arg username "$username" '.users[] | select(.name == $username) | .uuid' "$USER_FILE")
     if [ -n "$uuid" ]; then
-        generate_client_link "$username" "$uuid" "ws" "$DOMAIN"
+        random_path=$(cat "$CONFIG_DIR/last_path" 2>/dev/null || echo "/vless-default")
+        generate_client_link "$username" "$uuid" "ws" "$DOMAIN" "$random_path"
     else
         echo -e "${RED}用户 $username 不存在${NC}"
     fi
@@ -467,6 +483,32 @@ check_cert_validity() {
     fi
     echo -e "\n操作完成。按回车键返回主菜单..."
     read
+}
+
+# 主菜单
+main_menu() {
+    # 首次运行安装依赖和 Caddy
+    if [ ! -f "$FIRST_RUN_FILE" ]; then
+        install_dependencies_and_caddy
+    fi
+    
+    while true; do
+        echo -e "\n${YELLOW}Xray 安装与管理脚本${NC}"
+        echo "1. 安装 Xray 服务"
+        echo "2. 用户管理"
+        echo "3. 查询证书有效期"
+        echo "4. 退出"
+        echo "5. 重新安装 Xray 服务"
+        read -p "请选择操作: " choice
+        case $choice in
+            1) main_install ;;
+            2) user_menu ;;
+            3) check_cert_validity ;;
+            4) exit 0 ;;
+            5) reinstall_xray_service ;;
+            *) echo -e "${RED}无效选项${NC}" ;;
+        esac
+    done
 }
 
 # 用户管理菜单
@@ -496,26 +538,6 @@ user_menu() {
             4) renew_user ;;
             5) view_user_link ;;
             6) exit 0 ;;
-            *) echo -e "${RED}无效选项${NC}" ;;
-        esac
-    done
-}
-
-# 主菜单
-main_menu() {
-    install_dependencies
-    while true; do
-        echo -e "\n${YELLOW}Xray 安装与管理脚本${NC}"
-        echo "1. 安装 Xray 服务"
-        echo "2. 用户管理"
-        echo "3. 查询证书有效期"
-        echo "4. 退出"
-        read -p "请选择操作: " choice
-        case $choice in
-            1) main_install ;;
-            2) user_menu ;;
-            3) check_cert_validity ;;
-            4) exit 0 ;;
             *) echo -e "${RED}无效选项${NC}" ;;
         esac
     done
