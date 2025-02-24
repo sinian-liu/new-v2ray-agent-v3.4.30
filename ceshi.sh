@@ -62,9 +62,6 @@ install_dependencies() {
         echo "deb [signed-by=/usr/share/keyrings/caddy-stable-archive-keyring.gpg] https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main" | tee /etc/apt/sources.list.d/caddy-stable.list
         apt update -y || { echo -e "${RED}Caddy 仓库更新失败，请检查网络或 GPG 密钥${NC}"; exit 1; }
         apt install -y caddy || { echo -e "${RED}Caddy 安装失败${NC}"; exit 1; }
-        
-        # 验证 Caddy 服务
-        systemctl status caddy >/dev/null 2>&1 || { echo -e "${RED}Caddy 服务未正确安装${NC}"; exit 1; }
     elif grep -qi "centos" /etc/os-release; then
         echo "检测到系统: CentOS"
         yum install -y epel-release && yum install -y socat jq qrencode curl unzip systemd openssl bind-utils || { echo -e "${RED}依赖安装失败${NC}"; exit 1; }
@@ -111,6 +108,8 @@ install_caddy() {
             read -p "请输入你的邮箱（用于证书申请）: " EMAIL
         done
     fi
+    # 清理旧配置
+    rm -f "$CADDY_CONFIG"
     mkdir -p /etc/caddy
     cat > "$CADDY_CONFIG" <<EOF
 $DOMAIN:443 {
@@ -122,7 +121,11 @@ $DOMAIN:443 {
     }
 }
 EOF
-    systemctl restart caddy || { echo -e "${RED}Caddy 重启失败，请检查日志 (systemctl status caddy)${NC}"; exit 1; }
+    systemctl restart caddy || { 
+        echo -e "${RED}Caddy 重启失败，请检查日志 (systemctl status caddy)${NC}"
+        systemctl status caddy
+        exit 1
+    }
     echo -e "${GREEN}Caddy 配置完成，证书已自动申请并支持续签${NC}"
 }
 
