@@ -15,7 +15,8 @@ fi
 # 全局变量
 CONFIG_DIR="/usr/local/etc/xray"
 USER_FILE="$CONFIG_DIR/users.json"
-CADDY_CONFIG="/etc/caddy/Caddyfile"
+NGINX_CONFIG="/etc/nginx/sites-available/v2ray"
+NGINX_LINK="/etc/nginx/sites-enabled/v2ray"
 SCRIPT_PATH="/etc/v2ray-agent/xray_install.sh"
 DOMAIN=""
 EMAIL=""
@@ -69,8 +70,8 @@ check_dependency() {
     fi
 }
 
-# 安装依赖和 Caddy（仅首次运行）
-install_dependencies_and_caddy() {
+# 安装依赖和 Nginx（仅首次运行）
+install_dependencies_and_nginx() {
     echo -e "${YELLOW}检测系统类型...${NC}"
     if grep -qi "ubuntu\|debian" /etc/os-release; then
         echo "检测到系统: Ubuntu/Debian"
@@ -83,7 +84,7 @@ install_dependencies_and_caddy() {
         
         apt update -y || { echo -e "${RED}apt update 失败，请检查网络${NC}"; exit 1; }
         
-        local deps="socat jq qrencode lsb-release curl unzip systemd openssl dnsutils net-tools"
+        local deps="socat jq qrencode lsb-release curl unzip systemd openssl dnsutils net-tools certbot python3-certbot-nginx nginx"
         for dep in $deps; do
             if ! check_dependency "$dep"; then
                 echo -e "${YELLOW}安装 $dep...${NC}"
@@ -91,21 +92,6 @@ install_dependencies_and_caddy() {
             fi
         done
         
-        echo -e "${YELLOW}检查 Caddy 依赖...${NC}"
-        local caddy_deps="debian-keyring debian-archive-keyring apt-transport-https"
-        for dep in $caddy_deps; do
-            if ! check_dependency "$dep"; then
-                echo -e "${YELLOW}安装 $dep...${NC}"
-                apt install -y "$dep" || { echo -e "${RED}$dep 安装失败${NC}"; exit 1; }
-            fi
-        done
-        if ! check_dependency "caddy"; then
-            echo -e "${YELLOW}安装 Caddy...${NC}"
-            curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor | tee /usr/share/keyrings/caddy-stable-archive-keyring.gpg >/dev/null || { echo -e "${RED}GPG 密钥导入失败${NC}"; exit 1; }
-            echo "deb [signed-by=/usr/share/keyrings/caddy-stable-archive-keyring.gpg] https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main" | tee /etc/apt/sources.list.d/caddy-stable.list
-            apt update -y || { echo -e "${RED}Caddy 仓库更新失败，请检查网络或 GPG 密钥${NC}"; exit 1; }
-            apt install -y caddy || { echo -e "${RED}Caddy 安装失败${NC}"; exit 1; }
-        fi
         touch "$FIRST_RUN_FILE"
     else
         echo -e "${RED}仅支持 Ubuntu/Debian 系统${NC}"
@@ -162,56 +148,79 @@ check_and_handle_port() {
     fi
 }
 
-# 配置 Caddy（强制 IPv4）
-install_caddy() {
-    echo -e "${YELLOW}安装并配置 Caddy...${NC}"
-    sudo systemctl stop caddy >/dev/null 2>&1
+# 配置 Nginx（强制 IPv4）
+install_nginx() {
+    echo -e "${YELLOW}安装并配置 Nginx...${NC}"
+    sudo systemctl stop nginx >/dev/null 2>&1
+    sudo systemctl stop xray >/dev/null 2>&1
+    
     check_and_handle_port 443
-    cat > "$CADDY_CONFIG" <<EOF
-{
-    admin 127.0.0.1:2019
-}
-$DOMAIN:443 {
-    bind 0.0.0.0
-    tls "$EMAIL"
-    route {
-        reverse_proxy 127.0.0.1:8443 {
-            transport http {
-                versions h2 h2c
-            }
-        }
+    
+    # 使用 Certbot 申请证书
+    echo -e "${YELLOW}使用 Certbot 申请 TLS 证书...${NC}"
+    certbot --nginx -d "$DOMAIN" --email "$EMAIL" --agree-tos --non-interactive || { 
+        echo -e "${RED}Certbot 证书申请失败，请检查域名和网络${NC}"
+        exit 1
+    }
+    
+    # 创建 Nginx 配置文件
+    cat > "$NGINX_CONFIG" <<EOF
+server {
+    listen 0.0.0.0:443 ssl;
+    server_name $DOMAIN;
+    
+    ssl_certificate /etc/letsencrypt/live/$DOMAIN/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/$DOMAIN/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+    
+    location / {
+        proxy_pass http://127.0.0.1:8443;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
     }
 }
 EOF
-    systemctl restart caddy || { 
-        echo -e "${RED}Caddy 重启失败，请检查日志${NC}"
-        systemctl status caddy
-        journalctl -u caddy.service -b
+    
+    # 创建符号链接
+    if [ ! -L "$NGINX_LINK" ]; then
+        ln -sf "$NGINX_CONFIG" "$NGINX_LINK"
+    fi
+    
+    # 测试 Nginx 配置
+    nginx -t || { 
+        echo -e "${RED}Nginx 配置测试失败，请检查 $NGINX_CONFIG${NC}"
+        cat "$NGINX_CONFIG"
+        exit 1
+    }
+    
+    systemctl restart nginx || { 
+        echo -e "${RED}Nginx 重启失败，请检查日志${NC}"
+        systemctl status nginx
+        journalctl -u nginx.service -b
         exit 1
     }
     sleep 2
-    if ! systemctl is-active caddy >/dev/null 2>&1; then
-        echo -e "${RED}Caddy 服务启动失败，请检查日志${NC}"
-        systemctl status caddy
-        journalctl -u caddy.service -b
+    if ! systemctl is-active nginx >/dev/null 2>&1; then
+        echo -e "${RED}Nginx 服务启动失败，请检查日志${NC}"
+        systemctl status nginx
+        journalctl -u nginx.service -b
         exit 1
     else
-        echo -e "${GREEN}Caddy 配置完成，证书已自动申请并支持续签${NC}"
+        echo -e "${GREEN}Nginx 配置完成，证书已自动申请并支持续签${NC}"
     fi
-    if ! netstat -tulnp | grep -q "0.0.0.0:443.*caddy"; then
-        echo -e "${RED}Caddy 未正确监听 0.0.0.0:443${NC}"
-        # 检查当前监听状态
+    if ! netstat -tulnp | grep -q "0.0.0.0:443.*nginx"; then
+        echo -e "${RED}Nginx 未正确监听 0.0.0.0:443${NC}"
         netstat -tulnp | grep 443
-        echo -e "${YELLOW}尝试手动重启并检查日志${NC}"
-        systemctl restart caddy
-        sleep 2
-        if ! netstat -tulnp | grep -q "0.0.0.0:443.*caddy"; then
-            echo -e "${RED}Caddy 仍未监听 0.0.0.0:443，请检查以下日志${NC}"
-            journalctl -u caddy.service -b
-            exit 1
-        fi
+        echo -e "${RED}请检查 Nginx 日志以确定原因${NC}"
+        journalctl -u nginx.service -b
+        exit 1
     fi
-    echo -e "${GREEN}Caddy 已正确监听 0.0.0.0:443${NC}"
+    echo -e "${GREEN}Nginx 已正确监听 0.0.0.0:443${NC}"
 }
 
 # 安装 Xray
@@ -219,7 +228,10 @@ install_xray() {
     echo -e "${YELLOW}安装 Xray-core...${NC}"
     rm -f /usr/local/bin/xray
     rm -rf /usr/local/etc/xray/*
-    bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install -u root || { echo -e "${RED}Xray 安装失败${NC}"; exit 1; }
+    bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install -u root || { 
+        echo -e "${RED}Xray 安装失败${NC}"; 
+        exit 1; 
+    }
     check_and_handle_port 8443
     systemctl stop xray >/dev/null 2>&1
 }
@@ -343,7 +355,7 @@ main_install() {
     fi
     
     check_domain_ip
-    install_caddy
+    install_nginx
     install_xray
     
     init_users
@@ -360,7 +372,7 @@ main_install() {
     random_path=$(cat "$CONFIG_DIR/last_path")
     generate_client_link "自用" "$uuid" "$protocol_type" "$DOMAIN" "$random_path"
     
-    systemctl enable xray caddy
+    systemctl enable xray nginx
     
     mkdir -p /etc/v2ray-agent
     cp "$0" "$SCRIPT_PATH"
@@ -495,7 +507,7 @@ view_user_link() {
 # 查询证书有效期
 check_cert_validity() {
     echo -e "${YELLOW}查询证书有效期...${NC}"
-    cert_path="/var/lib/caddy/.local/share/caddy/certificates/acme-v02.api.letsencrypt.org-directory/$DOMAIN/$DOMAIN.crt"
+    cert_path="/etc/letsencrypt/live/$DOMAIN/fullchain.pem"
     if [ -f "$cert_path" ]; then
         start_date=$(openssl x509 -in "$cert_path" -noout -startdate | cut -d= -f2)
         end_date=$(openssl x509 -in "$cert_path" -noout -enddate | cut -d= -f2)
@@ -505,7 +517,7 @@ check_cert_validity() {
         echo "有效期: $days_left 天"
         echo "有效期至: $end_date"
     else
-        echo -e "${RED}证书文件不存在，请检查 Caddy 配置${NC}"
+        echo -e "${RED}证书文件不存在，请检查 Nginx 配置${NC}"
     fi
     echo -e "\n操作完成。按回车键返回主菜单..."
     read
@@ -514,7 +526,7 @@ check_cert_validity() {
 # 主菜单
 main_menu() {
     if [ ! -f "$FIRST_RUN_FILE" ]; then
-        install_dependencies_and_caddy
+        install_dependencies_and_nginx
     fi
     
     while true; do
