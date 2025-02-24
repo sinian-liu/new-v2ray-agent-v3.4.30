@@ -196,7 +196,8 @@ install_nginx() {
     check_and_handle_port 80
     
     # 检查是否复用证书（0 表示复用，1 表示重新申请）
-    if [ $(check_existing_certificate) -eq 1 ]; then
+    check_existing_certificate
+    if [ $? -eq 1 ]; then
         # 重新申请证书
         echo -e "${YELLOW}使用 Certbot 申请 TLS 证书...${NC}"
         certbot --nginx -d "$DOMAIN" --email "$EMAIL" --agree-tos --non-interactive || { 
