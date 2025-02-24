@@ -142,7 +142,7 @@ check_and_handle_port() {
                 pid=$(netstat -tulnp | grep ":$port" | awk '{print $7}' | cut -d'/' -f1)
                 sudo kill -9 "$pid"
                 echo -e "${YELLOW}正在释放端口 $port...${NC}"
-                sleep 2  # 增加等待时间，确保端口释放
+                sleep 2
                 if netstat -tulnp | grep -q ":$port"; then
                     echo -e "${RED}端口 $port 释放失败，请手动处理${NC}"
                     exit 1
@@ -165,17 +165,11 @@ check_and_handle_port() {
 # 配置 Caddy（强制 IPv4）
 install_caddy() {
     echo -e "${YELLOW}安装并配置 Caddy...${NC}"
-    # 停止现有 Caddy 服务
     sudo systemctl stop caddy >/dev/null 2>&1
     check_and_handle_port 443
     cat > "$CADDY_CONFIG" <<EOF
 {
     admin 127.0.0.1:2019
-    servers :443 {
-        listener_wrappers {
-            bind 0.0.0.0
-        }
-    }
 }
 $DOMAIN:443 {
     bind 0.0.0.0
@@ -195,7 +189,7 @@ EOF
         journalctl -u caddy.service -b
         exit 1
     }
-    sleep 2  # 等待服务启动
+    sleep 2
     if ! systemctl is-active caddy >/dev/null 2>&1; then
         echo -e "${RED}Caddy 服务启动失败，请检查日志${NC}"
         systemctl status caddy
@@ -204,10 +198,8 @@ EOF
     else
         echo -e "${GREEN}Caddy 配置完成，证书已自动申请并支持续签${NC}"
     fi
-    # 验证监听端口
     if ! netstat -tulnp | grep -q "0.0.0.0:443.*caddy"; then
         echo -e "${RED}Caddy 未正确监听 0.0.0.0:443，尝试禁用 IPv6${NC}"
-        # 禁用 IPv6 并重试
         sysctl -w net.ipv6.conf.all.disable_ipv6=1
         sysctl -w net.ipv6.conf.default.disable_ipv6=1
         systemctl restart caddy
@@ -305,7 +297,7 @@ generate_config() {
         journalctl -u xray.service -b
         exit 1
     }
-    sleep 2  # 等待服务启动
+    sleep 2
     if ! systemctl is-active xray >/dev/null 2>&1; then
         echo -e "${RED}Xray 服务启动失败，请检查日志${NC}"
         systemctl status xray
