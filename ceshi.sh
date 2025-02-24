@@ -294,6 +294,7 @@ main_install() {
     read -p "请输入选项: " proto_input
     IFS=' ' read -r -a protocols <<< "$proto_input"
     
+    # 默认使用 TCP，若包含 WS 协议则优先 WS
     protocol_type="tcp"
     for proto in "${protocols[@]}"; do
         if [ "$proto" = "3" ] || [ "$proto" = "6" ]; then
