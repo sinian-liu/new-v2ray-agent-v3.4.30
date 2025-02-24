@@ -30,12 +30,13 @@ generate_client_link() {
     local username=$1
     local uuid=$2
     local protocol=$3
+    local domain=$4
     if [ "$protocol" == "ws" ]; then
-        vless_link="vless://$uuid@$DOMAIN:443?encryption=none&security=tls&type=ws&path=/vless#$username"
+        vless_link="vless://$uuid@$domain:443?encryption=none&security=tls&type=ws&path=/vless&sni=$domain#$username"
     else
-        vless_link="vless://$uuid@$DOMAIN:443?encryption=none&security=tls&type=tcp#$username"
+        vless_link="vless://$uuid@$domain:443?encryption=none&security=tls&type=tcp&sni=$domain#$username"
     fi
-    subscribe_url="https://$DOMAIN/subscribe/$username.yml"
+    subscribe_url="https://$domain/subscribe/$username.yml"
     echo -e "\n${YELLOW}用户 $username 的链接和订阅:${NC}"
     echo -e "VLESS 链接: $vless_link"
     echo -e "订阅 URL: $subscribe_url"
@@ -146,7 +147,7 @@ check_and_handle_port() {
     fi
 }
 
-# 配置 Caddy
+# 配置 Caddy（强制 IPv4）
 install_caddy() {
     echo -e "${YELLOW}安装并配置 Caddy...${NC}"
     if [ -f "/usr/bin/caddy" ]; then
@@ -163,10 +164,16 @@ install_caddy() {
     fi
     check_and_handle_port 443
     cat > "$CADDY_CONFIG" <<EOF
+{
+    "admin": {
+        "listen": "127.0.0.1:2019"
+    }
+}
 $DOMAIN:443 {
+    bind 0.0.0.0
     tls $EMAIL
     route {
-        reverse_proxy localhost:8443 {
+        reverse_proxy 127.0.0.1:8443 {
             transport http {
                 versions h2 h2c
             }
@@ -207,7 +214,7 @@ install_xray() {
     systemctl stop xray >/dev/null 2>&1
 }
 
-# 生成 Xray 配置
+# 生成 Xray 配置（强制 IPv4，不显示内容）
 generate_config() {
     local protocols=("$@")
     if [ ! -f "$USER_FILE" ]; then
@@ -217,9 +224,15 @@ generate_config() {
     
     temp_config="/tmp/xray_config.json"
     echo '{
-      "log": {"loglevel": "warning"},
+      "log": {
+        "loglevel": "warning"
+      },
       "inbounds": [],
-      "outbounds": [{"protocol": "freedom"}]
+      "outbounds": [
+        {
+          "protocol": "freedom"
+        }
+      ]
     }' > "$temp_config"
     
     clients=$(jq -c '.users | map({"id": .uuid})' "$USER_FILE")
@@ -227,39 +240,37 @@ generate_config() {
         case $proto in
             1)
                 jq --argjson clients "$clients" \
-                   '.inbounds += [{"port": 8443, "protocol": "vless", "settings": {"clients": $clients, "decryption": "none"}, "streamSettings": {"network": "tcp", "security": "none"}}]' \
+                   '.inbounds += [{"listen": "0.0.0.0", "port": 8443, "protocol": "vless", "settings": {"clients": $clients, "decryption": "none"}, "streamSettings": {"network": "tcp", "security": "none"}}]' \
                    "$temp_config" > "$temp_config.tmp" && mv "$temp_config.tmp" "$temp_config"
                 ;;
             2)
                 jq --argjson clients "$clients" \
-                   '.inbounds += [{"port": 8443, "protocol": "vless", "settings": {"clients": $clients, "decryption": "none"}, "streamSettings": {"network": "tcp", "security": "none", "xtlsSettings": {"minVersion": "1.2", "maxVersion": "1.2"}}}]' \
+                   '.inbounds += [{"listen": "0.0.0.0", "port": 8443, "protocol": "vless", "settings": {"clients": $clients, "decryption": "none"}, "streamSettings": {"network": "tcp", "security": "none", "xtlsSettings": {"minVersion": "1.2", "maxVersion": "1.2"}}}]' \
                    "$temp_config" > "$temp_config.tmp" && mv "$temp_config.tmp" "$temp_config"
                 ;;
             3)
                 jq --argjson clients "$clients" \
-                   '.inbounds += [{"port": 8443, "protocol": "vless", "settings": {"clients": $clients, "decryption": "none"}, "streamSettings": {"network": "ws", "security": "none", "wsSettings": {"path": "/vless"}}}]' \
+                   '.inbounds += [{"listen": "0.0.0.0", "port": 8443, "protocol": "vless", "settings": {"clients": $clients, "decryption": "none"}, "streamSettings": {"network": "ws", "security": "none", "wsSettings": {"path": "/vless"}}}]' \
                    "$temp_config" > "$temp_config.tmp" && mv "$temp_config.tmp" "$temp_config"
                 ;;
             4)
                 jq --argjson clients "$clients" \
-                   '.inbounds += [{"port": 8443, "protocol": "vless", "settings": {"clients": $clients, "decryption": "none"}, "streamSettings": {"network": "grpc", "security": "none", "grpcSettings": {"serviceName": "vless-grpc"}}}]' \
+                   '.inbounds += [{"listen": "0.0.0.0", "port": 8443, "protocol": "vless", "settings": {"clients": $clients, "decryption": "none"}, "streamSettings": {"network": "grpc", "security": "none", "grpcSettings": {"serviceName": "vless-grpc"}}}]' \
                    "$temp_config" > "$temp_config.tmp" && mv "$temp_config.tmp" "$temp_config"
                 ;;
             5)
                 jq --argjson clients "$clients" \
-                   '.inbounds += [{"port": 8443, "protocol": "vless", "settings": {"clients": $clients, "decryption": "none"}, "streamSettings": {"network": "http", "security": "none", "httpSettings": {"path": "/h2"}}}]' \
+                   '.inbounds += [{"listen": "0.0.0.0", "port": 8443, "protocol": "vless", "settings": {"clients": $clients, "decryption": "none"}, "streamSettings": {"network": "http", "security": "none", "httpSettings": {"path": "/h2"}}}]' \
                    "$temp_config" > "$temp_config.tmp" && mv "$temp_config.tmp" "$temp_config"
                 ;;
             6)
                 jq --argjson clients "$clients" \
-                   '.inbounds += [{"port": 8443, "protocol": "vmess", "settings": {"clients": $clients}, "streamSettings": {"network": "ws", "security": "none", "wsSettings": {"path": "/vmess"}}}]' \
+                   '.inbounds += [{"listen": "0.0.0.0", "port": 8443, "protocol": "vmess", "settings": {"clients": $clients}, "streamSettings": {"network": "ws", "security": "none", "wsSettings": {"path": "/vmess"}}}]' \
                    "$temp_config" > "$temp_config.tmp" && mv "$temp_config.tmp" "$temp_config"
                 ;;
         esac
     done
     
-    echo -e "${YELLOW}生成的配置文件内容:${NC}"
-    cat "$temp_config"
     if ! jq . "$temp_config" >/dev/null 2>&1; then
         echo -e "${RED}Xray 配置文件生成失败，JSON 格式无效${NC}"
         echo -e "${RED}错误详情:${NC}"
@@ -294,7 +305,6 @@ main_install() {
     read -p "请输入选项: " proto_input
     IFS=' ' read -r -a protocols <<< "$proto_input"
     
-    # 默认使用 TCP，若包含 WS 协议则优先 WS
     protocol_type="tcp"
     for proto in "${protocols[@]}"; do
         if [ "$proto" = "3" ] || [ "$proto" = "6" ]; then
@@ -325,7 +335,7 @@ main_install() {
         '.users += [{"id": $id, "name": "自用", "uuid": $uuid, "expire_time": $expire_time, "status": "enabled"}]' "$USER_FILE" > tmp.json && mv tmp.json "$USER_FILE"
     echo -e "${GREEN}创建测试用户 自用 用于验证链接...${NC}"
     echo -e "用户 自用 已添加，ID: $new_id，UUID: $uuid，过期时间: $expire_time"
-    generate_client_link "自用" "$uuid" "$protocol_type"
+    generate_client_link "自用" "$uuid" "$protocol_type" "$DOMAIN"
     
     generate_config "${protocols[@]}"
     
@@ -369,7 +379,7 @@ add_user() {
     jq --arg username "$username" --arg uuid "$uuid" --argjson id "$new_id" --arg expire_time "$expire_time" \
         '.users += [{"id": $id, "name": $username, "uuid": $uuid, "expire_time": $expire_time, "status": "enabled"}]' "$USER_FILE" > tmp.json && mv tmp.json "$USER_FILE"
     echo -e "${GREEN}用户 $username 已添加，ID: $new_id，UUID: $uuid，过期时间: $expire_time${NC}"
-    generate_client_link "$username" "$uuid" "ws"
+    generate_client_link "$username" "$uuid" "ws" "$DOMAIN"
     echo -e "\n操作完成。按回车键返回主菜单..."
     read
 }
@@ -423,7 +433,7 @@ renew_user() {
     jq --arg name "$username" --arg new_expire_time "$new_expire_time" \
         '(.users[] | select(.name == $name)).expire_time = $new_expire_time | (.users[] | select(.name == $name)).status = "enabled"' "$USER_FILE" > tmp.json && mv tmp.json "$USER_FILE"
     echo -e "${GREEN}用户 $username 已续费，新的过期时间: $new_expire_time，状态: 已启用${NC}"
-    generate_client_link "$username" "$uuid" "ws"
+    generate_client_link "$username" "$uuid" "ws" "$DOMAIN"
     echo -e "\n操作完成。按回车键返回主菜单..."
     read
 }
@@ -434,7 +444,7 @@ view_user_link() {
     read -p "输入要查看链接的用户名: " username
     uuid=$(jq -r --arg username "$username" '.users[] | select(.name == $username) | .uuid' "$USER_FILE")
     if [ -n "$uuid" ]; then
-        generate_client_link "$username" "$uuid" "ws"
+        generate_client_link "$username" "$uuid" "ws" "$DOMAIN"
     else
         echo -e "${RED}用户 $username 不存在${NC}"
     fi
