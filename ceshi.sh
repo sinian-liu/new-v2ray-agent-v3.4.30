@@ -392,7 +392,7 @@ list_disabled_users() {
     read
 }
 
-# 续费用户
+# 续费用户（支持提前续费）
 renew_user() {
     init_users
     read -p "输入要续费的用户 ID 或用户名: " input
@@ -400,20 +400,34 @@ renew_user() {
         user=$(jq -r --argjson id "$input" '.users[] | select(.id == $id)' "$USER_FILE")
         username=$(echo "$user" | jq -r '.name')
         uuid=$(echo "$user" | jq -r '.uuid')
+        current_expire=$(echo "$user" | jq -r '.expire_time')
     else
         user=$(jq -r --arg name "$input" '.users[] | select(.name == $name)' "$USER_FILE")
         username="$input"
         uuid=$(echo "$user" | jq -r '.uuid')
+        current_expire=$(echo "$user" | jq -r '.expire_time')
     fi
     if [ -z "$user" ]; then
         echo -e "${RED}用户 $input 不存在${NC}"
         return
     fi
+    echo -e "当前用户 $username 的过期时间: $current_expire"
     read -p "选择续费时间类型（1. 年 2. 月 3. 自定义天数）: " renew_type
+    if [ "$current_expire" == "permanent" ]; then
+        echo -e "${YELLOW}用户 $username 的过期时间为永久，无需续费${NC}"
+        return
+    fi
+    base_date=$(date -d "$current_expire" +%s 2>/dev/null || date +%s)
     case $renew_type in
-        1) new_expire_time=$(date -d "+1 year" +%Y-%m-%d) ;;
-        2) new_expire_time=$(date -d "+1 month" +%Y-%m-%d) ;;
-        3) read -p "输入天数: " days; new_expire_time=$(date -d "+$days days" +%Y-%m-%d) ;;
+        1) new_expire_time=$(date -d "@$((base_date + 365*24*60*60))" +%Y-%m-%d) ;;
+        2) new_expire_time=$(date -d "@$((base_date + 30*24*60*60))" +%Y-%m-%d) ;;
+        3) 
+            read -p "输入续费天数: " days
+            if ! [[ "$days" =~ ^[0-9]+$ ]]; then
+                echo -e "${RED}请输入有效天数${NC}"
+                return
+            fi
+            new_expire_time=$(date -d "@$((base_date + days*24*60*60))" +%Y-%m-%d) ;;
         *) echo "无效选择"; return ;;
     esac
     jq --arg name "$username" --arg new_expire_time "$new_expire_time" \
@@ -474,7 +488,12 @@ user_menu() {
         fi
         case $choice in
             1) add_user ;;
-            2) jq -r '.users[] | "ID: " + (.id | tostring) + " - 名称: " + .name + " - UUID: " + .uuid + " - 过期时间: " + .expire_time + " - 状态: " + (if .status == "enabled" then "已启用" else "已禁用" end)' "$USER_FILE"; echo -e "\n操作完成。按回车键返回主菜单..."; read ;;
+            2) 
+                echo -e "\n${YELLOW}用户列表:${NC}"
+                jq -r '.users[] | printf("ID: %-5s  名称: %-10s  UUID: %-36s  过期时间: %-12s  状态: %s", (.id | tostring), .name, .uuid, .expire_time, (if .status == "enabled" then "已启用" else "已禁用" end))' "$USER_FILE"
+                echo -e "\n操作完成。按回车键返回主菜单..."
+                read
+                ;;
             3) list_disabled_users ;;
             4) renew_user ;;
             5) view_user_link ;;
