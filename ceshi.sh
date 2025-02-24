@@ -314,12 +314,10 @@ main_install() {
     done
     
     read -p "请输入你的域名: " DOMAIN
-    read -p "请输入你的邮箱（用于证书申请）: " EMAIL
+    read -p "请输入你的邮箱（用于证书申请，回车默认 admin@admin.com）: " EMAIL
     if [ -z "$EMAIL" ]; then
-        echo -e "${RED}邮箱不能为空，请重新输入${NC}"
-        while [ -z "$EMAIL" ]; do
-            read -p "请输入你的邮箱（用于证书申请）: " EMAIL
-        done
+        EMAIL="admin@admin.com"
+        echo -e "${YELLOW}未输入邮箱，使用默认值: admin@admin.com${NC}"
     fi
     
     check_domain_ip
