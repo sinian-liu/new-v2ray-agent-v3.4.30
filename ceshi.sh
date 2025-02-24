@@ -51,18 +51,23 @@ install_dependencies() {
     echo -e "${YELLOW}检测系统类型...${NC}"
     if grep -qi "ubuntu\|debian" /etc/os-release; then
         echo "检测到系统: Ubuntu/Debian"
+        # 安装基本依赖
         apt update -y || { echo -e "${RED}apt update 失败，请检查网络${NC}"; exit 1; }
-        apt install -y socat jq qrencode lsb-release curl unzip systemd openssl || { echo -e "${RED}依赖安装失败${NC}"; exit 1; }
+        apt install -y socat jq qrencode lsb-release curl unzip systemd openssl dnsutils || { echo -e "${RED}基本依赖安装失败${NC}"; exit 1; }
         
         # 安装 Caddy
+        echo -e "${YELLOW}安装 Caddy...${NC}"
         apt install -y debian-keyring debian-archive-keyring apt-transport-https
-        curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor | tee /usr/share/keyrings/caddy-stable-archive-keyring.gpg >/dev/null
-        curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | tee /etc/apt/sources.list.d/caddy-stable.list
-        apt update -y || { echo -e "${RED}Caddy 仓库更新失败${NC}"; exit 1; }
+        curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor | tee /usr/share/keyrings/caddy-stable-archive-keyring.gpg >/dev/null || { echo -e "${RED}GPG 密钥导入失败${NC}"; exit 1; }
+        echo "deb [signed-by=/usr/share/keyrings/caddy-stable-archive-keyring.gpg] https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main" | tee /etc/apt/sources.list.d/caddy-stable.list
+        apt update -y || { echo -e "${RED}Caddy 仓库更新失败，请检查网络或 GPG 密钥${NC}"; exit 1; }
         apt install -y caddy || { echo -e "${RED}Caddy 安装失败${NC}"; exit 1; }
+        
+        # 验证 Caddy 服务
+        systemctl status caddy >/dev/null 2>&1 || { echo -e "${RED}Caddy 服务未正确安装${NC}"; exit 1; }
     elif grep -qi "centos" /etc/os-release; then
         echo "检测到系统: CentOS"
-        yum install -y epel-release && yum install -y socat jq qrencode curl unzip systemd openssl || { echo -e "${RED}依赖安装失败${NC}"; exit 1; }
+        yum install -y epel-release && yum install -y socat jq qrencode curl unzip systemd openssl bind-utils || { echo -e "${RED}依赖安装失败${NC}"; exit 1; }
         yum install -y caddy || { echo -e "${RED}Caddy 安装失败，请检查 CentOS 源${NC}"; exit 1; }
     else
         echo -e "${RED}不支持的系统${NC}"
