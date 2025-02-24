@@ -213,6 +213,11 @@ install_xray() {
 generate_config() {
     local protocols=("$@")
     local inbounds=""
+    # 确保 users.json 存在
+    if [ ! -f "$USER_FILE" ]; then
+        echo -e "${RED}用户文件 $USER_FILE 不存在，正在初始化...${NC}"
+        init_users
+    fi
     for proto in "${protocols[@]}"; do
         case $proto in
             1) inbounds+='{"port": 8443, "protocol": "vless", "settings": {"clients": '$(jq -c '.users | map({"id": .uuid})' "$USER_FILE")', "decryption": "none"}, "streamSettings": {"network": "tcp", "security": "tls", "tlsSettings": {"certificates": [{"certificateFile": "/var/lib/caddy/acme/acme-v02.api.letsencrypt.org-directory/'"$DOMAIN"'/'"$DOMAIN"'.crt", "keyFile": "/var/lib/caddy/acme/acme-v02.api.letsencrypt.org-directory/'"$DOMAIN"'/'"$DOMAIN"'.key"}]}},' ;;
@@ -277,16 +282,8 @@ main_install() {
     check_domain_ip
     install_caddy
     install_xray
-    generate_config "${protocols[@]}"
     
-    systemctl enable xray caddy
-    
-    mkdir -p /etc/v2ray-agent
-    cp "$0" "$SCRIPT_PATH"
-    chmod 700 "$SCRIPT_PATH"
-    echo "alias sinian='bash $SCRIPT_PATH'" >> /root/.bashrc
-    source /root/.bashrc
-    
+    # 在生成配置前初始化用户文件和创建测试用户
     init_users
     uuid=$(generate_uuid)
     max_id=$(jq -r '[.users[].id] | max // 0' "$USER_FILE")
@@ -297,6 +294,16 @@ main_install() {
     echo -e "${GREEN}创建测试用户 自用 用于验证链接...${NC}"
     echo -e "用户 自用 已添加，ID: $new_id，UUID: $uuid，过期时间: $expire_time"
     generate_client_link "自用" "$uuid"
+    
+    generate_config "${protocols[@]}"
+    
+    systemctl enable xray caddy
+    
+    mkdir -p /etc/v2ray-agent
+    cp "$0" "$SCRIPT_PATH"
+    chmod 700 "$SCRIPT_PATH"
+    echo "alias sinian='bash $SCRIPT_PATH'" >> /root/.bashrc
+    source /root/.bashrc
     
     echo -e "${GREEN}安装完成！请输入 'sinian' 打开脚本${NC}"
     echo -e "\n操作完成。按回车键返回主菜单..."
