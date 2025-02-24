@@ -238,10 +238,14 @@ generate_config() {
   "outbounds": [{"protocol": "freedom"}]
 }
 EOF
+    # 调试输出
+    echo -e "${YELLOW}生成的配置文件内容:${NC}"
+    cat "$temp_config"
     # 验证 JSON 格式
     if ! jq . "$temp_config" >/dev/null 2>&1; then
-        echo -e "${RED}Xray 配置文件生成失败，请检查语法${NC}"
-        cat "$temp_config"
+        echo -e "${RED}Xray 配置文件生成失败，JSON 格式无效${NC}"
+        echo -e "${RED}错误详情:${NC}"
+        jq . "$temp_config" 2>&1
         rm -f "$temp_config"
         exit 1
     fi
