@@ -51,15 +51,19 @@ install_dependencies() {
     echo -e "${YELLOW}检测系统类型...${NC}"
     if grep -qi "ubuntu\|debian" /etc/os-release; then
         echo "检测到系统: Ubuntu/Debian"
-        apt update -y && apt install -y socat jq qrencode lsb-release curl unzip systemd openssl
+        apt update -y || { echo -e "${RED}apt update 失败，请检查网络${NC}"; exit 1; }
+        apt install -y socat jq qrencode lsb-release curl unzip systemd openssl || { echo -e "${RED}依赖安装失败${NC}"; exit 1; }
+        
+        # 安装 Caddy
         apt install -y debian-keyring debian-archive-keyring apt-transport-https
-        curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | tee /etc/apt/trusted.gpg.d/caddy-stable.asc
+        curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor | tee /usr/share/keyrings/caddy-stable-archive-keyring.gpg >/dev/null
         curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | tee /etc/apt/sources.list.d/caddy-stable.list
-        apt update -y && apt install -y caddy
+        apt update -y || { echo -e "${RED}Caddy 仓库更新失败${NC}"; exit 1; }
+        apt install -y caddy || { echo -e "${RED}Caddy 安装失败${NC}"; exit 1; }
     elif grep -qi "centos" /etc/os-release; then
         echo "检测到系统: CentOS"
-        yum install -y epel-release && yum install -y socat jq qrencode curl unzip systemd openssl
-        yum install -y caddy || { echo "Caddy 安装失败，请手动安装"; exit 1; }
+        yum install -y epel-release && yum install -y socat jq qrencode curl unzip systemd openssl || { echo -e "${RED}依赖安装失败${NC}"; exit 1; }
+        yum install -y caddy || { echo -e "${RED}Caddy 安装失败，请检查 CentOS 源${NC}"; exit 1; }
     else
         echo -e "${RED}不支持的系统${NC}"
         exit 1
