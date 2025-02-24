@@ -209,35 +209,59 @@ install_xray() {
     systemctl stop xray >/dev/null 2>&1
 }
 
-# 生成 Xray 配置
+# 生成 Xray 配置（使用 jq 生成完整 JSON）
 generate_config() {
     local protocols=("$@")
-    local inbounds=""
     # 确保 users.json 存在
     if [ ! -f "$USER_FILE" ]; then
         echo -e "${RED}用户文件 $USER_FILE 不存在，正在初始化...${NC}"
         init_users
     fi
+    
+    # 创建基础 JSON 配置
+    temp_config="/tmp/xray_config.json"
+    echo '{
+      "log": {"loglevel": "warning"},
+      "inbounds": [],
+      "outbounds": [{"protocol": "freedom"}]
+    }' > "$temp_config"
+    
+    # 添加 inbounds 配置
     for proto in "${protocols[@]}"; do
         case $proto in
-            1) inbounds+='{"port": 8443, "protocol": "vless", "settings": {"clients": '$(jq -c '.users | map({"id": .uuid})' "$USER_FILE")', "decryption": "none"}, "streamSettings": {"network": "tcp", "security": "tls", "tlsSettings": {"certificates": [{"certificateFile": "/var/lib/caddy/acme/acme-v02.api.letsencrypt.org-directory/'"$DOMAIN"'/'"$DOMAIN"'.crt", "keyFile": "/var/lib/caddy/acme/acme-v02.api.letsencrypt.org-directory/'"$DOMAIN"'/'"$DOMAIN"'.key"}]}},' ;;
-            2) inbounds+='{"port": 8443, "protocol": "vless", "settings": {"clients": '$(jq -c '.users | map({"id": .uuid})' "$USER_FILE")', "decryption": "none"}, "streamSettings": {"network": "tcp", "security": "tls", "vision": true, "tlsSettings": {"certificates": [{"certificateFile": "/var/lib/caddy/acme/acme-v02.api.letsencrypt.org-directory/'"$DOMAIN"'/'"$DOMAIN"'.crt", "keyFile": "/var/lib/caddy/acme/acme-v02.api.letsencrypt.org-directory/'"$DOMAIN"'/'"$DOMAIN"'.key"}]}},' ;;
-            3) inbounds+='{"port": 8443, "protocol": "vless", "settings": {"clients": '$(jq -c '.users | map({"id": .uuid})' "$USER_FILE")', "decryption": "none"}, "streamSettings": {"network": "ws", "security": "tls", "tlsSettings": {"certificates": [{"certificateFile": "/var/lib/caddy/acme/acme-v02.api.letsencrypt.org-directory/'"$DOMAIN"'/'"$DOMAIN"'.crt", "keyFile": "/var/lib/caddy/acme/acme-v02.api.letsencrypt.org-directory/'"$DOMAIN"'/'"$DOMAIN"'.key"}]}, "wsSettings": {"path": "/vless"}},' ;;
-            4) inbounds+='{"port": 8443, "protocol": "vless", "settings": {"clients": '$(jq -c '.users | map({"id": .uuid})' "$USER_FILE")', "decryption": "none"}, "streamSettings": {"network": "grpc", "security": "tls", "tlsSettings": {"certificates": [{"certificateFile": "/var/lib/caddy/acme/acme-v02.api.letsencrypt.org-directory/'"$DOMAIN"'/'"$DOMAIN"'.crt", "keyFile": "/var/lib/caddy/acme/acme-v02.api.letsencrypt.org-directory/'"$DOMAIN"'/'"$DOMAIN"'.key"}]}, "grpcSettings": {"serviceName": "vless-grpc"}},' ;;
-            5) inbounds+='{"port": 8443, "protocol": "vless", "settings": {"clients": '$(jq -c '.users | map({"id": .uuid})' "$USER_FILE")', "decryption": "none"}, "streamSettings": {"network": "http", "security": "tls", "tlsSettings": {"certificates": [{"certificateFile": "/var/lib/caddy/acme/acme-v02.api.letsencrypt.org-directory/'"$DOMAIN"'/'"$DOMAIN"'.crt", "keyFile": "/var/lib/caddy/acme/acme-v02.api.letsencrypt.org-directory/'"$DOMAIN"'/'"$DOMAIN"'.key"}]}, "httpSettings": {"path": "/h2"}},' ;;
-            6) inbounds+='{"port": 8443, "protocol": "vmess", "settings": {"clients": '$(jq -c '.users | map({"id": .uuid})' "$USER_FILE")'}, "streamSettings": {"network": "ws", "security": "tls", "tlsSettings": {"certificates": [{"certificateFile": "/var/lib/caddy/acme/acme-v02.api.letsencrypt.org-directory/'"$DOMAIN"'/'"$DOMAIN"'.crt", "keyFile": "/var/lib/caddy/acme/acme-v02.api.letsencrypt.org-directory/'"$DOMAIN"'/'"$DOMAIN"'.key"}]}, "wsSettings": {"path": "/vmess"}},' ;;
+            1)
+                jq --argjson clients "$(jq -c '.users | map({"id": .uuid})' "$USER_FILE")" \
+                   '.inbounds += [{"port": 8443, "protocol": "vless", "settings": {"clients": $clients, "decryption": "none"}, "streamSettings": {"network": "tcp", "security": "tls", "tlsSettings": {"certificates": [{"certificateFile": "/var/lib/caddy/acme/acme-v02.api.letsencrypt.org-directory/'"$DOMAIN"'/'"$DOMAIN"'.crt", "keyFile": "/var/lib/caddy/acme/acme-v02.api.letsencrypt.org-directory/'"$DOMAIN"'/'"$DOMAIN"'.key"}]}}}]' \
+                   "$temp_config" > "$temp_config.tmp" && mv "$temp_config.tmp" "$temp_config"
+                ;;
+            2)
+                jq --argjson clients "$(jq -c '.users | map({"id": .uuid})' "$USER_FILE")" \
+                   '.inbounds += [{"port": 8443, "protocol": "vless", "settings": {"clients": $clients, "decryption": "none"}, "streamSettings": {"network": "tcp", "security": "tls", "vision": true, "tlsSettings": {"certificates": [{"certificateFile": "/var/lib/caddy/acme/acme-v02.api.letsencrypt.org-directory/'"$DOMAIN"'/'"$DOMAIN"'.crt", "keyFile": "/var/lib/caddy/acme/acme-v02.api.letsencrypt.org-directory/'"$DOMAIN"'/'"$DOMAIN"'.key"}]}}}]' \
+                   "$temp_config" > "$temp_config.tmp" && mv "$temp_config.tmp" "$temp_config"
+                ;;
+            3)
+                jq --argjson clients "$(jq -c '.users | map({"id": .uuid})' "$USER_FILE")" \
+                   '.inbounds += [{"port": 8443, "protocol": "vless", "settings": {"clients": $clients, "decryption": "none"}, "streamSettings": {"network": "ws", "security": "tls", "tlsSettings": {"certificates": [{"certificateFile": "/var/lib/caddy/acme/acme-v02.api.letsencrypt.org-directory/'"$DOMAIN"'/'"$DOMAIN"'.crt", "keyFile": "/var/lib/caddy/acme/acme-v02.api.letsencrypt.org-directory/'"$DOMAIN"'/'"$DOMAIN"'.key"}]}, "wsSettings": {"path": "/vless"}}}]' \
+                   "$temp_config" > "$temp_config.tmp" && mv "$temp_config.tmp" "$temp_config"
+                ;;
+            4)
+                jq --argjson clients "$(jq -c '.users | map({"id": .uuid})' "$USER_FILE")" \
+                   '.inbounds += [{"port": 8443, "protocol": "vless", "settings": {"clients": $clients, "decryption": "none"}, "streamSettings": {"network": "grpc", "security": "tls", "tlsSettings": {"certificates": [{"certificateFile": "/var/lib/caddy/acme/acme-v02.api.letsencrypt.org-directory/'"$DOMAIN"'/'"$DOMAIN"'.crt", "keyFile": "/var/lib/caddy/acme/acme-v02.api.letsencrypt.org-directory/'"$DOMAIN"'/'"$DOMAIN"'.key"}]}, "grpcSettings": {"serviceName": "vless-grpc"}}}]' \
+                   "$temp_config" > "$temp_config.tmp" && mv "$temp_config.tmp" "$temp_config"
+                ;;
+            5)
+                jq --argjson clients "$(jq -c '.users | map({"id": .uuid})' "$USER_FILE")" \
+                   '.inbounds += [{"port": 8443, "protocol": "vless", "settings": {"clients": $clients, "decryption": "none"}, "streamSettings": {"network": "http", "security": "tls", "tlsSettings": {"certificates": [{"certificateFile": "/var/lib/caddy/acme/acme-v02.api.letsencrypt.org-directory/'"$DOMAIN"'/'"$DOMAIN"'.crt", "keyFile": "/var/lib/caddy/acme/acme-v02.api.letsencrypt.org-directory/'"$DOMAIN"'/'"$DOMAIN"'.key"}]}, "httpSettings": {"path": "/h2"}}}]' \
+                   "$temp_config" > "$temp_config.tmp" && mv "$temp_config.tmp" "$temp_config"
+                ;;
+            6)
+                jq --argjson clients "$(jq -c '.users | map({"id": .uuid})' "$USER_FILE")" \
+                   '.inbounds += [{"port": 8443, "protocol": "vmess", "settings": {"clients": $clients}, "streamSettings": {"network": "ws", "security": "tls", "tlsSettings": {"certificates": [{"certificateFile": "/var/lib/caddy/acme/acme-v02.api.letsencrypt.org-directory/'"$DOMAIN"'/'"$DOMAIN"'.crt", "keyFile": "/var/lib/caddy/acme/acme-v02.api.letsencrypt.org-directory/'"$DOMAIN"'/'"$DOMAIN"'.key"}]}, "wsSettings": {"path": "/vmess"}}}]' \
+                   "$temp_config" > "$temp_config.tmp" && mv "$temp_config.tmp" "$temp_config"
+                ;;
         esac
     done
-    inbounds=${inbounds%,}
-    # 生成临时文件并验证
-    temp_config="/tmp/xray_config.json"
-    cat > "$temp_config" <<EOF
-{
-  "log": {"loglevel": "warning"},
-  "inbounds": [$inbounds],
-  "outbounds": [{"protocol": "freedom"}]
-}
-EOF
+    
     # 调试输出
     echo -e "${YELLOW}生成的配置文件内容:${NC}"
     cat "$temp_config"
