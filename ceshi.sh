@@ -91,9 +91,26 @@ check_domain_ip() {
     fi
 }
 
+# 检查端口可用性
+check_port() {
+    local port=443
+    if netstat -tulnp | grep -q ":$port"; then
+        echo -e "${RED}错误：端口 $port 已被占用，请释放后再运行脚本${NC}"
+        echo "占用进程信息："
+        netstat -tulnp | grep ":$port"
+        exit 1
+    fi
+}
+
 # 配置 Caddy
 install_caddy() {
     echo -e "${YELLOW}配置 Caddy 并申请证书...${NC}"
+    if [ -z "$EMAIL" ]; then
+        echo -e "${RED}邮箱不能为空，请重新输入${NC}"
+        while [ -z "$EMAIL" ]; do
+            read -p "请输入你的邮箱（用于证书申请）: " EMAIL
+        done
+    fi
     mkdir -p /etc/caddy
     cat > "$CADDY_CONFIG" <<EOF
 $DOMAIN:443 {
@@ -105,7 +122,7 @@ $DOMAIN:443 {
     }
 }
 EOF
-    systemctl restart caddy || { echo -e "${RED}Caddy 重启失败${NC}"; exit 1; }
+    systemctl restart caddy || { echo -e "${RED}Caddy 重启失败，请检查日志 (systemctl status caddy)${NC}"; exit 1; }
     echo -e "${GREEN}Caddy 配置完成，证书已自动申请并支持续签${NC}"
 }
 
@@ -145,9 +162,16 @@ EOF
 main_install() {
     read -p "请输入你的域名: " DOMAIN
     read -p "请输入你的邮箱（用于证书申请）: " EMAIL
+    if [ -z "$EMAIL" ]; then
+        echo -e "${RED}邮箱不能为空，请重新输入${NC}"
+        while [ -z "$EMAIL" ]; do
+            read -p "请输入你的邮箱（用于证书申请）: " EMAIL
+        done
+    fi
     
     install_dependencies
     check_domain_ip
+    check_port
     install_caddy
     install_xray
     
