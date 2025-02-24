@@ -46,24 +46,56 @@ init_users() {
     fi
 }
 
-# 安装依赖
+# 检查依赖是否已安装
+check_dependency() {
+    local pkg=$1
+    if command -v "$pkg" >/dev/null 2>&1 || dpkg -l | grep -q "$pkg"; then
+        echo -e "${GREEN}$pkg 已安装，跳过${NC}"
+        return 0
+    else
+        return 1
+    fi
+}
+
+# 检测系统类型并安装依赖
 install_dependencies() {
     echo -e "${YELLOW}检测系统类型...${NC}"
     if grep -qi "ubuntu\|debian" /etc/os-release; then
         echo "检测到系统: Ubuntu/Debian"
         apt update -y || { echo -e "${RED}apt update 失败，请检查网络${NC}"; exit 1; }
-        apt install -y socat jq qrencode lsb-release curl unzip systemd openssl dnsutils net-tools || { echo -e "${RED}基本依赖安装失败${NC}"; exit 1; }
         
-        echo -e "${YELLOW}安装 Caddy...${NC}"
-        apt install -y debian-keyring debian-archive-keyring apt-transport-https
-        curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor | tee /usr/share/keyrings/caddy-stable-archive-keyring.gpg >/dev/null || { echo -e "${RED}GPG 密钥导入失败${NC}"; exit 1; }
-        echo "deb [signed-by=/usr/share/keyrings/caddy-stable-archive-keyring.gpg] https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main" | tee /etc/apt/sources.list.d/caddy-stable.list
-        apt update -y || { echo -e "${RED}Caddy 仓库更新失败，请检查网络或 GPG 密钥${NC}"; exit 1; }
-        apt install -y caddy || { echo -e "${RED}Caddy 安装失败${NC}"; exit 1; }
+        local deps="socat jq qrencode lsb-release curl unzip systemd openssl dnsutils net-tools"
+        for dep in $deps; do
+            if ! check_dependency "$dep"; then
+                echo -e "${YELLOW}安装 $dep...${NC}"
+                apt install -y "$dep" || { echo -e "${RED}$dep 安装失败${NC}"; exit 1; }
+            fi
+        done
+        
+        echo -e "${YELLOW}检查 Caddy 依赖...${NC}"
+        local caddy_deps="debian-keyring debian-archive-keyring apt-transport-https"
+        for dep in $caddy_deps; do
+            if ! check_dependency "$dep"; then
+                echo -e "${YELLOW}安装 $dep...${NC}"
+                apt install -y "$dep" || { echo -e "${RED}$dep 安装失败${NC}"; exit 1; }
+            fi
+        done
+        if ! check_dependency "caddy"; then
+            curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor | tee /usr/share/keyrings/caddy-stable-archive-keyring.gpg >/dev/null || { echo -e "${RED}GPG 密钥导入失败${NC}"; exit 1; }
+            echo "deb [signed-by=/usr/share/keyrings/caddy-stable-archive-keyring.gpg] https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main" | tee /etc/apt/sources.list.d/caddy-stable.list
+            apt update -y || { echo -e "${RED}Caddy 仓库更新失败，请检查网络或 GPG 密钥${NC}"; exit 1; }
+        fi
     elif grep -qi "centos" /etc/os-release; then
         echo "检测到系统: CentOS"
-        yum install -y epel-release && yum install -y socat jq qrencode curl unzip systemd openssl bind-utils net-tools || { echo -e "${RED}依赖安装失败${NC}"; exit 1; }
-        yum install -y caddy || { echo -e "${RED}Caddy 安装失败，请检查 CentOS 源${NC}"; exit 1; }
+        yum install -y epel-release || { echo -e "${RED}EPEL 安装失败${NC}"; exit 1; }
+        
+        local deps="socat jq qrencode curl unzip systemd openssl bind-utils net-tools"
+        for dep in $deps; do
+            if ! check_dependency "$dep"; then
+                echo -e "${YELLOW}安装 $dep...${NC}"
+                yum install -y "$dep" || { echo -e "${RED}$dep 安装失败${NC}"; exit 1; }
+            fi
+        done
     else
         echo -e "${RED}不支持的系统${NC}"
         exit 1
@@ -86,28 +118,55 @@ check_domain_ip() {
     fi
 }
 
-# 检查端口可用性
-check_port() {
-    local port=443
+# 检查端口占用并处理
+check_and_handle_port() {
+    local port=$1
     if netstat -tulnp | grep -q ":$port"; then
-        echo -e "${RED}错误：端口 $port 已被占用，请释放后再运行脚本${NC}"
+        echo -e "${RED}端口 $port 已被占用${NC}"
         echo "占用进程信息："
         netstat -tulnp | grep ":$port"
-        exit 1
+        read -p "是否释放端口 $port？（1. 是 2. 退出安装）: " port_choice
+        case $port_choice in
+            1)
+                pid=$(netstat -tulnp | grep ":$port" | awk '{print $7}' | cut -d'/' -f1)
+                sudo kill -9 "$pid"
+                echo -e "${YELLOW}正在释放端口 $port...${NC}"
+                sleep 1  # 等待进程终止
+                if netstat -tulnp | grep -q ":$port"; then
+                    echo -e "${RED}端口 $port 释放失败，请手动处理${NC}"
+                    exit 1
+                else
+                    echo -e "${GREEN}端口 $port 已成功释放${NC}"
+                fi
+                ;;
+            2)
+                echo -e "${RED}退出安装${NC}"
+                exit 1
+                ;;
+            *)
+                echo -e "${RED}无效选择，退出安装${NC}"
+                exit 1
+                ;;
+        esac
     fi
 }
 
 # 配置 Caddy
 install_caddy() {
-    echo -e "${YELLOW}配置 Caddy 并申请证书...${NC}"
-    if [ -z "$EMAIL" ]; then
-        echo -e "${RED}邮箱不能为空，请重新输入${NC}"
-        while [ -z "$EMAIL" ]; do
-            read -p "请输入你的邮箱（用于证书申请）: " EMAIL
-        done
+    echo -e "${YELLOW}安装并配置 Caddy...${NC}"
+    if [ -f "/usr/bin/caddy" ]; then
+        read -p "Caddy 已安装，是否重新安装？（y/n）: " reinstall_caddy
+        if [ "$reinstall_caddy" = "y" ]; then
+            apt purge -y caddy
+            rm -f "$CADDY_CONFIG"
+            apt install -y caddy || { echo -e "${RED}Caddy 安装失败${NC}"; exit 1; }
+        else
+            echo -e "${GREEN}使用现有 Caddy 配置${NC}"
+        fi
+    else
+        apt install -y caddy || { echo -e "${RED}Caddy 安装失败${NC}"; exit 1; }
     fi
-    rm -f "$CADDY_CONFIG"
-    mkdir -p /etc/caddy
+    check_and_handle_port 443
     cat > "$CADDY_CONFIG" <<EOF
 $DOMAIN:443 {
     tls $EMAIL
@@ -134,7 +193,19 @@ EOF
 # 安装 Xray
 install_xray() {
     echo -e "${YELLOW}安装 Xray-core...${NC}"
-    bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install || { echo -e "${RED}Xray 安装失败${NC}"; exit 1; }
+    if [ -f "/usr/local/bin/xray" ]; then
+        read -p "Xray 已安装，是否重新安装？（y/n）: " reinstall_xray
+        if [ "$reinstall_xray" = "y" ]; then
+            rm -f /usr/local/bin/xray
+            rm -rf /usr/local/etc/xray/*
+            bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install || { echo -e "${RED}Xray 安装失败${NC}"; exit 1; }
+        else
+            echo -e "${GREEN}使用现有 Xray 配置${NC}"
+        fi
+    else
+        bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install || { echo -e "${RED}Xray 安装失败${NC}"; exit 1; }
+    fi
+    check_and_handle_port 8443
     systemctl stop xray
 }
 
@@ -169,21 +240,6 @@ EOF
 
 # 主安装流程
 main_install() {
-    read -p "请输入你的域名: " DOMAIN
-    read -p "请输入你的邮箱（用于证书申请）: " EMAIL
-    if [ -z "$EMAIL" ]; then
-        echo -e "${RED}邮箱不能为空，请重新输入${NC}"
-        while [ -z "$EMAIL" ]; do
-            read -p "请输入你的邮箱（用于证书申请）: " EMAIL
-        done
-    fi
-    
-    install_dependencies
-    check_domain_ip
-    check_port
-    install_caddy
-    install_xray
-    
     echo -e "${YELLOW}选择要安装的协议（多选用空格分隔，例如: 1 3）:${NC}"
     echo "1. VLESS+TCP[TLS/XTLS]"
     echo "2. VLESS+TLS_Vision+TCP"
@@ -193,6 +249,19 @@ main_install() {
     echo "6. VMess+TLS+WS"
     read -p "请输入选项: " proto_input
     IFS=' ' read -r -a protocols <<< "$proto_input"
+    
+    read -p "请输入你的域名: " DOMAIN
+    read -p "请输入你的邮箱（用于证书申请）: " EMAIL
+    if [ -z "$EMAIL" ]; then
+        echo -e "${RED}邮箱不能为空，请重新输入${NC}"
+        while [ -z "$EMAIL" ]; do
+            read -p "请输入你的邮箱（用于证书申请）: " EMAIL
+        done
+    fi
+    
+    check_domain_ip
+    install_caddy
+    install_xray
     generate_config "${protocols[@]}"
     
     systemctl enable xray caddy
@@ -353,6 +422,7 @@ user_menu() {
 
 # 主菜单
 main_menu() {
+    install_dependencies
     while true; do
         echo -e "\n${YELLOW}Xray 安装与管理脚本${NC}"
         echo "1. 安装 Xray 服务"
