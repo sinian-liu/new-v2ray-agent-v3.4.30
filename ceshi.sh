@@ -148,20 +148,64 @@ check_and_handle_port() {
     fi
 }
 
-# 配置 Nginx（强制 IPv4）
+# 检查证书是否存在并询问复用
+check_existing_certificate() {
+    local cert_path="/etc/letsencrypt/live/$DOMAIN/fullchain.pem"
+    local key_path="/etc/letsencrypt/live/$DOMAIN/privkey.pem"
+    
+    if [ -f "$cert_path" ] && [ -f "$key_path" ]; then
+        echo -e "${GREEN}检测到域名 $DOMAIN 已存在证书${NC}"
+        echo "证书路径: $cert_path"
+        start_date=$(openssl x509 -in "$cert_path" -noout -startdate | cut -d= -f2)
+        end_date=$(openssl x509 -in "$cert_path" -noout -enddate | cut -d= -f2)
+        days_left=$(expr $(date -d "$end_date" +%s) - $(date +%s) / 86400)
+        echo "签发时间: $start_date"
+        echo "有效期至: $end_date"
+        echo "剩余天数: $days_left"
+        read -p "是否复用现有证书？（1. 是 2. 否）: " reuse_choice
+        case $reuse_choice in
+            1)
+                echo -e "${GREEN}将复用现有证书${NC}"
+                return 0  # 表示复用现有证书
+                ;;
+            2)
+                echo -e "${YELLOW}将重新申请新证书${NC}"
+                return 1  # 表示重新申请
+                ;;
+            *)
+                echo -e "${RED}无效选择，默认重新申请新证书${NC}"
+                return 1
+                ;;
+        esac
+    else
+        echo -e "${YELLOW}未检测到域名 $DOMAIN 的现有证书，将申请新证书${NC}"
+        return 1
+    fi
+}
+
+# 配置 Nginx（强制 IPv4，支持证书复用）
 install_nginx() {
     echo -e "${YELLOW}安装并配置 Nginx...${NC}"
     sudo systemctl stop nginx >/dev/null 2>&1
     sudo systemctl stop xray >/dev/null 2>&1
     
-    check_and_handle_port 443
+    # 清理旧配置
+    sudo rm -f /etc/nginx/sites-enabled/default
     
-    # 使用 Certbot 申请证书
-    echo -e "${YELLOW}使用 Certbot 申请 TLS 证书...${NC}"
-    certbot --nginx -d "$DOMAIN" --email "$EMAIL" --agree-tos --non-interactive || { 
-        echo -e "${RED}Certbot 证书申请失败，请检查域名和网络${NC}"
-        exit 1
-    }
+    check_and_handle_port 443
+    check_and_handle_port 80
+    
+    # 检查是否复用证书
+    if check_existing_certificate; then
+        # 不复用证书，重新申请
+        echo -e "${YELLOW}使用 Certbot 申请 TLS 证书...${NC}"
+        certbot --nginx -d "$DOMAIN" --email "$EMAIL" --agree-tos --non-interactive || { 
+            echo -e "${RED}Certbot 证书申请失败，请检查域名和网络${NC}"
+            exit 1
+        }
+    else
+        echo -e "${GREEN}复用现有证书，无需重新申请${NC}"
+    fi
     
     # 创建 Nginx 配置文件
     cat > "$NGINX_CONFIG" <<EOF
@@ -211,7 +255,7 @@ EOF
         journalctl -u nginx.service -b
         exit 1
     else
-        echo -e "${GREEN}Nginx 配置完成，证书已自动申请并支持续签${NC}"
+        echo -e "${GREEN}Nginx 配置完成${NC}"
     fi
     if ! netstat -tulnp | grep -q "0.0.0.0:443.*nginx"; then
         echo -e "${RED}Nginx 未正确监听 0.0.0.0:443${NC}"
