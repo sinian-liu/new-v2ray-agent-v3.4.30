@@ -188,6 +188,7 @@ EOF
         journalctl -u caddy.service -b
         exit 1
     }
+    sleep 2  # 等待服务启动
     if ! systemctl is-active caddy >/dev/null 2>&1; then
         echo -e "${RED}Caddy 服务启动失败，请检查日志${NC}"
         systemctl status caddy
@@ -195,6 +196,11 @@ EOF
         exit 1
     else
         echo -e "${GREEN}Caddy 配置完成，证书已自动申请并支持续签${NC}"
+    fi
+    # 验证监听端口
+    if ! netstat -tulnp | grep -q "0.0.0.0:443.*caddy"; then
+        echo -e "${RED}Caddy 未正确监听 0.0.0.0:443，请检查配置${NC}"
+        exit 1
     fi
 }
 
@@ -283,6 +289,7 @@ generate_config() {
         journalctl -u xray.service -b
         exit 1
     }
+    sleep 2  # 等待服务启动
     if ! systemctl is-active xray >/dev/null 2>&1; then
         echo -e "${RED}Xray 服务启动失败，请检查日志${NC}"
         systemctl status xray
@@ -290,6 +297,10 @@ generate_config() {
         exit 1
     else
         echo -e "${GREEN}Xray 服务已成功启动${NC}"
+    fi
+    if ! netstat -tulnp | grep -q "0.0.0.0:8443.*xray"; then
+        echo -e "${RED}Xray 未正确监听 0.0.0.0:8443，请检查配置${NC}"
+        exit 1
     fi
     echo "$random_path" > "$CONFIG_DIR/last_path"
 }
