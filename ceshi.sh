@@ -1,6 +1,6 @@
 #!/bin/bash
 # Xray 高级管理脚本
-# 版本: v1.0.4-fix13
+# 版本: v1.0.4-fix14
 # 支持系统: Ubuntu 20.04/22.04, CentOS 7/8, Debian 10/11 (systemd)
 
 # 配置常量
@@ -1034,13 +1034,14 @@ install_script() {
     if [ ! -f "$SCRIPT_PATH" ]; then
         echo -e "${GREEN}首次运行，安装脚本到 $INSTALL_DIR...${NC}"
         mkdir -p "$INSTALL_DIR"
-        cp "$0" "$SCRIPT_PATH"
-        chmod +x "$SCRIPT_PATH"
-        ln -sf "$SCRIPT_PATH" /usr/local/bin/v
+        cp "$0" "$SCRIPT_PATH" || { echo -e "${RED}复制脚本到 $SCRIPT_PATH 失败!${NC}"; exit 1; }
+        chmod +x "$SCRIPT_PATH" || { echo -e "${RED}设置 $SCRIPT_PATH 可执行权限失败!${NC}"; exit 1; }
+        ln -sf "$SCRIPT_PATH" /usr/local/bin/v || { echo -e "${RED}创建快捷命令 'v' 失败!${NC}"; exit 1; }
         if command -v v >/dev/null 2>&1; then
             echo -e "${GREEN}脚本已安装到 $SCRIPT_PATH 并设置快捷命令 'v'${NC}"
             echo "现在运行安装后的脚本..."
-            exec "$SCRIPT_PATH" "$@"
+            /bin/bash "$SCRIPT_PATH" "$@"
+            exit $?
         else
             echo -e "${RED}设置快捷命令 'v' 失败，请检查权限或路径!${NC}"
             exit 1
