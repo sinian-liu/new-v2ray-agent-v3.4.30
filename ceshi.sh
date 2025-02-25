@@ -1,6 +1,6 @@
 #!/bin/bash
 # Xray 高级管理脚本
-# 版本: v1.7
+# 版本: v1.9
 # 支持系统: Ubuntu 20.04/22.04, CentOS 7/8, Debian 10/11
 
 # 配置常量
@@ -10,8 +10,10 @@ NGINX_CONF="/etc/nginx/conf.d/xray.conf"
 SUBSCRIPTION_DIR="/var/www/subscribe"
 BACKUP_DIR="/var/backups/xray"
 CERTS_DIR="/etc/letsencrypt/live"
-LOG_DIR="/var/log/xray"
+LOG_DIR="/usr/local/var/log/xray"
 SCRIPT_NAME="xray-menu"
+LOCK_FILE="/tmp/xray_users.lock"
+XRAY_SERVICE_NAME="xray"  # 默认服务名，后续动态检测
 
 # 颜色定义
 RED='\033[31m'
@@ -35,7 +37,18 @@ detect_system() {
         centos) [ "$OS_VERSION" -ge 8 ] && PKG_MANAGER="dnf" || PKG_MANAGER="yum";;
         *) echo -e "${RED}不支持的系统: $OS_NAME${NC}"; exit 1;;
     esac
-    echo "检测到系统: $OS_NAME $OS_VERSION，包管理器: $PKG_MANAGER"
+    SYSTEMD=$(ps -p 1 -o comm= | grep -q systemd && echo "yes" || echo "no")
+    echo "检测到系统: $OS_NAME $OS_VERSION，包管理器: $PKG_MANAGER，Systemd: $SYSTEMD"
+}
+
+# 检测 Xray 服务名
+detect_xray_service() {
+    if [ "$SYSTEMD" = "yes" ]; then
+        XRAY_SERVICE_NAME=$(systemctl list-units --type=service | grep -oE 'xray[a-zA-Z0-9_-]*\.service' | head -n 1 | sed 's/\.service//') || XRAY_SERVICE_NAME="xray"
+    else
+        XRAY_SERVICE_NAME=$(service --status-all 2>/dev/null | grep -oE 'xray[a-zA-Z0-9_-]*' | head -n 1) || XRAY_SERVICE_NAME="xray"
+    fi
+    echo "检测到 Xray 服务名: $XRAY_SERVICE_NAME"
 }
 
 # 初始化环境
@@ -43,13 +56,15 @@ init_environment() {
     [ "$EUID" -ne 0 ] && echo -e "${RED}请使用 root 权限运行脚本!${NC}" && exit 1
     mkdir -p "$LOG_DIR" "$SUBSCRIPTION_DIR" "$BACKUP_DIR"
     chmod 770 "$LOG_DIR"
-    chown root:adm "$LOG_DIR"
+    chown root:root "$LOG_DIR"
     touch "$LOG_DIR/access.log" "$LOG_DIR/error.log"
     chmod 660 "$LOG_DIR"/*.log
     if [ ! -s "$USER_DATA" ] || ! jq -e . "$USER_DATA" >/dev/null 2>&1; then
         echo '{"users": []}' > "$USER_DATA"
     fi
     chmod 660 "$USER_DATA"
+    chmod 600 "$XRAY_CONFIG" 2>/dev/null || true  # 初次运行可能不存在
+    detect_xray_service
     setup_logrotate
     setup_cert_renewal
     setup_auto_start
@@ -66,7 +81,7 @@ $LOG_DIR/*.log {
     compress
     missingok
     notifempty
-    create 660 root adm
+    create 660 root root
 }
 EOF
         echo "日志轮转已配置，每天轮转，保留 7 天。"
@@ -75,22 +90,25 @@ EOF
 
 # 设置证书自动续期
 setup_cert_renewal() {
-    (crontab -l 2>/dev/null; echo "0 0 * * * certbot renew --quiet --post-hook 'systemctl reload nginx' && [ \$(certbot certificates | grep -c 'VALID') -gt 0 ] || echo '证书续期失败: \$(date)' >> $LOG_DIR/cert_renew.log") | crontab -
-    echo "证书自动续期已设置，每天检查一次，失败记录在 $LOG_DIR/cert_renew.log。"
+    if ! command -v mail >/dev/null; then
+        $PKG_MANAGER install -y mailutils >/dev/null 2>&1 || $PKG_MANAGER install -y mailx >/dev/null 2>&1
+    fi
+    (crontab -l 2>/dev/null; echo "0 0 * * * certbot renew --quiet --post-hook 'systemctl reload nginx' && [ \$(certbot certificates | grep -c 'VALID') -gt 0 ] || echo '证书续期失败: \$(date)' | mail -s 'Xray 证书续期失败' admin@$DOMAIN && echo '证书续期失败: \$(date)' >> $LOG_DIR/cert_renew.log") | crontab -
+    echo "证书自动续期已设置，每天检查一次，失败发送邮件并记录在 $LOG_DIR/cert_renew.log。"
 }
 
 # 设置脚本和 Xray 重启后自动运行
 setup_auto_start() {
-    if [ ! -f /etc/systemd/system/$SCRIPT_NAME.service ]; then
+    if [ "$SYSTEMD" = "yes" ] && [ ! -f /etc/systemd/system/$SCRIPT_NAME.service ]; then
         cat > /etc/systemd/system/$SCRIPT_NAME.service <<EOF
 [Unit]
 Description=Xray Management Script
 After=network.target
 
 [Service]
-Type=oneshot
+Type=simple
 ExecStart=/bin/bash $(realpath $0)
-RemainAfterExit=yes
+Restart=always
 User=root
 
 [Install]
@@ -98,9 +116,16 @@ WantedBy=multi-user.target
 EOF
         systemctl daemon-reload
         systemctl enable $SCRIPT_NAME.service >/dev/null 2>&1
+        systemctl start $SCRIPT_NAME.service >/dev/null 2>&1
         echo "脚本已设置为开机自启，服务名: $SCRIPT_NAME.service"
+    elif [ "$SYSTEMD" = "no" ]; then
+        echo "非 systemd 系统，请手动配置开机自启。"
     fi
-    systemctl enable xray >/dev/null 2>&1 || service xray enable >/dev/null 2>&1
+    if [ "$SYSTEMD" = "yes" ]; then
+        systemctl enable "$XRAY_SERVICE_NAME" >/dev/null 2>&1
+    else
+        chkconfig "$XRAY_SERVICE_NAME" on >/dev/null 2>&1 || service "$XRAY_SERVICE_NAME" enable >/dev/null 2>&1
+    fi
 }
 
 # 检测防火墙并开放端口
@@ -134,9 +159,9 @@ check_firewall() {
 check_ports() {
     BASE_PORT=10000
     PORTS=()
-    for i in {0..3}; do
+    for i in "${!PROTOCOLS[@]}"; do
         PORT=$((BASE_PORT + i))
-        while netstat -tuln | grep -q ":$PORT "; do
+        while lsof -i :$PORT >/dev/null 2>&1; do
             PORT=$((PORT + 1))
         done
         PORTS[$i]=$PORT
@@ -150,7 +175,9 @@ install_dependencies() {
     case "$PKG_MANAGER" in
         apt)
             apt update -qq || { echo -e "${RED}更新软件源失败!${NC}"; exit 1; }
-            apt install -y curl jq qrencode nginx uuid-runtime logrotate net-tools dnsutils netcat-openbsd lsof snapd flock >/dev/null 2>&1 || { echo -e "${RED}依赖安装失败!${NC}"; exit 1; }
+            apt install -y curl jq qrencode nginx uuid-runtime logrotate net-tools dnsutils netcat-openbsd lsof snapd mailutils flock >/dev/null 2>&1 || { echo -e "${RED}依赖安装失败!${NC}"; exit 1; }
+            systemctl enable snapd >/dev/null 2>&1
+            systemctl start snapd >/dev/null 2>&1
             if ! command -v certbot >/dev/null; then
                 snap install --classic certbot >/dev/null 2>&1 || { echo -e "${RED}Certbot 安装失败!${NC}"; exit 1; }
                 ln -sf /snap/bin/certbot /usr/bin/certbot
@@ -158,39 +185,51 @@ install_dependencies() {
             ;;
         yum|dnf)
             $PKG_MANAGER update -y -q || { echo -e "${RED}更新软件源失败!${NC}"; exit 1; }
-            $PKG_MANAGER install -y curl jq qrencode nginx uuid-runtime logrotate net-tools bind-utils nc lsof epel-release >/dev/null 2>&1 || { echo -e "${RED}依赖安装失败!${NC}"; exit 1; }
+            $PKG_MANAGER install -y curl jq qrencode nginx uuid-runtime logrotate net-tools bind-utils nc lsof epel-release mailx flock >/dev/null 2>&1 || { echo -e "${RED}依赖安装失败!${NC}"; exit 1; }
             if ! command -v certbot >/dev/null; then
                 $PKG_MANAGER install -y certbot python3-certbot-nginx >/dev/null 2>&1 || { echo -e "${RED}Certbot 安装失败!${NC}"; exit 1; }
             fi
             ;;
     esac
-    systemctl start nginx >/dev/null 2>&1 || { echo -e "${RED}Nginx 启动失败!${NC}"; exit 1; }
+    systemctl start nginx >/dev/null 2>&1 || service nginx start >/dev/null 2>&1 || { echo -e "${RED}Nginx 启动失败!${NC}"; exit 1; }
     echo "- 已安装: curl, jq, qrencode"
-    echo "- 新安装: nginx, certbot, uuid-runtime, logrotate, net-tools, dnsutils, netcat, lsof, snapd/flock"
+    echo "- 新安装: nginx, certbot, uuid-runtime, logrotate, net-tools, dnsutils, netcat, lsof, mailutils, flock"
 }
 
 # 检查 Xray 版本
 check_xray_version() {
     echo -e "${GREEN}[检查Xray版本...]${NC}"
     CURRENT_VERSION=$(xray --version 2>/dev/null | grep -oP 'Xray \K[0-9]+\.[0-9]+\.[0-9]+' || echo "未安装")
-    LATEST_VERSION=$(curl -s https://api.github.com/repos/XTLS/Xray-core/releases/latest | jq -r '.tag_name' | sed 's/v//' || echo "unknown")
-    if [ "$LATEST_VERSION" = "unknown" ]; then
-        echo "无法获取最新版本，使用默认安装。"
-        bash <(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh) >/dev/null 2>&1 || { echo -e "${RED}Xray 安装失败!${NC}"; exit 1; }
-        return
-    fi
-    if [ "$CURRENT_VERSION" != "$LATEST_VERSION" ]; then
-        echo "当前版本: $CURRENT_VERSION，最新版本: $LATEST_VERSION"
-        read -p "是否更新到最新版本? [y/N]: " UPDATE
-        if [[ "$UPDATE" =~ ^[Yy] ]]; then
-            bash <(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh) >/dev/null 2>&1 || { echo -e "${RED}Xray 更新失败!${NC}"; exit 1; }
-            echo "已更新到 Xray $LATEST_VERSION"
+    if [ "$CURRENT_VERSION" = "未安装" ] || ! command -v xray >/dev/null; then
+        LATEST_VERSION=$(curl -s https://api.github.com/repos/XTLS/Xray-core/releases/latest | jq -r '.tag_name' | sed 's/v//' || echo "unknown")
+        if [ "$LATEST_VERSION" = "unknown" ]; then
+            echo "无法获取最新版本，使用默认安装。"
         else
-            echo "保持当前版本或用户选择的版本。"
-            [ "$CURRENT_VERSION" = "未安装" ] && bash <(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh) >/dev/null 2>&1
+            echo "当前版本: 未安装，最新版本: $LATEST_VERSION"
+            read -p "是否安装最新版本? [y/N]: " UPDATE
+            [[ "$UPDATE" =~ ^[Yy] ]] || exit 1
         fi
+        bash <(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh) >/dev/null 2>&1 || { echo -e "${RED}Xray 安装失败!${NC}"; exit 1; }
+        if ! command -v xray >/dev/null; then
+            echo -e "${RED}Xray 未正确安装，请检查网络或手动安装!${NC}"
+            exit 1
+        fi
+        CURRENT_VERSION=$(xray --version | grep -oP 'Xray \K[0-9]+\.[0-9]+\.[0-9]+')
+        echo "已安装 Xray $CURRENT_VERSION"
     else
-        echo "当前已是最新版本: $CURRENT_VERSION"
+        LATEST_VERSION=$(curl -s https://api.github.com/repos/XTLS/Xray-core/releases/latest | jq -r '.tag_name' | sed 's/v//' || echo "unknown")
+        if [ "$LATEST_VERSION" != "unknown" ] && [ "$CURRENT_VERSION" != "$LATEST_VERSION" ]; then
+            echo "当前版本: $CURRENT_VERSION，最新版本: $LATEST_VERSION"
+            read -p "是否更新到最新版本? [y/N]: " UPDATE
+            if [[ "$UPDATE" =~ ^[Yy] ]]; then
+                bash <(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh) >/dev/null 2>&1 || { echo -e "${RED}Xray 更新失败!${NC}"; exit 1; }
+                echo "已更新到 Xray $LATEST_VERSION"
+            else
+                echo "保持当前版本: $CURRENT_VERSION"
+            fi
+        else
+            echo "当前已是最新版本: $CURRENT_VERSION"
+        fi
     fi
 }
 
@@ -242,8 +281,12 @@ configure_nginx() {
     GRPC_SERVICE="grpc_$(openssl rand -hex 4)"
     VMESS_PATH="/vmess_ws_$(openssl rand -hex 4)"
     TCP_PATH="/tcp_$(openssl rand -hex 4)"
-    [ -f "$NGINX_CONF" ] && rm -f "$NGINX_CONF"
+    if [ -f "$NGINX_CONF" ] && ! grep -q "Xray 配置" "$NGINX_CONF"; then
+        echo -e "${YELLOW}检测到 $NGINX_CONF 已存在且非 Xray 配置，备份并覆盖${NC}"
+        mv "$NGINX_CONF" "$NGINX_CONF.bak.$(date +%F_%H%M%S)"
+    fi
     cat > "$NGINX_CONF" <<EOF
+# Xray 配置
 server {
     listen 80;
     server_name $DOMAIN;
@@ -285,20 +328,32 @@ EOF
     done
     echo "}" >> "$NGINX_CONF"
     nginx -t >/dev/null 2>&1 || { echo -e "${RED}Nginx 配置错误!${NC}"; exit 1; }
-    systemctl reload nginx >/dev/null 2>&1
+    systemctl reload nginx >/dev/null 2>&1 || service nginx reload >/dev/null 2>&1
     echo "Nginx 配置完成，路径: $WS_PATH (VLESS+WS), $VMESS_PATH (VMess+WS), $GRPC_SERVICE (gRPC), $TCP_PATH (TCP)"
 }
 
 # 配置 Xray 核心（多协议支持）
 configure_xray() {
     echo -e "${GREEN}[6] 配置Xray核心...${NC}"
-    WS_PATH=$(grep "location" "$NGINX_CONF" | grep "10000" | awk '{print $2}' | tr -d '{')
-    GRPC_SERVICE=$(grep "location" "$NGINX_CONF" | grep "10001" | awk '{print $2}' | tr -d '{/')
-    VMESS_PATH=$(grep "location" "$NGINX_CONF" | grep "10002" | awk '{print $2}' | tr -d '{')
-    TCP_PATH=$(grep "location" "$NGINX_CONF" | grep "10003" | awk '{print $2}' | tr -d '{')
+    WS_PATH=$(grep "location" "$NGINX_CONF" | grep "${PORTS[0]}" | awk '{print $2}' | tr -d '{')
+    GRPC_SERVICE=$(grep "location" "$NGINX_CONF" | grep "${PORTS[2]}" | awk '{print $2}' | tr -d '{/')
+    VMESS_PATH=$(grep "location" "$NGINX_CONF" | grep "${PORTS[1]}" | awk '{print $2}' | tr -d '{')
+    TCP_PATH=$(grep "location" "$NGINX_CONF" | grep "${PORTS[3]}" | awk '{print $2}' | tr -d '{')
+    echo -e "选择 Xray 日志级别:"
+    echo "1. warning (默认)"
+    echo "2. info"
+    echo "3. debug"
+    read -p "请选择 [默认1]: " LOG_LEVEL
+    LOG_LEVEL=${LOG_LEVEL:-1}
+    case "$LOG_LEVEL" in
+        1) LOG_LEVEL="warning" ;;
+        2) LOG_LEVEL="info" ;;
+        3) LOG_LEVEL="debug" ;;
+        *) echo -e "${RED}无效选择，使用默认 warning${NC}"; LOG_LEVEL="warning" ;;
+    esac
     cat > "$XRAY_CONFIG" <<EOF
 {
-    "log": {"loglevel": "warning", "access": "$LOG_DIR/access.log", "error": "$LOG_DIR/error.log"},
+    "log": {"loglevel": "$LOG_LEVEL", "access": "$LOG_DIR/access.log", "error": "$LOG_DIR/error.log"},
     "inbounds": [],
     "outbounds": [{"protocol": "freedom"}]
 }
@@ -313,6 +368,7 @@ EOF
             4) jq ".inbounds += [{\"port\": $PORT, \"protocol\": \"vless\", \"settings\": {\"clients\": [], \"decryption\": \"none\"}, \"streamSettings\": {\"network\": \"tcp\"}}]" "$XRAY_CONFIG" > tmp.json && mv tmp.json "$XRAY_CONFIG" ;;
         esac
     done
+    chmod 600 "$XRAY_CONFIG"
     echo "- 协议: $(for p in "${PROTOCOLS[@]}"; do case $p in 1) echo -n "VLESS+WS+TLS "; ;; 2) echo -n "VMess+WS+TLS "; ;; 3) echo -n "VLESS+gRPC+TLS "; ;; 4) echo -n "VLESS+TCP+TLS "; ;; esac; done)"
     echo "- 路径: $WS_PATH (VLESS+WS), $VMESS_PATH (VMess+WS), $GRPC_SERVICE (gRPC), $TCP_PATH (TCP)"
     echo "- 内部端口: ${PORTS[*]}"
@@ -344,16 +400,16 @@ create_default_user() {
 start_services() {
     echo -e "${GREEN}[8] 启动服务...${NC}"
     systemctl restart nginx >/dev/null 2>&1 || service nginx restart >/dev/null 2>&1
-    systemctl restart xray >/dev/null 2>&1 || service xray restart >/dev/null 2>&1
-    systemctl enable nginx xray >/dev/null 2>&1 || { service nginx enable >/dev/null 2>&1; service xray enable >/dev/null 2>&1; }
-    if (systemctl is-active nginx >/dev/null || service nginx status >/dev/null 2>&1) && (systemctl is-active xray >/dev/null || service xray status >/dev/null 2>&1); then
+    systemctl restart "$XRAY_SERVICE_NAME" >/dev/null 2>&1 || service "$XRAY_SERVICE_NAME" restart >/dev/null 2>&1
+    systemctl enable nginx "$XRAY_SERVICE_NAME" >/dev/null 2>&1 || { service nginx enable >/dev/null 2>&1; service "$XRAY_SERVICE_NAME" enable >/dev/null 2>&1; }
+    if pgrep nginx >/dev/null && pgrep xray >/dev/null; then
         echo "- Nginx状态: 运行中"
         echo "- Xray状态: 运行中"
         echo "检查服务状态... 成功!"
     else
         echo -e "${RED}服务启动失败!${NC}"
-        echo "Nginx状态: $(systemctl is-active nginx 2>/dev/null || service nginx status 2>/dev/null)"
-        echo "Xray状态: $(systemctl is-active xray 2>/dev/null || service xray status 2>/dev/null)"
+        echo "Nginx状态: $(pgrep nginx >/dev/null && echo '运行中' || echo '未运行')"
+        echo "Xray状态: $(pgrep xray >/dev/null && echo '运行中' || echo '未运行')"
         echo "请检查日志文件: $LOG_DIR/error.log 或 /var/log/nginx/error.log"
         exit 1
     fi
@@ -362,10 +418,10 @@ start_services() {
 # 显示用户链接并测试协议
 show_user_link() {
     echo -e "${GREEN}[9] 显示用户链接...${NC}"
-    WS_PATH=$(jq -r '.inbounds[] | select(.port == '"${PORTS[0]}"') | .streamSettings.wsSettings.path' "$XRAY_CONFIG")
-    GRPC_SERVICE=$(jq -r '.inbounds[] | select(.port == '"${PORTS[2]}"') | .streamSettings.grpcSettings.serviceName' "$XRAY_CONFIG")
-    VMESS_PATH=$(jq -r '.inbounds[] | select(.port == '"${PORTS[1]}"') | .streamSettings.wsSettings.path' "$XRAY_CONFIG")
-    TCP_PATH=$(jq -r '.inbounds[] | select(.port == '"${PORTS[3]}"') | .streamSettings.tcpSettings.path' "$XRAY_CONFIG" || echo "")
+    WS_PATH=$(jq -r '.inbounds[] | select(.port == '"${PORTS[0]}"') | .streamSettings.wsSettings.path' "$XRAY_CONFIG" 2>/dev/null || echo "$WS_PATH")
+    GRPC_SERVICE=$(jq -r '.inbounds[] | select(.port == '"${PORTS[2]}"') | .streamSettings.grpcSettings.serviceName' "$XRAY_CONFIG" 2>/dev/null || echo "$GRPC_SERVICE")
+    VMESS_PATH=$(jq -r '.inbounds[] | select(.port == '"${PORTS[1]}"') | .streamSettings.wsSettings.path' "$XRAY_CONFIG" 2>/dev/null || echo "$VMESS_PATH")
+    TCP_PATH=$(jq -r '.inbounds[] | select(.port == '"${PORTS[3]}"') | .streamSettings.tcpSettings.path' "$XRAY_CONFIG" 2>/dev/null || echo "$TCP_PATH")
     echo -e "${BLUE}=== 客户端配置信息 ===${NC}\n"
     for PROTOCOL in "${PROTOCOLS[@]}"; do
         case "$PROTOCOL" in
@@ -437,23 +493,75 @@ install_xray() {
     echo -e "\n安装完成! 输入 '$SCRIPT_NAME' 打开管理菜单"
 }
 
+# 检查并禁用过期用户
+disable_expired_users() {
+    echo -e "${GREEN}=== 检查并禁用过期用户 ===${NC}"
+    flock -x 200
+    TODAY=$(date +%F)
+    EXPIRED_USERS=$(jq -r ".users[] | select(.expire != \"永久\" and .expire < \"$TODAY\" and .status == \"启用\") | .uuid" "$USER_DATA")
+    if [ -n "$EXPIRED_USERS" ]; then
+        cp "$XRAY_CONFIG" "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)"
+        cp "$USER_DATA" "$USER_DATA.bak.$(date +%F_%H%M%S)"
+        for UUID in $EXPIRED_USERS; do
+            jq --arg uuid "$UUID" '.users[] | select(.uuid == $uuid) | .status = "禁用"' "$USER_DATA" > tmp.json && mv tmp.json "$USER_DATA"
+            for i in {0..3}; do
+                jq --arg uuid "$UUID" ".inbounds[$i].settings.clients -= [{\"id\": \$uuid}]" "$XRAY_CONFIG" > tmp.json && mv tmp.json "$XRAY_CONFIG" || { echo -e "${RED}Xray 配置更新失败!${NC}"; cp "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)" "$XRAY_CONFIG"; exit 1; }
+            done
+            echo "用户 UUID $UUID 已禁用（过期日期: $(jq -r ".users[] | select(.uuid == \"$UUID\") | .expire" "$USER_DATA")）"
+        done
+        if ! jq -e . "$USER_DATA" >/dev/null 2>&1 || ! jq -e . "$XRAY_CONFIG" >/dev/null 2>&1; then
+            echo -e "${RED}配置文件损坏，恢复备份!${NC}"
+            cp "$USER_DATA.bak.$(date +%F_%H%M%S)" "$USER_DATA"
+            cp "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)" "$XRAY_CONFIG"
+            exit 1
+        fi
+        echo -e "${YELLOW}正在重启 Xray 以应用禁用用户配置，现有连接可能短暂中断...${NC}"
+        if [ "$SYSTEMD" = "yes" ]; then
+            systemctl restart "$XRAY_SERVICE_NAME" >/dev/null 2>&1
+            if ! pgrep xray >/dev/null; then
+                echo -e "${RED}Xray 重启失败，恢复旧配置!${NC}"
+                cp "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)" "$XRAY_CONFIG"
+                systemctl restart "$XRAY_SERVICE_NAME" >/dev/null 2>&1
+                exit 1
+            fi
+        else
+            service "$XRAY_SERVICE_NAME" restart >/dev/null 2>&1
+            if ! pgrep xray >/dev/null; then
+                echo -e "${RED}Xray 重启失败，恢复旧配置!${NC}"
+                cp "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)" "$XRAY_CONFIG"
+                service "$XRAY_SERVICE_NAME" restart >/dev/null 2>&1
+                exit 1
+            fi
+        fi
+        echo "过期用户禁用完成并已重启 Xray。"
+    else
+        echo "没有发现过期用户。"
+    fi
+    # 设置每天检查过期用户的定时任务
+    (crontab -l 2>/dev/null; echo "0 0 * * * bash $(realpath $0) --disable-expired") | crontab -
+    echo "已设置每天自动检查并禁用过期用户。"
+    flock -u 200
+}
+
 # 用户管理菜单
 user_management() {
-    exec 200>/var/lock/xray_users.lock
+    exec 200>$LOCK_FILE
     while true; do
         echo -e "${BLUE}用户管理菜单${NC}"
         echo "1. 新建用户"
         echo "2. 用户列表"
         echo "3. 用户续期"
         echo "4. 删除用户"
-        echo "5. 返回主菜单"
+        echo "5. 检查并禁用过期用户"
+        echo "6. 返回主菜单"
         read -p "请选择操作: " CHOICE
         case "$CHOICE" in
             1) add_user ;;
             2) list_users ;;
             3) renew_user ;;
             4) delete_user ;;
-            5) break ;;
+            5) disable_expired_users ;;
+            6) break ;;
             *) echo -e "${RED}无效选项!${NC}" ;;
         esac
     done
@@ -464,6 +572,12 @@ user_management() {
 add_user() {
     echo -e "${GREEN}=== 新建用户流程 ===${NC}"
     flock -x 200
+
+    # 备份现有配置文件
+    cp "$XRAY_CONFIG" "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)"
+    cp "$USER_DATA" "$USER_DATA.bak.$(date +%F_%H%M%S)"
+
+    # 获取用户输入
     read -p "输入用户名: " USERNAME
     UUID=$(uuidgen)
     while jq -r ".users[] | .uuid" "$USER_DATA" | grep -q "$UUID"; do
@@ -481,13 +595,49 @@ add_user() {
         3) EXPIRE_DATE="永久" ;;
         *) echo -e "${RED}无效选择，使用默认月费${NC}"; EXPIRE_DATE=$(date -d "$(date +%F) +1 month" +%F) ;;
     esac
+
+    # 更新用户数据文件
     jq --arg name "$USERNAME" --arg uuid "$UUID" --arg expire "$EXPIRE_DATE" \
        '.users += [{"id": (.users | length + 1), "name": $name, "uuid": $uuid, "expire": $expire, "used_traffic": 0, "status": "启用"}]' \
-       "$USER_DATA" > tmp.json && mv tmp.json "$USER_DATA" || { echo -e "${RED}用户数据保存失败!${NC}"; exit 1; }
+       "$USER_DATA" > tmp.json && mv tmp.json "$USER_DATA" || { echo -e "${RED}用户数据保存失败!${NC}"; cp "$USER_DATA.bak.$(date +%F_%H%M%S)" "$USER_DATA"; exit 1; }
+    if ! jq -e . "$USER_DATA" >/dev/null 2>&1; then
+        echo -e "${RED}用户数据文件损坏，恢复备份!${NC}"
+        cp "$USER_DATA.bak.$(date +%F_%H%M%S)" "$USER_DATA"
+        exit 1
+    fi
+
+    # 更新 Xray 配置文件
     for i in "${!PROTOCOLS[@]}"; do
-        jq --arg uuid "$UUID" ".inbounds[$i].settings.clients += [{\"id\": \$uuid$(if [ \"${PROTOCOLS[$i]}\" = \"2\" ]; then echo \", \\\"alterId\\\": 0\"; fi)}]" "$XRAY_CONFIG" > tmp.json && mv tmp.json "$XRAY_CONFIG" || { echo -e "${RED}Xray 配置更新失败!${NC}"; exit 1; }
+        jq --arg uuid "$UUID" ".inbounds[$i].settings.clients += [{\"id\": \$uuid$(if [ \"${PROTOCOLS[$i]}\" = \"2\" ]; then echo \", \\\"alterId\\\": 0\"; fi)}]" \
+           "$XRAY_CONFIG" > tmp.json && mv tmp.json "$XRAY_CONFIG" || { echo -e "${RED}Xray 配置更新失败!${NC}"; cp "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)" "$XRAY_CONFIG"; exit 1; }
     done
-    systemctl restart xray >/dev/null 2>&1 || service xray restart >/dev/null 2>&1
+    if ! jq -e . "$XRAY_CONFIG" >/dev/null 2>&1; then
+        echo -e "${RED}Xray 配置文件损坏，恢复备份!${NC}"
+        cp "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)" "$XRAY_CONFIG"
+        exit 1
+    fi
+
+    # 重启 Xray 服务
+    echo -e "${YELLOW}正在重启 Xray 以应用新用户配置，现有连接可能短暂中断...${NC}"
+    if [ "$SYSTEMD" = "yes" ]; then
+        systemctl restart "$XRAY_SERVICE_NAME" >/dev/null 2>&1
+        if ! pgrep xray >/dev/null; then
+            echo -e "${RED}Xray 重启失败，恢复旧配置!${NC}"
+            cp "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)" "$XRAY_CONFIG"
+            systemctl restart "$XRAY_SERVICE_NAME" >/dev/null 2>&1
+            exit 1
+        fi
+    else
+        service "$XRAY_SERVICE_NAME" restart >/dev/null 2>&1
+        if ! pgrep xray >/dev/null; then
+            echo -e "${RED}Xray 重启失败，恢复旧配置!${NC}"
+            cp "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)" "$XRAY_CONFIG"
+            service "$XRAY_SERVICE_NAME" restart >/dev/null 2>&1
+            exit 1
+        fi
+    fi
+
+    # 显示用户链接
     WS_PATH=$(jq -r '.inbounds[] | select(.port == '"${PORTS[0]}"') | .streamSettings.wsSettings.path' "$XRAY_CONFIG")
     VLESS_LINK="vless://$UUID@$DOMAIN:443?encryption=none&security=tls&type=ws&path=$WS_PATH&host=$DOMAIN#$USERNAME"
     echo "用户 $USERNAME 创建成功!"
@@ -541,15 +691,47 @@ renew_user() {
 delete_user() {
     echo -e "${GREEN}=== 删除用户流程 ===${NC}"
     flock -x 200
+
+    # 备份现有配置文件
+    cp "$XRAY_CONFIG" "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)"
+    cp "$USER_DATA" "$USER_DATA.bak.$(date +%F_%H%M%S)"
+
     read -p "输入要删除的用户名: " USERNAME
     UUID=$(jq -r ".users[] | select(.name == \"$USERNAME\") | .uuid" "$USER_DATA")
     if [ -n "$UUID" ]; then
-        jq "del(.users[] | select(.name == \"$USERNAME\"))" "$USER_DATA" > tmp.json && mv tmp.json "$USER_DATA" || { echo -e "${RED}用户数据删除失败!${NC}"; exit 1; }
+        jq "del(.users[] | select(.name == \"$USERNAME\"))" "$USER_DATA" > tmp.json && mv tmp.json "$USER_DATA" || { echo -e "${RED}用户数据删除失败!${NC}"; cp "$USER_DATA.bak.$(date +%F_%H%M%S)" "$USER_DATA"; exit 1; }
+        if ! jq -e . "$USER_DATA" >/dev/null 2>&1; then
+            echo -e "${RED}用户数据文件损坏，恢复备份!${NC}"
+            cp "$USER_DATA.bak.$(date +%F_%H%M%S)" "$USER_DATA"
+            exit 1
+        fi
         for i in {0..3}; do
-            jq --arg uuid "$UUID" ".inbounds[$i].settings.clients -= [{\"id\": \$uuid}]" "$XRAY_CONFIG" > tmp.json && mv tmp.json "$XRAY_CONFIG" || { echo -e "${RED}Xray 配置更新失败!${NC}"; exit 1; }
+            jq --arg uuid "$UUID" ".inbounds[$i].settings.clients -= [{\"id\": \$uuid}]" "$XRAY_CONFIG" > tmp.json && mv tmp.json "$XRAY_CONFIG" || { echo -e "${RED}Xray 配置更新失败!${NC}"; cp "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)" "$XRAY_CONFIG"; exit 1; }
         done
-        systemctl restart xray >/dev/null 2>&1 || service xray restart >/dev/null 2>&1
-        echo "用户 $USERNAME 已删除!"
+        if ! jq -e . "$XRAY_CONFIG" >/dev/null 2>&1; then
+            echo -e "${RED}Xray 配置文件损坏，恢复备份!${NC}"
+            cp "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)" "$XRAY_CONFIG"
+            exit 1
+        fi
+        echo -e "${YELLOW}正在重启 Xray 以应用删除用户配置，现有连接可能短暂中断...${NC}"
+        if [ "$SYSTEMD" = "yes" ]; then
+            systemctl restart "$XRAY_SERVICE_NAME" >/dev/null 2>&1
+            if ! pgrep xray >/dev/null; then
+                echo -e "${RED}Xray 重启失败，恢复旧配置!${NC}"
+                cp "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)" "$XRAY_CONFIG"
+                systemctl restart "$XRAY_SERVICE_NAME" >/dev/null 2>&1
+                exit 1
+            fi
+        else
+            service "$XRAY_SERVICE_NAME" restart >/dev/null 2>&1
+            if ! pgrep xray >/dev/null; then
+                echo -e "${RED}Xray 重启失败，恢复旧配置!${NC}"
+                cp "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)" "$XRAY_CONFIG"
+                service "$XRAY_SERVICE_NAME" restart >/dev/null 2>&1
+                exit 1
+            fi
+        fi
+        echo "用户 $USERNAME 已删除并重启 Xray。"
     else
         echo -e "${RED}用户 $USERNAME 不存在!${NC}"
     fi
@@ -567,7 +749,7 @@ protocol_management() {
     [ ${#PROTOCOLS[@]} -eq 0 ] && PROTOCOLS=(1)
     configure_nginx
     configure_xray
-    systemctl restart nginx xray >/dev/null 2>&1 || service nginx restart >/dev/null 2>&1 && service xray restart >/dev/null 2>&1
+    systemctl restart nginx "$XRAY_SERVICE_NAME" >/dev/null 2>&1 || service nginx restart >/dev/null 2>&1 && service "$XRAY_SERVICE_NAME" restart >/dev/null 2>&1
     for PROTOCOL in "${PROTOCOLS[@]}"; do
         case "$PROTOCOL" in
             1) echo "配置 VLESS+WS+TLS 成功! (端口: 443)" ;;
@@ -590,14 +772,17 @@ traffic_stats() {
         printf "%-16s %-10s %-8s %-8s\n" "$name" "$used_fmt" "无限" "$status"
     done
     if [ -f "$LOG_DIR/access.log" ]; then
-        TOTAL_BYTES=$(awk '/upstream_bytes_received/ {sum += $NF} END {print sum}' "$LOG_DIR/access.log" || echo "0")
+        # 可配置字段示例，假设日志包含 UUID 和流量
+        TOTAL_BYTES=$(awk -v uuid="$UUID" '$0 ~ uuid {sum += $NF} END {print sum}' "$LOG_DIR/access.log" || echo "0")
         if [ "$TOTAL_BYTES" != "0" ]; then
-            jq ".users[] | select(.name == \"$USERNAME\") | .used_traffic = $TOTAL_BYTES" "$USER_DATA" > tmp.json && mv tmp.json "$USER_DATA"
-            echo "已从日志更新流量数据。"
+            jq --arg uuid "$UUID" --arg bytes "$TOTAL_BYTES" '.users[] | select(.uuid == $uuid) | .used_traffic = ($bytes | tonumber)' "$USER_DATA" > tmp.json && mv tmp.json "$USER_DATA"
+            echo "已从日志更新流量数据（假设日志含 UUID）。"
+        else
+            echo "日志中未找到流量数据，使用默认值。"
         fi
     fi
-    (crontab -l 2>/dev/null; echo "0 */8 * * * bash -c 'if [ -f $LOG_DIR/access.log ]; then TOTAL_BYTES=\$(awk \"/upstream_bytes_received/ {sum += \$NF} END {print sum}\" $LOG_DIR/access.log || echo 0); jq \".users[] | .used_traffic = \$TOTAL_BYTES\" $USER_DATA > tmp.json && mv tmp.json $USER_DATA; fi'") | crontab -
-    echo "流量统计已设置为每8小时更新一次。"
+    (crontab -l 2>/dev/null; echo "0 */8 * * * bash -c 'if [ -f $LOG_DIR/access.log ]; then for uuid in \$(jq -r \".users[] | .uuid\" $USER_DATA); do TOTAL_BYTES=\$(awk -v uuid=\"\$uuid\" \"\\\$0 ~ uuid {sum += \\\$NF} END {print sum}\" $LOG_DIR/access.log || echo 0); jq --arg uuid \"\$uuid\" --arg bytes \"\$TOTAL_BYTES\" \".users[] | select(.uuid == \\\$uuid) | .used_traffic = (\\\$bytes | tonumber)\" $USER_DATA > tmp.json && mv tmp.json $USER_DATA; done; fi'") | crontab -
+    echo "流量统计已设置为每8小时更新一次（需日志支持 UUID）。"
 }
 
 # 备份恢复
@@ -629,7 +814,7 @@ backup_restore() {
                     echo "证书申请中... 成功!"
                     echo "订阅链接已更新: https://subscribe.$NEW_DOMAIN"
                 fi
-                systemctl restart nginx xray >/dev/null 2>&1 || service nginx restart >/dev/null 2>&1 && service xray restart >/dev/null 2>&1
+                systemctl restart nginx "$XRAY_SERVICE_NAME" >/dev/null 2>&1 || service nginx restart >/dev/null 2>&1 && service "$XRAY_SERVICE_NAME" restart >/dev/null 2>&1
                 echo "备份恢复完成!"
             else
                 echo -e "${RED}备份文件不存在!${NC}"
@@ -640,29 +825,11 @@ backup_restore() {
     esac
 }
 
-# 主菜单
-main_menu() {
-    init_environment
-    while true; do
-        echo -e "${GREEN}==== Xray高级管理脚本 ====${NC}"
-        echo "1. 全新安装"
-        echo "2. 用户管理"
-        echo "3. 协议管理"
-        echo "4. 流量统计"
-        echo "5. 备份恢复"
-        echo "6. 退出脚本"
-        read -p "请选择操作 [1-6]: " CHOICE
-        case "$CHOICE" in
-            1) install_xray ;;
-            2) user_management ;;
-            3) protocol_management ;;
-            4) traffic_stats ;;
-            5) backup_restore ;;
-            6) exit 0 ;;
-            *) echo -e "${RED}无效选择!${NC}" ;;
-        esac
-    done
-}
-
 # 脚本入口
-main_menu
+if [ "$1" = "--disable-expired" ]; then
+    detect_system
+    detect_xray_service
+    disable_expired_users
+else
+    main_menu
+fi
