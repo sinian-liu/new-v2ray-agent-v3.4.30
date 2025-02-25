@@ -1,6 +1,6 @@
 #!/bin/bash
 # Xray 高级管理脚本
-# 版本: v1.0.4-fix6
+# 版本: v1.0.4-fix10
 # 支持系统: Ubuntu 20.04/22.04, CentOS 7/8, Debian 10/11 (systemd)
 
 # 配置常量
@@ -16,8 +16,8 @@ LOCK_FILE="/tmp/xray_users.lock"
 XRAY_SERVICE_NAME="xray"
 XRAY_BIN="/usr/local/bin/xray"
 
-# 全局路径变量
-declare WS_PATH VMESS_PATH GRPC_SERVICE TCP_PATH
+# 全局变量
+declare DOMAIN WS_PATH VMESS_PATH GRPC_SERVICE TCP_PATH PROTOCOLS PORTS
 
 # 颜色定义
 RED='\033[31m'
@@ -115,8 +115,36 @@ init_environment() {
     detect_system
     detect_xray_service
     setup_auto_start
+    load_config
     exec 200>$LOCK_FILE
     trap 'rm -f tmp.json; flock -u 200; rm -f $LOCK_FILE' EXIT
+}
+
+# 加载现有配置
+load_config() {
+    if [ -f "$NGINX_CONF" ] && grep -q "server_name" "$NGINX_CONF"; then
+        DOMAIN=$(grep "server_name" "$NGINX_CONF" | awk '{print $2}' | sed 's/;//' | head -n 1)
+        WS_PATH=$(grep "location /xray_ws_" "$NGINX_CONF" | awk -F' ' '{print $2}' | head -n 1)
+        VMESS_PATH=$(grep "location /vmess_ws_" "$NGINX_CONF" | awk -F' ' '{print $2}' | head -n 1)
+        GRPC_SERVICE=$(grep "location /grpc_" "$NGINX_CONF" | awk -F' ' '{print $2}' | sed 's#/##g' | head -n 1)
+        TCP_PATH=$(grep "location /tcp_" "$NGINX_CONF" | awk -F' ' '{print $2}' | head -n 1)
+    fi
+    if [ -f "$XRAY_CONFIG" ] && jq -e . "$XRAY_CONFIG" >/dev/null 2>&1; then
+        PROTOCOLS=()
+        PORTS=()
+        while read -r port protocol; do
+            PORTS+=("$port")
+            case "$protocol" in
+                "vless"|"vmess") 
+                    network=$(jq -r ".inbounds[] | select(.port == $port) | .streamSettings.network" "$XRAY_CONFIG")
+                    case "$network" in
+                        "ws") [[ "$protocol" == "vless" ]] && PROTOCOLS+=(1) || PROTOCOLS+=(2) ;;
+                        "grpc") PROTOCOLS+=(3) ;;
+                        "tcp") PROTOCOLS+=(4) ;;
+                    esac ;;
+            esac
+        done < <(jq -r '.inbounds[] | [.port, .protocol] | join(" ")' "$XRAY_CONFIG")
+    fi
 }
 
 # 设置脚本和 Xray 重启后自动运行
@@ -127,14 +155,12 @@ setup_auto_start() {
         rm -rf "/etc/systemd/system/$XRAY_SERVICE_NAME.service.d"
     fi
 
-    # 脚本服务
     printf "[Unit]\nDescription=Xray Management Script\nAfter=network.target\n\n[Service]\nType=simple\nExecStart=/bin/bash %s\nExecStop=/bin/kill -TERM \$MAINPID\nRestart=always\nRestartSec=5\nUser=root\n\n[Install]\nWantedBy=multi-user.target\n" "$(realpath "$0")" > /etc/systemd/system/$SCRIPT_NAME.service
     chmod 644 /etc/systemd/system/$SCRIPT_NAME.service
     systemctl daemon-reload
     systemctl enable $SCRIPT_NAME.service || { echo -e "${YELLOW}警告: 无法启用 $SCRIPT_NAME 服务，继续尝试启动...${NC}"; cat /etc/systemd/system/$SCRIPT_NAME.service; }
     systemctl restart $SCRIPT_NAME.service || echo -e "${YELLOW}警告: $SCRIPT_NAME 服务启动失败，但将继续执行${NC}"
 
-    # Xray 服务
     printf "[Unit]\nDescription=Xray Service\nAfter=network.target nss-lookup.target\n\n[Service]\nType=simple\nExecStartPre=/bin/mkdir -p %s\nExecStartPre=/bin/chown -R nobody:nogroup %s\nExecStartPre=/bin/chmod -R 770 %s\nExecStartPre=/bin/touch %s/access.log %s/error.log\nExecStartPre=/bin/chown nobody:nogroup %s/access.log %s/error.log\nExecStartPre=/bin/chmod 660 %s/access.log %s/error.log\nExecStart=%s -config %s\nRestart=always\nRestartSec=5\nUser=nobody\nGroup=nogroup\nLimitNOFILE=51200\nAmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE\nCapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE\nExecStartPre=/bin/chown nobody:nogroup %s\nExecStartPre=/bin/chmod 600 %s\n\n[Install]\nWantedBy=multi-user.target\n" "$LOG_DIR" "$LOG_DIR" "$LOG_DIR" "$LOG_DIR" "$LOG_DIR" "$LOG_DIR" "$LOG_DIR" "$LOG_DIR" "$LOG_DIR" "$XRAY_BIN" "$XRAY_CONFIG" "$XRAY_CONFIG" "$XRAY_CONFIG" > /etc/systemd/system/$XRAY_SERVICE_NAME.service
     chmod 644 /etc/systemd/system/$XRAY_SERVICE_NAME.service
     systemctl daemon-reload
@@ -194,7 +220,7 @@ check_ports() {
 
 # 安装依赖
 install_dependencies() {
-    echo -e "${GREEN}[2] 安装依赖...${NC}"
+    echo -e "${GREEN}[安装依赖...]${NC}"
     case "$PKG_MANAGER" in
         apt)
             apt update || { echo -e "${RED}更新软件源失败，请检查网络或权限!${NC}"; exit 1; }
@@ -258,17 +284,14 @@ check_xray_version() {
                     SELECTED_VERSION="${VERSIONS[$((VERSION_CHOICE-1))]}"
                     echo "正在安装 Xray 版本 v$SELECTED_VERSION..."
                     if [ "$SELECTED_VERSION" = "1.7.5" ]; then
-                        # 从特定来源安装 v1.7.5
                         curl -L -o /tmp/xray-v1.7.5.zip "https://github.com/sinian-liu/v2ray-agent-2.5.73/releases/download/v1.7.5/xray-linux-64.zip" || { echo -e "${RED}下载 Xray v1.7.5 失败!${NC}"; exit 1; }
                         unzip -o /tmp/xray-v1.7.5.zip -d /tmp/xray-v1.7.5 || { echo -e "${RED}解压 Xray v1.7.5 失败!${NC}"; exit 1; }
                         mv /tmp/xray-v1.7.5/xray /usr/local/bin/xray || { echo -e "${RED}移动 Xray 二进制文件失败!${NC}"; exit 1; }
                         chmod +x /usr/local/bin/xray
                         rm -rf /tmp/xray-v1.7.5 /tmp/xray-v1.7.5.zip
                     else
-                        # 从官方安装其他版本
                         bash <(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh) -v "v$SELECTED_VERSION" || { echo -e "${RED}Xray 版本 v$SELECTED_VERSION 安装失败!${NC}"; exit 1; }
                     fi
-                    # 验证安装版本
                     INSTALLED_VERSION=$(xray --version 2>/dev/null | grep -oP 'Xray \K[0-9]+\.[0-9]+\.[0-9]+' || echo "未安装")
                     if [ "$INSTALLED_VERSION" != "$SELECTED_VERSION" ]; then
                         echo -e "${RED}安装版本验证失败！期望 v$SELECTED_VERSION，实际安装 $INSTALLED_VERSION${NC}"
@@ -305,7 +328,7 @@ check_xray_version() {
 
 # 配置域名
 configure_domain() {
-    echo -e "${GREEN}[4] 配置域名...${NC}"
+    echo -e "${GREEN}[配置域名...]${NC}"
     local retries=3
     while [ $retries -gt 0 ]; do
         read -p "请输入域名: " DOMAIN
@@ -329,9 +352,17 @@ configure_domain() {
     [ $retries -eq 0 ] && { echo -e "${RED}域名验证多次失败，退出安装!${NC}"; exit 1; }
 }
 
+# 检查并设置域名
+check_and_set_domain() {
+    if [ -z "$DOMAIN" ]; then
+        echo -e "${YELLOW}未检测到域名配置${NC}"
+        configure_domain
+    fi
+}
+
 # 申请 SSL 证书
 apply_ssl() {
-    echo -e "${GREEN}[5] 申请SSL证书...${NC}"
+    echo -e "${GREEN}[申请SSL证书...]${NC}"
     local retries=3
     while [ $retries -gt 0 ]; do
         certbot certonly --nginx -d "$DOMAIN" --non-interactive --agree-tos -m "admin@$DOMAIN" || {
@@ -413,7 +444,7 @@ EOF
 
 # 创建默认用户
 create_default_user() {
-    echo -e "${GREEN}[7] 创建用户...${NC}"
+    echo -e "${GREEN}[创建用户...]${NC}"
     USERNAME="自用"
     UUID=$(uuidgen)
     while jq -r ".users[] | .uuid" "$USER_DATA" 2>/dev/null | grep -q "$UUID"; do
@@ -432,7 +463,7 @@ create_default_user() {
 
 # 配置 Xray 核心（多协议支持）
 configure_xray() {
-    echo -e "${GREEN}[6] 配置Xray核心...${NC}"
+    echo -e "${GREEN}[配置Xray核心...]${NC}"
     cat > "$XRAY_CONFIG" <<EOF
 {
     "log": {"loglevel": "debug", "access": "$LOG_DIR/access.log", "error": "$LOG_DIR/error.log"},
@@ -461,7 +492,7 @@ EOF
 
 # 启动服务并检查状态
 start_services() {
-    echo -e "${GREEN}[8] 启动服务...${NC}"
+    echo -e "${GREEN}[启动服务...]${NC}"
     systemctl stop "$XRAY_SERVICE_NAME" >/dev/null 2>&1
     systemctl stop nginx >/dev/null 2>&1
 
@@ -526,32 +557,33 @@ start_services() {
 
 # 显示用户链接并测试协议
 show_user_link() {
-    echo -e "${GREEN}[9] 显示用户链接...${NC}"
+    echo -e "${GREEN}[显示用户链接...]${NC}"
     echo -e "${BLUE}=== 客户端配置信息 ===${NC}\n"
+    check_and_set_domain
     for PROTOCOL in "${PROTOCOLS[@]}"; do
         case "$PROTOCOL" in
             1)
                 VLESS_WS_LINK="vless://$UUID@$DOMAIN:443?encryption=none&security=tls&type=ws&path=$WS_PATH&sni=$DOMAIN&host=$DOMAIN#$USERNAME"
                 echo "[二维码 (VLESS+WS+TLS)]:"
-                qrencode -t ansiutf8 "$VLESS_WS_LINK"
+                qrencode -t ansiutf8 "$VLESS_WS_LINK" || echo -e "${YELLOW}二维码生成失败，请检查 qrencode 是否安装${NC}"
                 echo -e "\n链接地址 (VLESS+WS+TLS):\n$VLESS_WS_LINK"
                 ;;
             2)
                 VMESS_LINK="vmess://$(echo -n '{\"v\":\"2\",\"ps\":\"$USERNAME\",\"add\":\"$DOMAIN\",\"port\":\"443\",\"id\":\"$UUID\",\"aid\":\"0\",\"net\":\"ws\",\"type\":\"none\",\"host\":\"$DOMAIN\",\"path\":\"$VMESS_PATH\",\"tls\":\"tls\",\"sni\":\"$DOMAIN\"}' | base64 -w 0)"
                 echo "[二维码 (VMess+WS+TLS)]:"
-                qrencode -t ansiutf8 "$VMESS_LINK"
+                qrencode -t ansiutf8 "$VMESS_LINK" || echo -e "${YELLOW}二维码生成失败，请检查 qrencode 是否安装${NC}"
                 echo -e "\n链接地址 (VMess+WS+TLS):\n$VMESS_LINK"
                 ;;
             3)
                 VLESS_GRPC_LINK="vless://$UUID@$DOMAIN:443?encryption=none&security=tls&type=grpc&serviceName=$GRPC_SERVICE&sni=$DOMAIN#$USERNAME"
                 echo "[二维码 (VLESS+gRPC+TLS)]:"
-                qrencode -t ansiutf8 "$VLESS_GRPC_LINK"
+                qrencode -t ansiutf8 "$VLESS_GRPC_LINK" || echo -e "${YELLOW}二维码生成失败，请检查 qrencode 是否安装${NC}"
                 echo -e "\n链接地址 (VLESS+gRPC+TLS):\n$VLESS_GRPC_LINK"
                 ;;
             4)
                 VLESS_TCP_LINK="vless://$UUID@$DOMAIN:443?encryption=none&security=tls&type=tcp&path=$TCP_PATH&sni=$DOMAIN#$USERNAME"
                 echo "[二维码 (VLESS+TCP+TLS)]:"
-                qrencode -t ansiutf8 "$VLESS_TCP_LINK"
+                qrencode -t ansiutf8 "$VLESS_TCP_LINK" || echo -e "${YELLOW}二维码生成失败，请检查 qrencode 是否安装${NC}"
                 echo -e "\n链接地址 (VLESS+TCP+TLS):\n$VLESS_TCP_LINK"
                 ;;
         esac
@@ -563,7 +595,7 @@ show_user_link() {
         case "$PROTOCOL" in
             1) 
                 WS_KEY=$(openssl rand -base64 16)
-                RESPONSE=$(curl -s -v --http1.1 -H "Host: $DOMAIN" -H "Connection: Upgrade" -H "Upgrade: websocket" -H "Sec-WebSocket-Key: $WS_KEY" -H "Sec-WebSocket-Version: 13" "https://$DOMAIN$WS_PATH" 2>&1 || echo "Failed to connect")
+                RESPONSE=$(curl -s -v --http1.1 --connect-timeout 2 --max-time 5 -H "Host: $DOMAIN" -H "Connection: Upgrade" -H "Upgrade: websocket" -H "Sec-WebSocket-Key: $WS_KEY" -H "Sec-WebSocket-Version: 13" "https://$DOMAIN$WS_PATH" 2>&1 || echo "Failed to connect")
                 if echo "$RESPONSE" | grep -q "101 Switching Protocols"; then
                     echo "VLESS+WS+TLS 测试通过!"
                 else
@@ -577,7 +609,7 @@ show_user_link() {
                 ;;
             2) 
                 WS_KEY=$(openssl rand -base64 16)
-                RESPONSE=$(curl -s -v --http1.1 -H "Host: $DOMAIN" -H "Connection: Upgrade" -H "Upgrade: websocket" -H "Sec-WebSocket-Key: $WS_KEY" -H "Sec-WebSocket-Version: 13" "https://$DOMAIN$VMESS_PATH" 2>&1 || echo "Failed to connect")
+                RESPONSE=$(curl -s -v --http1.1 --connect-timeout 2 --max-time 5 -H "Host: $DOMAIN" -H "Connection: Upgrade" -H "Upgrade: websocket" -H "Sec-WebSocket-Key: $WS_KEY" -H "Sec-WebSocket-Version: 13" "https://$DOMAIN$VMESS_PATH" 2>&1 || echo "Failed to connect")
                 if echo "$RESPONSE" | grep -q "101 Switching Protocols"; then
                     echo "VMess+WS+TLS 测试通过!"
                 else
@@ -585,7 +617,7 @@ show_user_link() {
                 fi
                 ;;
             3) 
-                RESPONSE=$(curl -s -I "https://$DOMAIN/$GRPC_SERVICE" || echo "Failed to connect")
+                RESPONSE=$(curl -s -I --connect-timeout 2 --max-time 5 "https://$DOMAIN/$GRPC_SERVICE" || echo "Failed to connect")
                 if echo "$RESPONSE" | grep -q "200 OK"; then
                     echo "VLESS+gRPC+TLS 测试通过!"
                 else
@@ -593,7 +625,7 @@ show_user_link() {
                 fi
                 ;;
             4) 
-                RESPONSE=$(curl -s -I "https://$DOMAIN$TCP_PATH" || echo "Failed to connect")
+                RESPONSE=$(curl -s -I --connect-timeout 2 --max-time 5 "https://$DOMAIN$TCP_PATH" || echo "Failed to connect")
                 if echo "$RESPONSE" | grep -q "200 OK"; then
                     echo "VLESS+TCP+TLS 测试通过!"
                 else
@@ -608,12 +640,12 @@ show_user_link() {
 install_xray() {
     detect_system
     echo -e "${BLUE}=== 全新安装流程 ===${NC}\n"
-    echo "[1] 检测系统环境..."
+    echo "[检测系统环境...]"
     echo "- 系统: $OS_NAME $OS_VERSION"
     echo "- 架构: $(uname -m)"
     echo "- 内存: $(free -h | awk '/^Mem:/ {print $2}')"
     check_firewall
-    echo -e "${GREEN}[3] 选择安装的协议${NC}"
+    echo -e "${GREEN}[选择安装的协议]${NC}"
     echo "1. VLESS+WS+TLS (推荐)"
     echo "2. VMess+WS+TLS"
     echo "3. VLESS+gRPC+TLS"
@@ -636,6 +668,11 @@ install_xray() {
 # 检查并禁用过期用户
 disable_expired_users() {
     echo -e "${GREEN}=== 检查并禁用过期用户 ===${NC}"
+    check_and_set_domain
+    if [ ${#PROTOCOLS[@]} -eq 0 ] || [ ! -f "$XRAY_CONFIG" ]; then
+        echo -e "${RED}未检测到有效的 Xray 配置，无法禁用用户${NC}"
+        return
+    fi
     flock -x 200
     TODAY=$(date +%F)
     EXPIRED_USERS=$(jq -r ".users[] | select(.expire != \"永久\" and .expire < \"$TODAY\" and .status == \"启用\") | .uuid" "$USER_DATA")
@@ -643,8 +680,10 @@ disable_expired_users() {
         cp "$XRAY_CONFIG" "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)"
         cp "$USER_DATA" "$USER_DATA.bak.$(date +%F_%H%M%S)"
         for UUID in $EXPIRED_USERS; do
-            jq --arg uuid "$UUID" '.users[] | select(.uuid == $uuid) | .status = "禁用"' "$USER_DATA" > tmp.json && mv tmp.json "$USER_DATA"
-            for i in {0..3}; do
+            # 更新用户状态为“禁用”
+            jq --arg uuid "$UUID" '.users[] | select(.uuid == $uuid) | .status = "禁用"' "$USER_DATA" > tmp.json && mv tmp.json "$USER_DATA" || { echo -e "${RED}用户数据更新失败!${NC}"; cp "$USER_DATA.bak.$(date +%F_%H%M%S)" "$USER_DATA"; exit 1; }
+            # 从现有 inbounds.clients 中移除过期用户
+            for i in "${!PROTOCOLS[@]}"; do
                 jq --arg uuid "$UUID" ".inbounds[$i].settings.clients -= [{\"id\": \$uuid}]" "$XRAY_CONFIG" > tmp.json && mv tmp.json "$XRAY_CONFIG" || { echo -e "${RED}Xray 配置更新失败!${NC}"; cp "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)" "$XRAY_CONFIG"; exit 1; }
             done
             echo "用户 UUID $UUID 已禁用（过期日期: $(jq -r ".users[] | select(.uuid == \"$UUID\") | .expire" "$USER_DATA")）"
@@ -656,7 +695,12 @@ disable_expired_users() {
             exit 1
         fi
         echo -e "${YELLOW}正在重启 Xray 以应用禁用用户配置...${NC}"
-        systemctl restart "$XRAY_SERVICE_NAME" || { echo -e "${RED}Xray 重启失败!${NC}"; systemctl status "$XRAY_SERVICE_NAME"; cat "$LOG_DIR/error.log"; exit 1; }
+        systemctl restart "$XRAY_SERVICE_NAME" || { 
+            echo -e "${RED}Xray 重启失败!${NC}"
+            systemctl status "$XRAY_SERVICE_NAME"
+            cat "$LOG_DIR/error.log"
+            exit 1
+        }
         echo "过期用户禁用完成并已重启 Xray。"
     else
         echo "没有发现过期用户。"
@@ -669,6 +713,11 @@ disable_expired_users() {
 # 用户管理菜单
 user_management() {
     exec 200>$LOCK_FILE
+    check_and_set_domain
+    if [ ${#PROTOCOLS[@]} -eq 0 ] || [ ! -f "$XRAY_CONFIG" ]; then
+        echo -e "${YELLOW}未检测到有效的 Xray 配置，请先进行全新安装或协议管理${NC}"
+        return
+    fi
     while true; do
         echo -e "${BLUE}用户管理菜单${NC}"
         echo "1. 新建用户"
@@ -691,9 +740,14 @@ user_management() {
     exec 200>&-
 }
 
-# 新建用户
+# 新建用户（仅添加用户到现有配置）
 add_user() {
     echo -e "${GREEN}=== 新建用户流程 ===${NC}"
+    check_and_set_domain
+    if [ ${#PROTOCOLS[@]} -eq 0 ] || [ ! -f "$XRAY_CONFIG" ]; then
+        echo -e "${RED}未检测到有效的 Xray 配置，请先进行全新安装或协议管理${NC}"
+        return
+    fi
     flock -x 200
     cp "$XRAY_CONFIG" "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)"
     cp "$USER_DATA" "$USER_DATA.bak.$(date +%F_%H%M%S)"
@@ -714,6 +768,7 @@ add_user() {
         3) EXPIRE_DATE="永久" ;;
         *) echo -e "${RED}无效选择，使用默认月费${NC}"; EXPIRE_DATE=$(date -d "$(date +%F) +1 month" +%F) ;;
     esac
+    # 添加用户到 users.json
     jq --arg name "$USERNAME" --arg uuid "$UUID" --arg expire "$EXPIRE_DATE" \
        '.users += [{"id": (.users | length + 1), "name": $name, "uuid": $uuid, "expire": $expire, "used_traffic": 0, "status": "启用"}]' \
        "$USER_DATA" > tmp.json && mv tmp.json "$USER_DATA" || { echo -e "${RED}用户数据保存失败!${NC}"; cp "$USER_DATA.bak.$(date +%F_%H%M%S)" "$USER_DATA"; exit 1; }
@@ -722,6 +777,7 @@ add_user() {
         cp "$USER_DATA.bak.$(date +%F_%H%M%S)" "$USER_DATA"
         exit 1
     fi
+    # 添加用户到现有 inbounds.clients
     for i in "${!PROTOCOLS[@]}"; do
         jq --arg uuid "$UUID" ".inbounds[$i].settings.clients += [{\"id\": \$uuid$(if [ \"${PROTOCOLS[$i]}\" = \"2\" ]; then echo \", \\\"alterId\\\": 0\"; fi)}]" \
            "$XRAY_CONFIG" > tmp.json && mv tmp.json "$XRAY_CONFIG" || { echo -e "${RED}Xray 配置更新失败!${NC}"; cp "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)" "$XRAY_CONFIG"; exit 1; }
@@ -746,14 +802,9 @@ add_user() {
         cat "$LOG_DIR/error.log"
         exit 1
     }
-    WS_LINK="vless://$UUID@$DOMAIN:443?encryption=none&security=tls&type=ws&path=$WS_PATH&sni=$DOMAIN&host=$DOMAIN#$USERNAME"
     echo "用户 $USERNAME 创建成功!"
     echo -e "\n${BLUE}=== 客户端配置信息 ===${NC}\n"
-    echo "[二维码]:"
-    qrencode -t ansiutf8 "$WS_LINK"
-    echo -e "\n链接地址:\n$WS_LINK"
-    echo -e "\n订阅链接:\nhttps://subscribe.$DOMAIN/subscribe/$USERNAME.yml"
-    echo -e "\nClash 配置链接:\nhttps://subscribe.$DOMAIN/clash/$USERNAME.yml"
+    show_user_link
     flock -u 200
 }
 
@@ -794,22 +845,29 @@ renew_user() {
     flock -u 200
 }
 
-# 删除用户
+# 删除用户（仅从现有配置中移除）
 delete_user() {
     echo -e "${GREEN}=== 删除用户流程 ===${NC}"
+    check_and_set_domain
+    if [ ${#PROTOCOLS[@]} -eq 0 ] || [ ! -f "$XRAY_CONFIG" ]; then
+        echo -e "${RED}未检测到有效的 Xray 配置，无法删除用户${NC}"
+        return
+    fi
     flock -x 200
     cp "$XRAY_CONFIG" "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)"
     cp "$USER_DATA" "$USER_DATA.bak.$(date +%F_%H%M%S)"
     read -p "输入要删除的用户名: " USERNAME
     UUID=$(jq -r ".users[] | select(.name == \"$USERNAME\") | .uuid" "$USER_DATA")
     if [ -n "$UUID" ]; then
+        # 从 users.json 中移除用户
         jq "del(.users[] | select(.name == \"$USERNAME\"))" "$USER_DATA" > tmp.json && mv tmp.json "$USER_DATA" || { echo -e "${RED}用户数据删除失败!${NC}"; cp "$USER_DATA.bak.$(date +%F_%H%M%S)" "$USER_DATA"; exit 1; }
         if ! jq -e . "$USER_DATA" >/dev/null 2>&1; then
             echo -e "${RED}用户数据文件损坏，恢复备份!${NC}"
             cp "$USER_DATA.bak.$(date +%F_%H%M%S)" "$USER_DATA"
             exit 1
         fi
-        for i in {0..3}; do
+        # 从现有 inbounds.clients 中移除用户
+        for i in "${!PROTOCOLS[@]}"; do
             jq --arg uuid "$UUID" ".inbounds[$i].settings.clients -= [{\"id\": \$uuid}]" "$XRAY_CONFIG" > tmp.json && mv tmp.json "$XRAY_CONFIG" || { echo -e "${RED}Xray 配置更新失败!${NC}"; cp "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)" "$XRAY_CONFIG"; exit 1; }
         done
         if ! jq -e . "$XRAY_CONFIG" >/dev/null 2>&1; then
@@ -817,8 +875,20 @@ delete_user() {
             cp "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)" "$XRAY_CONFIG"
             exit 1
         fi
+        if ! $XRAY_BIN -test -config "$XRAY_CONFIG" >/dev/null 2>&1; then
+            echo -e "${RED}Xray 配置无效!${NC}"
+            $XRAY_BIN -test -config "$XRAY_CONFIG"
+            cat "$XRAY_CONFIG"
+            cp "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)" "$XRAY_CONFIG"
+            exit 1
+        fi
         echo -e "${YELLOW}正在重启 Xray 以应用删除用户配置...${NC}"
-        systemctl restart "$XRAY_SERVICE_NAME" || { echo -e "${RED}Xray 重启失败!${NC}"; systemctl status "$XRAY_SERVICE_NAME"; cat "$LOG_DIR/error.log"; exit 1; }
+        systemctl restart "$XRAY_SERVICE_NAME" || { 
+            echo -e "${RED}Xray 重启失败!${NC}"
+            systemctl status "$XRAY_SERVICE_NAME"
+            cat "$LOG_DIR/error.log"
+            exit 1
+        }
         echo "用户 $USERNAME 已删除并重启 Xray。"
     else
         echo -e "${RED}用户 $USERNAME 不存在!${NC}"
@@ -828,6 +898,7 @@ delete_user() {
 
 # 协议管理（多协议支持）
 protocol_management() {
+    check_and_set_domain
     echo -e "${GREEN}协议管理:${NC}"
     echo "1. VLESS+WS+TLS (推荐)"
     echo "2. VMess+WS+TLS"
@@ -835,6 +906,7 @@ protocol_management() {
     echo "4. VLESS+TCP+TLS"
     read -p "请选择 (多选用空格分隔, 默认1): " -a PROTOCOLS
     [ ${#PROTOCOLS[@]} -eq 0 ] && PROTOCOLS=(1)
+    check_ports
     configure_nginx
     configure_xray
     systemctl restart nginx "$XRAY_SERVICE_NAME" || { echo -e "${RED}服务重启失败!${NC}"; exit 1; }
