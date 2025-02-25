@@ -60,7 +60,6 @@ install_dependencies() {
     
     # 通用依赖
     local common_pkgs=("curl" "wget" "jq" "qrencode" "openssl" "net-tools" "socat" "unzip")
-    
     # 系统特定依赖
     case $OS in
         ubuntu|debian)
