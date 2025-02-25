@@ -1,6 +1,6 @@
 #!/bin/bash
 # Xray 高级管理脚本
-# 版本: v1.10.5-fix4
+# 版本: v1.10.5-fix5
 # 支持系统: Ubuntu 20.04/22.04, CentOS 7/8, Debian 10/11 (systemd)
 
 # 配置常量
@@ -71,7 +71,6 @@ detect_system() {
         exit 1
     fi
     echo "检测到系统: $OS_NAME $OS_VERSION，包管理器: $PKG_MANAGER，Init系统: systemd"
-    # 等待 systemd 就绪
     for i in {1..30}; do
         STATE=$(systemctl is-system-running 2>/dev/null)
         if [ "$STATE" = "running" ] || [ "$STATE" = "degraded" ]; then
@@ -102,7 +101,7 @@ init_environment() {
     [ "$EUID" -ne 0 ] && echo -e "${RED}请使用 root 权限运行脚本!${NC}" && exit 1
     mkdir -p "$LOG_DIR" "$SUBSCRIPTION_DIR" "$BACKUP_DIR" "/usr/local/etc/xray"
     chmod 770 "$LOG_DIR" "$SUBSCRIPTION_DIR" "$BACKUP_DIR" "/usr/local/etc/xray"
-    chown nobody:nogroup "$LOG_DIR"
+    chown nobody:nogroup "$LOG_DIR" "$SUBSCRIPTION_DIR" "$BACKUP_DIR" "/usr/local/etc/xray"
     touch "$LOG_DIR/access.log" "$LOG_DIR/error.log"
     chmod 660 "$LOG_DIR"/*.log
     if [ ! -s "$USER_DATA" ] || ! jq -e . "$USER_DATA" >/dev/null 2>&1; then
@@ -120,7 +119,6 @@ init_environment() {
 # 设置脚本和 Xray 重启后自动运行
 setup_auto_start() {
     echo "配置 systemd 服务..."
-    # 检查并移除 Drop-In 文件
     if [ -d "/etc/systemd/system/$XRAY_SERVICE_NAME.service.d" ]; then
         echo -e "${YELLOW}检测到 $XRAY_SERVICE_NAME.service 的 Drop-In 配置，移除以避免冲突...${NC}"
         rm -rf "/etc/systemd/system/$XRAY_SERVICE_NAME.service.d"
@@ -134,7 +132,7 @@ setup_auto_start() {
     systemctl restart $SCRIPT_NAME.service || echo -e "${YELLOW}警告: $SCRIPT_NAME 服务启动失败，但将继续执行${NC}"
 
     # Xray 服务
-    printf "[Unit]\nDescription=Xray Service\nAfter=network.target nss-lookup.target\n\n[Service]\nType=simple\nExecStart=%s -config %s\nRestart=always\nRestartSec=5\nUser=nobody\nGroup=nogroup\nLimitNOFILE=51200\nAmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE\n\n[Install]\nWantedBy=multi-user.target\n" "$XRAY_BIN" "$XRAY_CONFIG" > /etc/systemd/system/$XRAY_SERVICE_NAME.service
+    printf "[Unit]\nDescription=Xray Service\nAfter=network.target nss-lookup.target\n\n[Service]\nType=simple\nExecStart=%s -config %s\nRestart=always\nRestartSec=5\nUser=nobody\nGroup=nogroup\nLimitNOFILE=51200\nAmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE\nCapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE\nExecStartPre=/bin/chown nobody:nogroup %s\nExecStartPre=/bin/chmod 600 %s\n\n[Install]\nWantedBy=multi-user.target\n" "$XRAY_BIN" "$XRAY_CONFIG" "$XRAY_CONFIG" "$XRAY_CONFIG" > /etc/systemd/system/$XRAY_SERVICE_NAME.service
     chmod 644 /etc/systemd/system/$XRAY_SERVICE_NAME.service
     systemctl daemon-reload
     if ! systemctl enable "$XRAY_SERVICE_NAME" >/dev/null 2>&1; then
@@ -429,6 +427,14 @@ start_services() {
     systemctl stop "$XRAY_SERVICE_NAME" >/dev/null 2>&1
     systemctl stop nginx >/dev/null 2>&1
 
+    # 测试 Xray 配置
+    echo "测试 Xray 配置..."
+    $XRAY_BIN -test -config "$XRAY_CONFIG" || { 
+        echo -e "${RED}Xray 配置无效!${NC}"
+        cat "$XRAY_CONFIG"
+        exit 1
+    }
+
     # 启动 Xray
     echo "通过 systemd 启动 Xray..."
     systemctl daemon-reload
@@ -439,14 +445,15 @@ start_services() {
         cat "$XRAY_CONFIG"
         echo "Xray 二进制权限:"
         ls -l "$XRAY_BIN"
-        echo "测试 Xray 配置:"
-        $XRAY_BIN -test -config "$XRAY_CONFIG"
+        echo "Xray 日志:"
+        cat "$LOG_DIR/error.log"
         exit 1
     }
     sleep 3
     if ! systemctl is-active "$XRAY_SERVICE_NAME" >/dev/null; then
         echo -e "${RED}Xray 服务未运行! 查看 systemctl status $XRAY_SERVICE_NAME${NC}"
         systemctl status "$XRAY_SERVICE_NAME"
+        cat "$LOG_DIR/error.log"
         exit 1
     fi
     echo "Xray 服务启动成功!"
