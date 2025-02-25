@@ -1,6 +1,6 @@
 #!/bin/bash
 # Xray 高级管理脚本
-# 版本: v1.9
+# 版本: v1.9.1
 # 支持系统: Ubuntu 20.04/22.04, CentOS 7/8, Debian 10/11
 
 # 配置常量
@@ -22,7 +22,7 @@ YELLOW='\033[33m'
 BLUE='\033[36m'
 NC='\033[0m'
 
-# 主菜单（移动到顶部）
+# 主菜单
 main_menu() {
     init_environment
     while true; do
@@ -92,7 +92,9 @@ init_environment() {
     setup_logrotate
     setup_cert_renewal
     setup_auto_start
-    trap 'rm -f tmp.json; flock -u 200' EXIT
+    # 初始化锁文件描述符
+    exec 200>$LOCK_FILE
+    trap 'rm -f tmp.json; flock -u 200; rm -f $LOCK_FILE' EXIT
 }
 
 # 设置日志轮转
@@ -198,24 +200,33 @@ install_dependencies() {
     echo -e "${GREEN}[2] 安装依赖...${NC}"
     case "$PKG_MANAGER" in
         apt)
-            apt update -qq || { echo -e "${RED}更新软件源失败!${NC}"; exit 1; }
-            apt install -y curl jq qrencode nginx uuid-runtime logrotate net-tools dnsutils netcat-openbsd lsof snapd mailutils flock >/dev/null 2>&1 || { echo -e "${RED}依赖安装失败!${NC}"; exit 1; }
+            apt update || { echo -e "${RED}更新软件源失败，请检查网络或权限!${NC}"; exit 1; }
+            apt upgrade -y || { echo -e "${RED}升级包失败，尝试继续安装依赖...${NC}"; }
+            apt install -y curl jq qrencode nginx uuid-runtime logrotate net-tools dnsutils netcat-openbsd lsof snapd mailutils flock || { 
+                echo -e "${RED}依赖安装失败，请检查错误信息:${NC}"; 
+                apt install -y curl jq qrencode nginx uuid-runtime logrotate net-tools dnsutils netcat-openbsd lsof snapd mailutils flock; 
+                exit 1; 
+            }
             systemctl enable snapd >/dev/null 2>&1
             systemctl start snapd >/dev/null 2>&1
             if ! command -v certbot >/dev/null; then
-                snap install --classic certbot >/dev/null 2>&1 || { echo -e "${RED}Certbot 安装失败!${NC}"; exit 1; }
+                snap install --classic certbot || { echo -e "${RED}Certbot 安装失败!${NC}"; exit 1; }
                 ln -sf /snap/bin/certbot /usr/bin/certbot
             fi
             ;;
         yum|dnf)
-            $PKG_MANAGER update -y -q || { echo -e "${RED}更新软件源失败!${NC}"; exit 1; }
-            $PKG_MANAGER install -y curl jq qrencode nginx uuid-runtime logrotate net-tools bind-utils nc lsof epel-release mailx flock >/dev/null 2>&1 || { echo -e "${RED}依赖安装失败!${NC}"; exit 1; }
+            $PKG_MANAGER update -y || { echo -e "${RED}更新软件源失败，请检查网络或权限!${NC}"; exit 1; }
+            $PKG_MANAGER install -y curl jq qrencode nginx uuid-runtime logrotate net-tools bind-utils nc lsof epel-release mailx flock || { 
+                echo -e "${RED}依赖安装失败，请检查错误信息:${NC}"; 
+                $PKG_MANAGER install -y curl jq qrencode nginx uuid-runtime logrotate net-tools bind-utils nc lsof epel-release mailx flock; 
+                exit 1; 
+            }
             if ! command -v certbot >/dev/null; then
-                $PKG_MANAGER install -y certbot python3-certbot-nginx >/dev/null 2>&1 || { echo -e "${RED}Certbot 安装失败!${NC}"; exit 1; }
+                $PKG_MANAGER install -y certbot python3-certbot-nginx || { echo -e "${RED}Certbot 安装失败!${NC}"; exit 1; }
             fi
             ;;
     esac
-    systemctl start nginx >/dev/null 2>&1 || service nginx start >/dev/null 2>&1 || { echo -e "${RED}Nginx 启动失败!${NC}"; exit 1; }
+    systemctl start nginx || service nginx start || { echo -e "${RED}Nginx 启动失败!${NC}"; exit 1; }
     echo "- 已安装: curl, jq, qrencode"
     echo "- 新安装: nginx, certbot, uuid-runtime, logrotate, net-tools, dnsutils, netcat, lsof, mailutils, flock"
 }
@@ -233,7 +244,7 @@ check_xray_version() {
             read -p "是否安装最新版本? [y/N]: " UPDATE
             [[ "$UPDATE" =~ ^[Yy] ]] || exit 1
         fi
-        bash <(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh) >/dev/null 2>&1 || { echo -e "${RED}Xray 安装失败!${NC}"; exit 1; }
+        bash <(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh) || { echo -e "${RED}Xray 安装失败!${NC}"; exit 1; }
         if ! command -v xray >/dev/null; then
             echo -e "${RED}Xray 未正确安装，请检查网络或手动安装!${NC}"
             exit 1
@@ -246,7 +257,7 @@ check_xray_version() {
             echo "当前版本: $CURRENT_VERSION，最新版本: $LATEST_VERSION"
             read -p "是否更新到最新版本? [y/N]: " UPDATE
             if [[ "$UPDATE" =~ ^[Yy] ]]; then
-                bash <(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh) >/dev/null 2>&1 || { echo -e "${RED}Xray 更新失败!${NC}"; exit 1; }
+                bash <(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh) || { echo -e "${RED}Xray 更新失败!${NC}"; exit 1; }
                 echo "已更新到 Xray $LATEST_VERSION"
             else
                 echo "保持当前版本: $CURRENT_VERSION"
@@ -288,10 +299,13 @@ apply_ssl() {
     echo -e "${GREEN}[5] 申请SSL证书...${NC}"
     local retries=3
     while [ $retries -gt 0 ]; do
-        certbot certonly --nginx -d "$DOMAIN" --non-interactive --agree-tos -m "admin@$DOMAIN" >/dev/null 2>&1 && break
-        retries=$((retries - 1))
-        echo -e "${RED}证书申请失败! 剩余重试次数: $retries${NC}"
-        sleep 5
+        certbot certonly --nginx -d "$DOMAIN" --non-interactive --agree-tos -m "admin@$DOMAIN" || {
+            retries=$((retries - 1))
+            echo -e "${RED}证书申请失败! 剩余重试次数: $retries${NC}"
+            sleep 5
+            continue
+        }
+        break
     done
     [ $retries -eq 0 ] && { echo -e "${RED}证书申请多次失败，退出安装!${NC}"; exit 1; }
     echo "- 证书路径: $CERTS_DIR/$DOMAIN"
@@ -351,8 +365,8 @@ EOF
         esac
     done
     echo "}" >> "$NGINX_CONF"
-    nginx -t >/dev/null 2>&1 || { echo -e "${RED}Nginx 配置错误!${NC}"; exit 1; }
-    systemctl reload nginx >/dev/null 2>&1 || service nginx reload >/dev/null 2>&1
+    nginx -t || { echo -e "${RED}Nginx 配置错误!${NC}"; exit 1; }
+    systemctl reload nginx || service nginx reload
     echo "Nginx 配置完成，路径: $WS_PATH (VLESS+WS), $VMESS_PATH (VMess+WS), $GRPC_SERVICE (gRPC), $TCP_PATH (TCP)"
 }
 
@@ -497,8 +511,6 @@ install_xray() {
     echo "- 架构: $(uname -m)"
     echo "- 内存: $(free -h | awk '/^Mem:/ {print $2}')"
     check_firewall
-    check_ports
-    install_dependencies
     echo -e "${GREEN}[3] 选择安装的协议${NC}"
     echo "1. VLESS+WS+TLS (推荐)"
     echo "2. VMess+WS+TLS"
@@ -506,6 +518,8 @@ install_xray() {
     echo "4. VLESS+TCP+TLS"
     read -p "请选择 (多选用空格分隔, 默认1): " -a PROTOCOLS
     [ ${#PROTOCOLS[@]} -eq 0 ] && PROTOCOLS=(1)
+    check_ports
+    install_dependencies
     configure_domain
     apply_ssl
     configure_nginx
@@ -595,12 +609,8 @@ user_management() {
 add_user() {
     echo -e "${GREEN}=== 新建用户流程 ===${NC}"
     flock -x 200
-
-    # 备份现有配置文件
     cp "$XRAY_CONFIG" "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)"
     cp "$USER_DATA" "$USER_DATA.bak.$(date +%F_%H%M%S)"
-
-    # 获取用户输入
     read -p "输入用户名: " USERNAME
     UUID=$(uuidgen)
     while jq -r ".users[] | .uuid" "$USER_DATA" | grep -q "$UUID"; do
@@ -618,8 +628,6 @@ add_user() {
         3) EXPIRE_DATE="永久" ;;
         *) echo -e "${RED}无效选择，使用默认月费${NC}"; EXPIRE_DATE=$(date -d "$(date +%F) +1 month" +%F) ;;
     esac
-
-    # 更新用户数据文件
     jq --arg name "$USERNAME" --arg uuid "$UUID" --arg expire "$EXPIRE_DATE" \
        '.users += [{"id": (.users | length + 1), "name": $name, "uuid": $uuid, "expire": $expire, "used_traffic": 0, "status": "启用"}]' \
        "$USER_DATA" > tmp.json && mv tmp.json "$USER_DATA" || { echo -e "${RED}用户数据保存失败!${NC}"; cp "$USER_DATA.bak.$(date +%F_%H%M%S)" "$USER_DATA"; exit 1; }
@@ -628,8 +636,6 @@ add_user() {
         cp "$USER_DATA.bak.$(date +%F_%H%M%S)" "$USER_DATA"
         exit 1
     fi
-
-    # 更新 Xray 配置文件
     for i in "${!PROTOCOLS[@]}"; do
         jq --arg uuid "$UUID" ".inbounds[$i].settings.clients += [{\"id\": \$uuid$(if [ \"${PROTOCOLS[$i]}\" = \"2\" ]; then echo \", \\\"alterId\\\": 0\"; fi)}]" \
            "$XRAY_CONFIG" > tmp.json && mv tmp.json "$XRAY_CONFIG" || { echo -e "${RED}Xray 配置更新失败!${NC}"; cp "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)" "$XRAY_CONFIG"; exit 1; }
@@ -639,8 +645,6 @@ add_user() {
         cp "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)" "$XRAY_CONFIG"
         exit 1
     fi
-
-    # 重启 Xray 服务
     echo -e "${YELLOW}正在重启 Xray 以应用新用户配置，现有连接可能短暂中断...${NC}"
     if [ "$SYSTEMD" = "yes" ]; then
         systemctl restart "$XRAY_SERVICE_NAME" >/dev/null 2>&1
@@ -659,8 +663,6 @@ add_user() {
             exit 1
         fi
     fi
-
-    # 显示用户链接
     WS_PATH=$(jq -r '.inbounds[] | select(.port == '"${PORTS[0]}"') | .streamSettings.wsSettings.path' "$XRAY_CONFIG")
     VLESS_LINK="vless://$UUID@$DOMAIN:443?encryption=none&security=tls&type=ws&path=$WS_PATH&host=$DOMAIN#$USERNAME"
     echo "用户 $USERNAME 创建成功!"
@@ -714,255 +716,8 @@ renew_user() {
 delete_user() {
     echo -e "${GREEN}=== 删除用户流程 ===${NC}"
     flock -x 200
-
-    # 备份现有配置文件
     cp "$XRAY_CONFIG" "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)"
     cp "$USER_DATA" "$USER_DATA.bak.$(date +%F_%H%M%S)"
-
-    read -p "输入要删除的用户名: " USERNAME
-    UUID=$(jq -r ".users[] | select(.name == \"$USERNAME\") | .uuid" "$USER_DATA")
-    if [ -n "$UUID" ]; then
-        jq "del(.users[] | select(.name == \"$USERNAME\"))" "$USER_DATA" > tmp.json && mv tmp.json "$USER_DATA" || { echo -e "${RED}用户数据删除失败!${NC}"; cp "$USER_DATA.bak.$(date +%F_%H%M%S)" "$USER_DATA"; exit 1; }
-        if ! jq -e . "$USER_DATA" >/dev/null 2>&1; then
-            echo -e "${RED}用户数据文件损坏，恢复备份!${NC}"
-            cp "$USER_DATA.bak.$(date +%F_%H%M%S)" "$USER_DATA"
-            exit 1
-        fi
-        for i in {0..3}; do
-            jq --arg uuid "$UUID" ".inbounds[$i].settings.clients -= [{\"id\": \$uuid}]" "$XRAY_CONFIG" > tmp.json && mv tmp.json "$XRAY_CONFIG" || { echo -e "${RED}Xray 配置更新失败!${NC}"; cp "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)" "$XRAY_CONFIG"; exit 1; }
-        done
-        if ! jq -e . "$XRAY_CONFIG" >/dev/null 2>&1; then
-            echo -e "${RED}Xray 配置文件损坏，恢复备份!${NC}"
-            cp "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)" "$XRAY_CONFIG"
-            exit 1
-        fi
-        echo -e "${YELLOW}正在重启 Xray 以应用删除用户配置，现有连接可能短暂中断...${NC}"
-        if [ "$SYSTEMD" = "yes" ]; then
-            systemctl restart "$XRAY_SERVICE_NAME" >/dev/null 2>&1
-            if ! pgrep xray >/dev/null; then
-                echo -e "${RED}Xray 重启失败，恢复旧配置!${NC}"
-                cp "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)" "$XRAY_CONFIG"
-                systemctl restart "$XRAY_SERVICE_NAME" >/dev/null 2>&1
-                exit 1
-            fi
-        else
-            service "$XRAY_SERVICE_NAME" restart >/dev/null 2>&1
-            if ! pgrep xray >/dev/null; then
-                echo -e "${RED}Xray 重启失败，恢复旧配置!${NC}"
-                cp "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)" "$XRAY_CONFIG"
-                service "$XRAY_SERVICE_NAME" restart >/dev/null 2>&1
-                exit 1
-            fi
-        fi
-        echo "用户 $USERNAME 已删除并重启 Xray。"
-    else
-        echo -e "${RED}用户 $USERNAME 不存在!${NC}"
-    fi
-    flock -u 200
-}
-
-# 检查并禁用过期用户
-disable_expired_users() {
-    echo -e "${GREEN}=== 检查并禁用过期用户 ===${NC}"
-    flock -x 200
-    TODAY=$(date +%F)
-    EXPIRED_USERS=$(jq -r ".users[] | select(.expire != \"永久\" and .expire < \"$TODAY\" and .status == \"启用\") | .uuid" "$USER_DATA")
-    if [ -n "$EXPIRED_USERS" ]; then
-        cp "$XRAY_CONFIG" "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)"
-        cp "$USER_DATA" "$USER_DATA.bak.$(date +%F_%H%M%S)"
-        for UUID in $EXPIRED_USERS; do
-            jq --arg uuid "$UUID" '.users[] | select(.uuid == $uuid) | .status = "禁用"' "$USER_DATA" > tmp.json && mv tmp.json "$USER_DATA"
-            for i in {0..3}; do
-                jq --arg uuid "$UUID" ".inbounds[$i].settings.clients -= [{\"id\": \$uuid}]" "$XRAY_CONFIG" > tmp.json && mv tmp.json "$XRAY_CONFIG" || { echo -e "${RED}Xray 配置更新失败!${NC}"; cp "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)" "$XRAY_CONFIG"; exit 1; }
-            done
-            echo "用户 UUID $UUID 已禁用（过期日期: $(jq -r ".users[] | select(.uuid == \"$UUID\") | .expire" "$USER_DATA")）"
-        done
-        if ! jq -e . "$USER_DATA" >/dev/null 2>&1 || ! jq -e . "$XRAY_CONFIG" >/dev/null 2>&1; then
-            echo -e "${RED}配置文件损坏，恢复备份!${NC}"
-            cp "$USER_DATA.bak.$(date +%F_%H%M%S)" "$USER_DATA"
-            cp "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)" "$XRAY_CONFIG"
-            exit 1
-        fi
-        echo -e "${YELLOW}正在重启 Xray 以应用禁用用户配置，现有连接可能短暂中断...${NC}"
-        if [ "$SYSTEMD" = "yes" ]; then
-            systemctl restart "$XRAY_SERVICE_NAME" >/dev/null 2>&1
-            if ! pgrep xray >/dev/null; then
-                echo -e "${RED}Xray 重启失败，恢复旧配置!${NC}"
-                cp "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)" "$XRAY_CONFIG"
-                systemctl restart "$XRAY_SERVICE_NAME" >/dev/null 2>&1
-                exit 1
-            fi
-        else
-            service "$XRAY_SERVICE_NAME" restart >/dev/null 2>&1
-            if ! pgrep xray >/dev/null; then
-                echo -e "${RED}Xray 重启失败，恢复旧配置!${NC}"
-                cp "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)" "$XRAY_CONFIG"
-                service "$XRAY_SERVICE_NAME" restart >/dev/null 2>&1
-                exit 1
-            fi
-        fi
-        echo "过期用户禁用完成并已重启 Xray。"
-    else
-        echo "没有发现过期用户。"
-    fi
-    (crontab -l 2>/dev/null; echo "0 0 * * * bash $(realpath $0) --disable-expired") | crontab -
-    echo "已设置每天自动检查并禁用过期用户。"
-    flock -u 200
-}
-
-# 用户管理菜单
-user_management() {
-    exec 200>$LOCK_FILE
-    while true; do
-        echo -e "${BLUE}用户管理菜单${NC}"
-        echo "1. 新建用户"
-        echo "2. 用户列表"
-        echo "3. 用户续期"
-        echo "4. 删除用户"
-        echo "5. 检查并禁用过期用户"
-        echo "6. 返回主菜单"
-        read -p "请选择操作: " CHOICE
-        case "$CHOICE" in
-            1) add_user ;;
-            2) list_users ;;
-            3) renew_user ;;
-            4) delete_user ;;
-            5) disable_expired_users ;;
-            6) break ;;
-            *) echo -e "${RED}无效选项!${NC}" ;;
-        esac
-    done
-    exec 200>&-
-}
-
-# 新建用户
-add_user() {
-    echo -e "${GREEN}=== 新建用户流程 ===${NC}"
-    flock -x 200
-
-    # 备份现有配置文件
-    cp "$XRAY_CONFIG" "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)"
-    cp "$USER_DATA" "$USER_DATA.bak.$(date +%F_%H%M%S)"
-
-    # 获取用户输入
-    read -p "输入用户名: " USERNAME
-    UUID=$(uuidgen)
-    while jq -r ".users[] | .uuid" "$USER_DATA" | grep -q "$UUID"; do
-        UUID=$(uuidgen)
-    done
-    echo -e "\n选择有效期类型:"
-    echo "1. 月费 (默认)"
-    echo "2. 年费"
-    echo "3. 永久"
-    read -p "请选择 [默认1]: " EXPIRE_TYPE
-    EXPIRE_TYPE=${EXPIRE_TYPE:-1}
-    case "$EXPIRE_TYPE" in
-        1) EXPIRE_DATE=$(date -d "$(date +%F) +1 month" +%F) ;;
-        2) EXPIRE_DATE=$(date -d "$(date +%F) +1 year" +%F) ;;
-        3) EXPIRE_DATE="永久" ;;
-        *) echo -e "${RED}无效选择，使用默认月费${NC}"; EXPIRE_DATE=$(date -d "$(date +%F) +1 month" +%F) ;;
-    esac
-
-    # 更新用户数据文件
-    jq --arg name "$USERNAME" --arg uuid "$UUID" --arg expire "$EXPIRE_DATE" \
-       '.users += [{"id": (.users | length + 1), "name": $name, "uuid": $uuid, "expire": $expire, "used_traffic": 0, "status": "启用"}]' \
-       "$USER_DATA" > tmp.json && mv tmp.json "$USER_DATA" || { echo -e "${RED}用户数据保存失败!${NC}"; cp "$USER_DATA.bak.$(date +%F_%H%M%S)" "$USER_DATA"; exit 1; }
-    if ! jq -e . "$USER_DATA" >/dev/null 2>&1; then
-        echo -e "${RED}用户数据文件损坏，恢复备份!${NC}"
-        cp "$USER_DATA.bak.$(date +%F_%H%M%S)" "$USER_DATA"
-        exit 1
-    fi
-
-    # 更新 Xray 配置文件
-    for i in "${!PROTOCOLS[@]}"; do
-        jq --arg uuid "$UUID" ".inbounds[$i].settings.clients += [{\"id\": \$uuid$(if [ \"${PROTOCOLS[$i]}\" = \"2\" ]; then echo \", \\\"alterId\\\": 0\"; fi)}]" \
-           "$XRAY_CONFIG" > tmp.json && mv tmp.json "$XRAY_CONFIG" || { echo -e "${RED}Xray 配置更新失败!${NC}"; cp "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)" "$XRAY_CONFIG"; exit 1; }
-    done
-    if ! jq -e . "$XRAY_CONFIG" >/dev/null 2>&1; then
-        echo -e "${RED}Xray 配置文件损坏，恢复备份!${NC}"
-        cp "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)" "$XRAY_CONFIG"
-        exit 1
-    fi
-
-    # 重启 Xray 服务
-    echo -e "${YELLOW}正在重启 Xray 以应用新用户配置，现有连接可能短暂中断...${NC}"
-    if [ "$SYSTEMD" = "yes" ]; then
-        systemctl restart "$XRAY_SERVICE_NAME" >/dev/null 2>&1
-        if ! pgrep xray >/dev/null; then
-            echo -e "${RED}Xray 重启失败，恢复旧配置!${NC}"
-            cp "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)" "$XRAY_CONFIG"
-            systemctl restart "$XRAY_SERVICE_NAME" >/dev/null 2>&1
-            exit 1
-        fi
-    else
-        service "$XRAY_SERVICE_NAME" restart >/dev/null 2>&1
-        if ! pgrep xray >/dev/null; then
-            echo -e "${RED}Xray 重启失败，恢复旧配置!${NC}"
-            cp "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)" "$XRAY_CONFIG"
-            service "$XRAY_SERVICE_NAME" restart >/dev/null 2>&1
-            exit 1
-        fi
-    fi
-
-    # 显示用户链接
-    WS_PATH=$(jq -r '.inbounds[] | select(.port == '"${PORTS[0]}"') | .streamSettings.wsSettings.path' "$XRAY_CONFIG")
-    VLESS_LINK="vless://$UUID@$DOMAIN:443?encryption=none&security=tls&type=ws&path=$WS_PATH&host=$DOMAIN#$USERNAME"
-    echo "用户 $USERNAME 创建成功!"
-    echo -e "\n${BLUE}=== 客户端配置信息 ===${NC}\n"
-    echo "[二维码]:"
-    qrencode -t ansiutf8 "$VLESS_LINK"
-    echo -e "\n链接地址:\n$VLESS_LINK"
-    echo -e "\n订阅链接:\nhttps://subscribe.$DOMAIN/subscribe/$USERNAME.yml"
-    echo -e "\nClash 配置链接:\nhttps://subscribe.$DOMAIN/clash/$USERNAME.yml"
-    flock -u 200
-}
-
-# 用户列表
-list_users() {
-    echo -e "${BLUE}用户列表:${NC}"
-    printf "%-5s %-16s %-36s %-12s %-10s %-8s\n" "ID" "用户名" "UUID" "过期时间" "已用流量" "状态"
-    printf "%-5s %-16s %-36s %-12s %-10s %-8s\n" "----" "----------------" "------------------------------------" "-----------" "---------" "-----"
-    jq -r '.users[] | "\(.id) \(.name) \(.uuid) \(.expire) \(.used_traffic) \(.status)"' "$USER_DATA" | \
-    while read -r id name uuid expire used status; do
-        used_fmt=$(awk "BEGIN {printf \"%.2f\", $used/1073741824}")G
-        printf "%-5s %-16s %-36s %-12s %-10s %-8s\n" "$id" "$name" "$uuid" "$expire" "$used_fmt" "$status"
-    done
-}
-
-# 用户续期
-renew_user() {
-    echo -e "${GREEN}=== 用户续期流程 ===${NC}"
-    flock -x 200
-    read -p "输入要续期的用户名: " USERNAME
-    CURRENT_EXPIRE=$(jq -r ".users[] | select(.name == \"$USERNAME\") | .expire" "$USER_DATA")
-    echo "当前有效期: $CURRENT_EXPIRE"
-    echo -e "\n选择续期类型:"
-    echo "1. 月费 (+1个月)"
-    echo "2. 年费 (+1年)"
-    echo "3. 永久"
-    read -p "请选择 [默认1]: " RENEW_TYPE
-    RENEW_TYPE=${RENEW_TYPE:-1}
-    case "$RENEW_TYPE" in
-        1) NEW_EXPIRE=$(date -d "$CURRENT_EXPIRE +1 month" +%F) ;;
-        2) NEW_EXPIRE=$(date -d "$CURRENT_EXPIRE +1 year" +%F) ;;
-        3) NEW_EXPIRE="永久" ;;
-        *) echo -e "${RED}无效选择，使用默认月费${NC}"; NEW_EXPIRE=$(date -d "$CURRENT_EXPIRE +1 month" +%F) ;;
-    esac
-    jq --arg name "$USERNAME" --arg expire "$NEW_EXPIRE" \
-       '(.users[] | select(.name == $name)).expire = $expire' "$USER_DATA" > tmp.json && mv tmp.json "$USER_DATA"
-    echo "用户 $USERNAME 已续期至: $NEW_EXPIRE"
-    flock -u 200
-}
-
-# 删除用户
-delete_user() {
-    echo -e "${GREEN}=== 删除用户流程 ===${NC}"
-    flock -x 200
-
-    # 备份现有配置文件
-    cp "$XRAY_CONFIG" "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)"
-    cp "$USER_DATA" "$USER_DATA.bak.$(date +%F_%H%M%S)"
-
     read -p "输入要删除的用户名: " USERNAME
     UUID=$(jq -r ".users[] | select(.name == \"$USERNAME\") | .uuid" "$USER_DATA")
     if [ -n "$UUID" ]; then
@@ -1039,7 +794,272 @@ traffic_stats() {
         printf "%-16s %-10s %-8s %-8s\n" "$name" "$used_fmt" "无限" "$status"
     done
     if [ -f "$LOG_DIR/access.log" ]; then
-        # 可配置字段示例，假设日志包含 UUID 和流量
+        TOTAL_BYTES=$(awk -v uuid="$UUID" '$0 ~ uuid {sum += $NF} END {print sum}' "$LOG_DIR/access.log" || echo "0")
+        if [ "$TOTAL_BYTES" != "0" ]; then
+            jq --arg uuid "$UUID" --arg bytes "$TOTAL_BYTES" '.users[] | select(.uuid == $uuid) | .used_traffic = ($bytes | tonumber)' "$USER_DATA" > tmp.json && mv tmp.json "$USER_DATA"
+            echo "已从日志更新流量数据（假设日志含 UUID）。"
+        else
+            echo "日志中未找到流量数据，使用默认值。"
+        fi
+    fi
+    (crontab -l 2>/dev/null; echo "0 */8 * * * bash -c 'if [ -f $LOG_DIR/access.log ]; then for uuid in \$(jq -r \".users[] | .uuid\" $USER_DATA); do TOTAL_BYTES=\$(awk -v uuid=\"\$uuid\" \"\\\$0 ~ uuid {sum += \\\$NF} END {print sum}\" $LOG_DIR/access.log || echo 0); jq --arg uuid \"\$uuid\" --arg bytes \"\$TOTAL_BYTES\" \".users[] | select(.uuid == \\\$uuid) | .used_traffic = (\\\$bytes | tonumber)\" $USER_DATA > tmp.json && mv tmp.json $USER_DATA; done; fi'") | crontab -
+    echo "流量统计已设置为每8小时更新一次（需日志支持 UUID）。"
+}
+
+# 备份恢复
+backup_restore() {
+    echo -e "${GREEN}=== 备份管理 ===${NC}"
+    echo "1. 创建备份"
+    echo "2. 恢复备份"
+    echo "3. 返回主菜单"
+    read -p "请选择: " CHOICE
+    case "$CHOICE" in
+        1)
+            BACKUP_FILE="$BACKUP_DIR/xray_backup_$(date +%F).tar.gz"
+            tar -czf "$BACKUP_FILE" "$XRAY_CONFIG" "$USER_DATA" "$CERTS_DIR" >/dev/null 2>&1
+            echo -e "\n备份已创建至: $BACKUP_FILE"
+            echo "包含: 用户数据/配置/证书"
+            ;;
+        2)
+            echo -e "\n可用备份列表:"
+            ls -lh "$BACKUP_DIR" | awk '/xray_backup/{print "- " $9 " (" $6 " " $7 " " $8 ")"}'
+            read -p "输入要恢复的备份文件名: " BACKUP_FILE
+            if [ -f "$BACKUP_DIR/$BACKUP_FILE" ]; then
+                tar -xzf "$BACKUP_DIR/$BACKUP_FILE" -C / >/dev/null 2>&1
+                read -p "是否更换域名? [y/N]: " CHANGE_DOMAIN
+                if [[ "$CHANGE_DOMAIN" =~ ^[Yy] ]]; then
+                    read -p "输入新域名: " NEW_DOMAIN
+                    sed -i "s/$DOMAIN/$NEW_DOMAIN/g" "$XRAY_CONFIG" "$NGINX_CONF"
+                    certbot certonly --nginx -d "$NEW_DOMAIN" --non-interactive --agree-tos -m "admin@$NEW_DOMAIN" >/dev/null 2>&1
+                    DOMAIN="$NEW_DOMAIN"
+                    echo "证书申请中... 成功!"
+                    echo "订阅链接已更新: https://subscribe.$NEW_DOMAIN"
+                fi
+                systemctl restart nginx "$XRAY_SERVICE_NAME" >/dev/null 2>&1 || service nginx restart >/dev/null 2>&1 && service "$XRAY_SERVICE_NAME" restart >/dev/null 2>&1
+                echo "备份恢复完成!"
+            else
+                echo -e "${RED}备份文件不存在!${NC}"
+            fi
+            ;;
+        3) return ;;
+        *) echo -e "${RED}无效选择!${NC}" ;;
+    esac
+}
+
+# 用户管理菜单
+user_management() {
+    exec 200>$LOCK_FILE
+    while true; do
+        echo -e "${BLUE}用户管理菜单${NC}"
+        echo "1. 新建用户"
+        echo "2. 用户列表"
+        echo "3. 用户续期"
+        echo "4. 删除用户"
+        echo "5. 检查并禁用过期用户"
+        echo "6. 返回主菜单"
+        read -p "请选择操作: " CHOICE
+        case "$CHOICE" in
+            1) add_user ;;
+            2) list_users ;;
+            3) renew_user ;;
+            4) delete_user ;;
+            5) disable_expired_users ;;
+            6) break ;;
+            *) echo -e "${RED}无效选项!${NC}" ;;
+        esac
+    done
+    exec 200>&-
+}
+
+# 新建用户
+add_user() {
+    echo -e "${GREEN}=== 新建用户流程 ===${NC}"
+    flock -x 200
+    cp "$XRAY_CONFIG" "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)"
+    cp "$USER_DATA" "$USER_DATA.bak.$(date +%F_%H%M%S)"
+    read -p "输入用户名: " USERNAME
+    UUID=$(uuidgen)
+    while jq -r ".users[] | .uuid" "$USER_DATA" | grep -q "$UUID"; do
+        UUID=$(uuidgen)
+    done
+    echo -e "\n选择有效期类型:"
+    echo "1. 月费 (默认)"
+    echo "2. 年费"
+    echo "3. 永久"
+    read -p "请选择 [默认1]: " EXPIRE_TYPE
+    EXPIRE_TYPE=${EXPIRE_TYPE:-1}
+    case "$EXPIRE_TYPE" in
+        1) EXPIRE_DATE=$(date -d "$(date +%F) +1 month" +%F) ;;
+        2) EXPIRE_DATE=$(date -d "$(date +%F) +1 year" +%F) ;;
+        3) EXPIRE_DATE="永久" ;;
+        *) echo -e "${RED}无效选择，使用默认月费${NC}"; EXPIRE_DATE=$(date -d "$(date +%F) +1 month" +%F) ;;
+    esac
+    jq --arg name "$USERNAME" --arg uuid "$UUID" --arg expire "$EXPIRE_DATE" \
+       '.users += [{"id": (.users | length + 1), "name": $name, "uuid": $uuid, "expire": $expire, "used_traffic": 0, "status": "启用"}]' \
+       "$USER_DATA" > tmp.json && mv tmp.json "$USER_DATA" || { echo -e "${RED}用户数据保存失败!${NC}"; cp "$USER_DATA.bak.$(date +%F_%H%M%S)" "$USER_DATA"; exit 1; }
+    if ! jq -e . "$USER_DATA" >/dev/null 2>&1; then
+        echo -e "${RED}用户数据文件损坏，恢复备份!${NC}"
+        cp "$USER_DATA.bak.$(date +%F_%H%M%S)" "$USER_DATA"
+        exit 1
+    fi
+    for i in "${!PROTOCOLS[@]}"; do
+        jq --arg uuid "$UUID" ".inbounds[$i].settings.clients += [{\"id\": \$uuid$(if [ \"${PROTOCOLS[$i]}\" = \"2\" ]; then echo \", \\\"alterId\\\": 0\"; fi)}]" \
+           "$XRAY_CONFIG" > tmp.json && mv tmp.json "$XRAY_CONFIG" || { echo -e "${RED}Xray 配置更新失败!${NC}"; cp "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)" "$XRAY_CONFIG"; exit 1; }
+    done
+    if ! jq -e . "$XRAY_CONFIG" >/dev/null 2>&1; then
+        echo -e "${RED}Xray 配置文件损坏，恢复备份!${NC}"
+        cp "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)" "$XRAY_CONFIG"
+        exit 1
+    fi
+    echo -e "${YELLOW}正在重启 Xray 以应用新用户配置，现有连接可能短暂中断...${NC}"
+    if [ "$SYSTEMD" = "yes" ]; then
+        systemctl restart "$XRAY_SERVICE_NAME" >/dev/null 2>&1
+        if ! pgrep xray >/dev/null; then
+            echo -e "${RED}Xray 重启失败，恢复旧配置!${NC}"
+            cp "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)" "$XRAY_CONFIG"
+            systemctl restart "$XRAY_SERVICE_NAME" >/dev/null 2>&1
+            exit 1
+        fi
+    else
+        service "$XRAY_SERVICE_NAME" restart >/dev/null 2>&1
+        if ! pgrep xray >/dev/null; then
+            echo -e "${RED}Xray 重启失败，恢复旧配置!${NC}"
+            cp "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)" "$XRAY_CONFIG"
+            service "$XRAY_SERVICE_NAME" restart >/dev/null 2>&1
+            exit 1
+        fi
+    fi
+    WS_PATH=$(jq -r '.inbounds[] | select(.port == '"${PORTS[0]}"') | .streamSettings.wsSettings.path' "$XRAY_CONFIG")
+    VLESS_LINK="vless://$UUID@$DOMAIN:443?encryption=none&security=tls&type=ws&path=$WS_PATH&host=$DOMAIN#$USERNAME"
+    echo "用户 $USERNAME 创建成功!"
+    echo -e "\n${BLUE}=== 客户端配置信息 ===${NC}\n"
+    echo "[二维码]:"
+    qrencode -t ansiutf8 "$VLESS_LINK"
+    echo -e "\n链接地址:\n$VLESS_LINK"
+    echo -e "\n订阅链接:\nhttps://subscribe.$DOMAIN/subscribe/$USERNAME.yml"
+    echo -e "\nClash 配置链接:\nhttps://subscribe.$DOMAIN/clash/$USERNAME.yml"
+    flock -u 200
+}
+
+# 用户列表
+list_users() {
+    echo -e "${BLUE}用户列表:${NC}"
+    printf "%-5s %-16s %-36s %-12s %-10s %-8s\n" "ID" "用户名" "UUID" "过期时间" "已用流量" "状态"
+    printf "%-5s %-16s %-36s %-12s %-10s %-8s\n" "----" "----------------" "------------------------------------" "-----------" "---------" "-----"
+    jq -r '.users[] | "\(.id) \(.name) \(.uuid) \(.expire) \(.used_traffic) \(.status)"' "$USER_DATA" | \
+    while read -r id name uuid expire used status; do
+        used_fmt=$(awk "BEGIN {printf \"%.2f\", $used/1073741824}")G
+        printf "%-5s %-16s %-36s %-12s %-10s %-8s\n" "$id" "$name" "$uuid" "$expire" "$used_fmt" "$status"
+    done
+}
+
+# 用户续期
+renew_user() {
+    echo -e "${GREEN}=== 用户续期流程 ===${NC}"
+    flock -x 200
+    read -p "输入要续期的用户名: " USERNAME
+    CURRENT_EXPIRE=$(jq -r ".users[] | select(.name == \"$USERNAME\") | .expire" "$USER_DATA")
+    echo "当前有效期: $CURRENT_EXPIRE"
+    echo -e "\n选择续期类型:"
+    echo "1. 月费 (+1个月)"
+    echo "2. 年费 (+1年)"
+    echo "3. 永久"
+    read -p "请选择 [默认1]: " RENEW_TYPE
+    RENEW_TYPE=${RENEW_TYPE:-1}
+    case "$RENEW_TYPE" in
+        1) NEW_EXPIRE=$(date -d "$CURRENT_EXPIRE +1 month" +%F) ;;
+        2) NEW_EXPIRE=$(date -d "$CURRENT_EXPIRE +1 year" +%F) ;;
+        3) NEW_EXPIRE="永久" ;;
+        *) echo -e "${RED}无效选择，使用默认月费${NC}"; NEW_EXPIRE=$(date -d "$CURRENT_EXPIRE +1 month" +%F) ;;
+    esac
+    jq --arg name "$USERNAME" --arg expire "$NEW_EXPIRE" \
+       '(.users[] | select(.name == $name)).expire = $expire' "$USER_DATA" > tmp.json && mv tmp.json "$USER_DATA"
+    echo "用户 $USERNAME 已续期至: $NEW_EXPIRE"
+    flock -u 200
+}
+
+# 删除用户
+delete_user() {
+    echo -e "${GREEN}=== 删除用户流程 ===${NC}"
+    flock -x 200
+    cp "$XRAY_CONFIG" "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)"
+    cp "$USER_DATA" "$USER_DATA.bak.$(date +%F_%H%M%S)"
+    read -p "输入要删除的用户名: " USERNAME
+    UUID=$(jq -r ".users[] | select(.name == \"$USERNAME\") | .uuid" "$USER_DATA")
+    if [ -n "$UUID" ]; then
+        jq "del(.users[] | select(.name == \"$USERNAME\"))" "$USER_DATA" > tmp.json && mv tmp.json "$USER_DATA" || { echo -e "${RED}用户数据删除失败!${NC}"; cp "$USER_DATA.bak.$(date +%F_%H%M%S)" "$USER_DATA"; exit 1; }
+        if ! jq -e . "$USER_DATA" >/dev/null 2>&1; then
+            echo -e "${RED}用户数据文件损坏，恢复备份!${NC}"
+            cp "$USER_DATA.bak.$(date +%F_%H%M%S)" "$USER_DATA"
+            exit 1
+        fi
+        for i in {0..3}; do
+            jq --arg uuid "$UUID" ".inbounds[$i].settings.clients -= [{\"id\": \$uuid}]" "$XRAY_CONFIG" > tmp.json && mv tmp.json "$XRAY_CONFIG" || { echo -e "${RED}Xray 配置更新失败!${NC}"; cp "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)" "$XRAY_CONFIG"; exit 1; }
+        done
+        if ! jq -e . "$XRAY_CONFIG" >/dev/null 2>&1; then
+            echo -e "${RED}Xray 配置文件损坏，恢复备份!${NC}"
+            cp "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)" "$XRAY_CONFIG"
+            exit 1
+        fi
+        echo -e "${YELLOW}正在重启 Xray 以应用删除用户配置，现有连接可能短暂中断...${NC}"
+        if [ "$SYSTEMD" = "yes" ]; then
+            systemctl restart "$XRAY_SERVICE_NAME" >/dev/null 2>&1
+            if ! pgrep xray >/dev/null; then
+                echo -e "${RED}Xray 重启失败，恢复旧配置!${NC}"
+                cp "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)" "$XRAY_CONFIG"
+                systemctl restart "$XRAY_SERVICE_NAME" >/dev/null 2>&1
+                exit 1
+            fi
+        else
+            service "$XRAY_SERVICE_NAME" restart >/dev/null 2>&1
+            if ! pgrep xray >/dev/null; then
+                echo -e "${RED}Xray 重启失败，恢复旧配置!${NC}"
+                cp "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)" "$XRAY_CONFIG"
+                service "$XRAY_SERVICE_NAME" restart >/dev/null 2>&1
+                exit 1
+            fi
+        fi
+        echo "用户 $USERNAME 已删除并重启 Xray。"
+    else
+        echo -e "${RED}用户 $USERNAME 不存在!${NC}"
+    fi
+    flock -u 200
+}
+
+# 协议管理（多协议支持）
+protocol_management() {
+    echo -e "${GREEN}协议管理:${NC}"
+    echo "1. VLESS+WS+TLS (推荐)"
+    echo "2. VMess+WS+TLS"
+    echo "3. VLESS+gRPC+TLS"
+    echo "4. VLESS+TCP+TLS"
+    read -p "请选择 (多选用空格分隔, 默认1): " -a PROTOCOLS
+    [ ${#PROTOCOLS[@]} -eq 0 ] && PROTOCOLS=(1)
+    configure_nginx
+    configure_xray
+    systemctl restart nginx "$XRAY_SERVICE_NAME" >/dev/null 2>&1 || service nginx restart >/dev/null 2>&1 && service "$XRAY_SERVICE_NAME" restart >/dev/null 2>&1
+    for PROTOCOL in "${PROTOCOLS[@]}"; do
+        case "$PROTOCOL" in
+            1) echo "配置 VLESS+WS+TLS 成功! (端口: 443)" ;;
+            2) echo "配置 VMess+WS+TLS 成功! (端口: 443)" ;;
+            3) echo "配置 VLESS+gRPC+TLS 成功! (端口: 443)" ;;
+            4) echo "配置 VLESS+TCP+TLS 成功! (端口: 443)" ;;
+            *) echo -e "${RED}无效选择: $PROTOCOL，跳过${NC}" ;;
+        esac
+    done
+}
+
+# 流量统计（8小时更新）
+traffic_stats() {
+    echo -e "${BLUE}=== 流量统计 ===${NC}"
+    printf "%-16s %-10s %-8s %-8s\n" "用户名" "已用流量" "总流量" "状态"
+    printf "%-16s %-10s %-8s %-8s\n" "----------------" "---------" "--------" "-----"
+    jq -r '.users[] | "\(.name) \(.used_traffic) \(.status)"' "$USER_DATA" | \
+    while read -r name used status; do
+        used_fmt=$(awk "BEGIN {printf \"%.2f\", $used/1073741824}")G
+        printf "%-16s %-10s %-8s %-8s\n" "$name" "$used_fmt" "无限" "$status"
+    done
+    if [ -f "$LOG_DIR/access.log" ]; then
         TOTAL_BYTES=$(awk -v uuid="$UUID" '$0 ~ uuid {sum += $NF} END {print sum}' "$LOG_DIR/access.log" || echo "0")
         if [ "$TOTAL_BYTES" != "0" ]; then
             jq --arg uuid "$UUID" --arg bytes "$TOTAL_BYTES" '.users[] | select(.uuid == $uuid) | .used_traffic = ($bytes | tonumber)' "$USER_DATA" > tmp.json && mv tmp.json "$USER_DATA"
