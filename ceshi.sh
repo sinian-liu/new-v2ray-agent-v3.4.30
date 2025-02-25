@@ -1,7 +1,7 @@
 #!/bin/bash
 # Xray 高级管理脚本
-# 版本: v1.10.6
-# 支持系统: Ubuntu 20.04/22.04, CentOS 7/8, Debian 10/11
+# 版本: v1.10.8
+# 支持环境: OpenVZ, LXC, KVM (systemd 或 SysVinit)
 
 # 配置常量
 XRAY_CONFIG="/usr/local/etc/xray/config.json"
@@ -66,7 +66,8 @@ detect_system() {
         *) echo -e "${RED}不支持的系统: $OS_NAME${NC}"; exit 1;;
     esac
     SYSTEMD=$(ps -p 1 -o comm= | grep -q systemd && echo "yes" || echo "no")
-    echo "检测到系统: $OS_NAME $OS_VERSION，包管理器: $PKG_MANAGER，Systemd: $SYSTEMD"
+    INIT_SYSTEM=$(ps -p 1 -o comm=)
+    echo "检测到系统: $OS_NAME $OS_VERSION，包管理器: $PKG_MANAGER，Init系统: $INIT_SYSTEM"
 }
 
 # 检测 Xray 服务名
@@ -92,6 +93,7 @@ init_environment() {
         chmod 660 "$USER_DATA"
     fi
     chmod 600 "$XRAY_CONFIG" 2>/dev/null || true
+    detect_system
     detect_xray_service
     setup_auto_start
     exec 200>$LOCK_FILE
@@ -101,21 +103,110 @@ init_environment() {
 # 设置脚本和 Xray 重启后自动运行
 setup_auto_start() {
     if [ "$SYSTEMD" = "yes" ]; then
-        # 设置脚本服务，确保不被杀死
+        # systemd 环境
         printf "[Unit]\nDescription=Xray Management Script\nAfter=network.target\n\n[Service]\nType=simple\nExecStart=/bin/bash %s\nExecStop=/bin/kill -TERM \$MAINPID\nRestart=always\nRestartSec=5\nUser=root\n\n[Install]\nWantedBy=multi-user.target\n" "$(realpath $0)" > /etc/systemd/system/$SCRIPT_NAME.service
         systemctl daemon-reload
         systemctl enable $SCRIPT_NAME.service || { echo -e "${RED}无法启用 $SCRIPT_NAME 服务!${NC}"; exit 1; }
         systemctl restart $SCRIPT_NAME.service || { echo -e "${RED}无法启动 $SCRIPT_NAME 服务!${NC}"; exit 1; }
-        echo "脚本已设置为开机自启并持久运行，服务名: $SCRIPT_NAME.service"
 
-        # 设置 Xray 服务，确保持久运行
-        printf "[Unit]\nDescription=Xray Service\nDocumentation=https://github.com/XTLS/Xray-core\nAfter=network.target nss-lookup.target\n\n[Service]\nType=simple\nExecStart=%s -config %s\nRestart=always\nRestartSec=5\nUser=nobody\nGroup=nogroup\nLimitNOFILE=51200\nAmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE\n\n[Install]\nWantedBy=multi-user.target\n" "$XRAY_BIN" "$XRAY_CONFIG" > /etc/systemd/system/$XRAY_SERVICE_NAME.service
+        printf "[Unit]\nDescription=Xray Service\nAfter=network.target nss-lookup.target\n\n[Service]\nType=simple\nExecStart=%s -config %s\nRestart=always\nRestartSec=5\nUser=nobody\nGroup=nogroup\nLimitNOFILE=51200\nAmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE\n\n[Install]\nWantedBy=multi-user.target\n" "$XRAY_BIN" "$XRAY_CONFIG" > /etc/systemd/system/$XRAY_SERVICE_NAME.service
         systemctl daemon-reload
         systemctl enable "$XRAY_SERVICE_NAME" || { echo -e "${RED}无法启用 Xray 服务!${NC}"; exit 1; }
-        echo "Xray 服务已设置为开机自启并持久运行: /etc/systemd/system/$XRAY_SERVICE_NAME.service"
+        echo "已为 systemd 系统 (OpenVZ/LXC/KVM) 设置 Xray 和脚本开机自启并持久运行。"
     else
-        echo "非 systemd 系统，请手动配置开机自启。"
-        exit 1  # 非 systemd 系统不再支持
+        # 非 systemd 环境 (SysVinit)
+        echo "检测到非 systemd 系统（如 OpenVZ/LXC），使用 SysVinit 配置开机自启..."
+
+        # Xray 服务脚本
+        cat > /etc/init.d/$XRAY_SERVICE_NAME <<EOF
+#!/bin/sh
+### BEGIN INIT INFO
+# Provides:          $XRAY_SERVICE_NAME
+# Required-Start:    \$network \$remote_fs \$syslog
+# Required-Stop:     \$network \$remote_fs \$syslog
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: Xray Service
+# Description:       Xray anti-censorship service
+### END INIT INFO
+
+PATH=/sbin:/usr/sbin:/bin:/usr/bin
+NAME=$XRAY_SERVICE_NAME
+DAEMON=$XRAY_BIN
+DAEMON_ARGS="-config $XRAY_CONFIG"
+PIDFILE=/var/run/\$NAME.pid
+LOGFILE=$LOG_DIR/startup.log
+
+start() {
+    echo "Starting \$NAME..."
+    if [ -f \$PIDFILE ]; then
+        if ps -p \$(cat \$PIDFILE) > /dev/null 2>&1; then
+            echo "\$NAME is already running."
+            return 1
+        else
+            rm -f \$PIDFILE
+        fi
+    fi
+    if command -v start-stop-daemon >/dev/null 2>&1; then
+        start-stop-daemon --start --background --make-pidfile --pidfile \$PIDFILE --chuid nobody:nogroup --exec \$DAEMON -- \$DAEMON_ARGS > \$LOGFILE 2>&1
+    else
+        su nobody -s /bin/sh -c "\$DAEMON \$DAEMON_ARGS > \$LOGFILE 2>&1 & echo \$! > \$PIDFILE"
+    fi
+    sleep 2
+    if ps -p \$(cat \$PIDFILE) > /dev/null 2>&1; then
+        echo "\$NAME started successfully."
+    else
+        echo "Failed to start \$NAME. Check \$LOGFILE for details."
+        return 1
+    fi
+}
+
+stop() {
+    echo "Stopping \$NAME..."
+    if [ -f \$PIDFILE ]; then
+        if command -v start-stop-daemon >/dev/null 2>&1; then
+            start-stop-daemon --stop --pidfile \$PIDFILE
+        else
+            kill -TERM \$(cat \$PIDFILE) 2>/dev/null
+        fi
+        rm -f \$PIDFILE
+        echo "\$NAME stopped."
+    else
+        echo "\$NAME is not running."
+    fi
+}
+
+status() {
+    if [ -f \$PIDFILE ] && ps -p \$(cat \$PIDFILE) > /dev/null 2>&1; then
+        echo "\$NAME is running."
+    else
+        echo "\$NAME is not running."
+    fi
+}
+
+case "\$1" in
+    start) start ;;
+    stop) stop ;;
+    restart) stop; sleep 1; start ;;
+    status) status ;;
+    *) echo "Usage: \$0 {start|stop|restart|status}"; exit 1 ;;
+esac
+
+exit 0
+EOF
+        chmod +x /etc/init.d/$XRAY_SERVICE_NAME
+        if command -v update-rc.d >/dev/null 2>&1; then
+            update-rc.d $XRAY_SERVICE_NAME defaults || { echo -e "${RED}无法为 Xray 设置开机自启 (update-rc.d)!${NC}"; }
+        elif command -v chkconfig >/dev/null 2>&1; then
+            chkconfig $XRAY_SERVICE_NAME on || { echo -e "${RED}无法为 Xray 设置开机自启 (chkconfig)!${NC}"; }
+        else
+            echo -e "${YELLOW}未找到 update-rc.d 或 chkconfig，使用 cron 确保开机自启${NC}"
+        fi
+
+        # 脚本和 Xray 的 cron 保活
+        (crontab -l 2>/dev/null | grep -v "@reboot /bin/bash $(realpath $0)"; echo "@reboot /bin/bash $(realpath $0) &") | crontab -
+        (crontab -l 2>/dev/null | grep -v "* * * * * /etc/init.d/$XRAY_SERVICE_NAME status || /etc/init.d/$XRAY_SERVICE_NAME start"; echo "* * * * * /etc/init.d/$XRAY_SERVICE_NAME status >/dev/null || /etc/init.d/$XRAY_SERVICE_NAME start") | crontab -
+        echo "已为非 systemd 系统 (OpenVZ/LXC) 设置 Xray 开机自启（/etc/init.d/$XRAY_SERVICE_NAME）和脚本持久运行（cron）。"
     fi
 }
 
@@ -132,19 +223,14 @@ check_firewall() {
         else
             echo "防火墙未启用，无需调整端口。"
         fi
-    elif command -v firewall-cmd >/dev/null; then
-        if firewall-cmd --state | grep -q "running"; then
-            echo "FirewallD 已启用，开放必要的端口..."
-            firewall-cmd --permanent --add-port=80/tcp >/dev/null
-            firewall-cmd --permanent --add-port=443/tcp >/dev/null
-            firewall-cmd --permanent --add-port=10000/tcp >/dev/null
-            firewall-cmd --reload >/dev/null
-            echo "- 已开放端口: 80, 443, 10000"
-        else
-            echo "FirewallD 未启用，无需调整端口。"
-        fi
+    elif command -v iptables >/dev/null; then
+        echo "检测到 iptables，开放必要的端口..."
+        iptables -A INPUT -p tcp --dport 80 -j ACCEPT
+        iptables -A INPUT -p tcp --dport 443 -j ACCEPT
+        iptables -A INPUT -p tcp --dport 10000 -j ACCEPT
+        echo "- 已开放端口: 80, 443, 10000"
     else
-        echo "未检测到 ufw 或 FirewallD，可能需要手动配置防火墙。"
+        echo "未检测到 ufw 或 iptables，可能需要手动配置防火墙。"
     fi
 }
 
@@ -169,7 +255,7 @@ install_dependencies() {
     case "$PKG_MANAGER" in
         apt)
             apt update || { echo -e "${RED}更新软件源失败，请检查网络或权限!${NC}"; exit 1; }
-            apt install -y curl jq nginx uuid-runtime qrencode snapd netcat-openbsd || { 
+            apt install -y curl jq nginx uuid-runtime qrencode netcat-openbsd || { 
                 echo -e "${RED}必须依赖安装失败，请检查网络或权限!${NC}"; 
                 exit 1; 
             }
@@ -177,10 +263,7 @@ install_dependencies() {
                 apt install -y util-linux || { echo -e "${RED}安装 util-linux (含 flock) 失败!${NC}"; exit 1; }
             fi
             if ! command -v certbot >/dev/null; then
-                systemctl enable snapd >/dev/null 2>&1
-                systemctl start snapd >/dev/null 2>&1
-                snap install --classic certbot || { echo -e "${RED}Certbot 安装失败!${NC}"; exit 1; }
-                ln -sf /snap/bin/certbot /usr/bin/certbot
+                apt install -y python3-certbot-nginx || { echo -e "${RED}Certbot 安装失败!${NC}"; exit 1; }
             fi
             ;;
         yum|dnf)
@@ -197,7 +280,11 @@ install_dependencies() {
             fi
             ;;
     esac
-    systemctl start nginx || { echo -e "${RED}Nginx 启动失败!${NC}"; exit 1; }
+    if [ "$SYSTEMD" = "yes" ]; then
+        systemctl start nginx || { echo -e "${RED}Nginx 启动失败!${NC}"; exit 1; }
+    else
+        service nginx start || { echo -e "${RED}Nginx 启动失败!${NC}"; exit 1; }
+    fi
     echo "- 已安装依赖: curl, jq, nginx, uuid-runtime, qrencode, certbot, netcat"
 }
 
@@ -246,7 +333,7 @@ configure_domain() {
         read -p "请输入域名: " DOMAIN
         echo "验证域名解析..."
         SERVER_IP=$(curl -s ifconfig.me)
-        DOMAIN_IP=$(dig +short "$DOMAIN" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -n 1)
+        DOMAIN_IP=$(dig +short "$DOMAIN" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -n 1 || host "$DOMAIN" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -n 1)
         echo "- 域名: $DOMAIN"
         echo "- 解析IP: $DOMAIN_IP"
         echo "- 服务器IP: $SERVER_IP"
@@ -342,7 +429,11 @@ EOF
     done
     echo "}" >> "$NGINX_CONF"
     nginx -t || { echo -e "${RED}Nginx 配置错误! 检查 $NGINX_CONF${NC}"; cat "$NGINX_CONF"; exit 1; }
-    systemctl restart nginx || { echo -e "${RED}Nginx 重启失败!${NC}"; exit 1; }
+    if [ "$SYSTEMD" = "yes" ]; then
+        systemctl restart nginx || { echo -e "${RED}Nginx 重启失败!${NC}"; exit 1; }
+    else
+        service nginx restart || { echo -e "${RED}Nginx 重启失败!${NC}"; exit 1; }
+    fi
     echo "Nginx 配置完成，路径: $WS_PATH (VLESS+WS), $VMESS_PATH (VMess+WS), $GRPC_SERVICE (gRPC), $TCP_PATH (TCP)"
 }
 
@@ -398,40 +489,58 @@ create_default_user() {
 start_services() {
     echo -e "${GREEN}[8] 启动服务...${NC}"
     # 停止现有服务，确保无残留进程
-    systemctl stop "$XRAY_SERVICE_NAME" >/dev/null 2>&1 || pkill -f xray >/dev/null 2>&1
-    systemctl stop nginx >/dev/null 2>&1 || service nginx stop >/dev/null 2>&1
-
-    # 启动 Xray，仅使用 systemd
-    echo "通过 systemd 启动 Xray..."
-    systemctl daemon-reload
-    systemctl restart "$XRAY_SERVICE_NAME" || { 
-        echo -e "${RED}Xray 服务启动失败! 检查服务状态...${NC}"
-        systemctl status "$XRAY_SERVICE_NAME"
-        echo "服务文件内容:"
-        cat "/etc/systemd/system/$XRAY_SERVICE_NAME.service"
-        exit 1
-    }
-    sleep 3
-    if ! systemctl is-active "$XRAY_SERVICE_NAME" >/dev/null; then
-        echo -e "${RED}Xray 服务未运行! 查看 systemctl status $XRAY_SERVICE_NAME${NC}"
-        systemctl status "$XRAY_SERVICE_NAME"
-        exit 1
+    pkill -f "$XRAY_BIN" >/dev/null 2>&1
+    if [ "$SYSTEMD" = "yes" ]; then
+        systemctl stop nginx >/dev/null 2>&1
+    else
+        service nginx stop >/dev/null 2>&1 || pkill -f nginx >/dev/null 2>&1
     fi
-    echo "Xray 通过 systemd 启动成功!"
 
-    # 启动 Nginx
-    systemctl restart nginx || { echo -e "${RED}Nginx 重启失败!${NC}"; exit 1; }
+    if [ "$SYSTEMD" = "yes" ]; then
+        # systemd 环境
+        echo "通过 systemd 启动 Xray..."
+        systemctl daemon-reload
+        systemctl restart "$XRAY_SERVICE_NAME" || { 
+            echo -e "${RED}Xray 服务启动失败! 检查服务状态...${NC}"
+            systemctl status "$XRAY_SERVICE_NAME"
+            exit 1
+        }
+        sleep 3
+        if ! systemctl is-active "$XRAY_SERVICE_NAME" >/dev/null; then
+            echo -e "${RED}Xray 服务未运行! 查看 systemctl status $XRAY_SERVICE_NAME${NC}"
+            systemctl status "$XRAY_SERVICE_NAME"
+            exit 1
+        fi
+        echo "Xray 通过 systemd 启动成功!"
+        systemctl restart nginx || { echo -e "${RED}Nginx 重启失败!${NC}"; exit 1; }
+    else
+        # 非 systemd 环境
+        echo "通过 SysVinit 启动 Xray..."
+        service "$XRAY_SERVICE_NAME" start || { 
+            echo -e "${RED}Xray 服务启动失败! 检查日志 $LOG_DIR/startup.log${NC}"
+            cat "$LOG_DIR/startup.log"
+            exit 1
+        }
+        sleep 3
+        if ! pgrep -f "$XRAY_BIN" >/dev/null; then
+            echo -e "${RED}Xray 服务未运行! 检查日志 $LOG_DIR/startup.log${NC}"
+            cat "$LOG_DIR/startup.log"
+            exit 1
+        fi
+        echo "Xray 通过 SysVinit 启动成功!"
+        service nginx start || { echo -e "${RED}Nginx 启动失败!${NC}"; exit 1; }
+    fi
+
     sleep 3
-
     # 检查服务状态
-    if systemctl is-active nginx >/dev/null && systemctl is-active "$XRAY_SERVICE_NAME" >/dev/null; then
+    if pgrep -f nginx >/dev/null && pgrep -f "$XRAY_BIN" >/dev/null; then
         echo "- Nginx状态: 运行中"
         echo "- Xray状态: 运行中"
         for PORT in "${PORTS[@]}"; do
             if ! nc -z 127.0.0.1 "$PORT" >/dev/null 2>&1; then
                 echo -e "${RED}Xray 未监听端口 $PORT! 检查 $XRAY_CONFIG 或服务状态${NC}"
                 echo "当前监听端口:"
-                netstat -tuln | grep xray
+                netstat -tuln | grep "$PORT"
                 echo "Xray 错误日志:"
                 cat "$LOG_DIR/error.log"
                 exit 1
@@ -440,8 +549,8 @@ start_services() {
         echo "检查服务状态... 成功!"
     else
         echo -e "${RED}服务启动失败!${NC}"
-        echo "Nginx状态: $(systemctl is-active nginx)"
-        echo "Xray状态: $(systemctl is-active "$XRAY_SERVICE_NAME")"
+        echo "Nginx状态: $(pgrep -f nginx >/dev/null && echo '运行中' || echo '未运行')"
+        echo "Xray状态: $(pgrep -f "$XRAY_BIN" >/dev/null && echo '运行中' || echo '未运行')"
         echo "Nginx 错误日志:"
         cat /var/log/nginx/xray_error.log | tail -n 20
         echo "Xray 错误日志:"
@@ -550,14 +659,18 @@ install_xray() {
     install_dependencies
     configure_domain
     apply_ssl
-    create_default_user  # 先创建用户，确保 UUID 可用
+    create_default_user
     configure_nginx
     check_xray_version
-    configure_xray        # 后配置 Xray，使用已创建的 UUID
+    configure_xray
     start_services
     show_user_link
     echo -e "\n安装完成! 输入 '$SCRIPT_NAME' 打开管理菜单"
-    echo "服务已通过 systemd 管理，重启后将自动运行。"
+    if [ "$SYSTEMD" = "yes" ]; then
+        echo "服务已通过 systemd 管理（适用于 KVM/LXC），重启后将自动运行。"
+    else
+        echo "服务已通过 SysVinit 管理（适用于 OpenVZ/LXC），重启后将自动运行。"
+    fi
 }
 
 # 检查并禁用过期用户
@@ -583,7 +696,11 @@ disable_expired_users() {
             exit 1
         fi
         echo -e "${YELLOW}正在重启 Xray 以应用禁用用户配置...${NC}"
-        systemctl restart "$XRAY_SERVICE_NAME" || { echo -e "${RED}Xray 重启失败!${NC}"; exit 1; }
+        if [ "$SYSTEMD" = "yes" ]; then
+            systemctl restart "$XRAY_SERVICE_NAME" || { echo -e "${RED}Xray 重启失败!${NC}"; exit 1; }
+        else
+            service "$XRAY_SERVICE_NAME" restart || { echo -e "${RED}Xray 重启失败!${NC}"; exit 1; }
+        fi
         echo "过期用户禁用完成并已重启 Xray。"
     else
         echo "没有发现过期用户。"
@@ -659,7 +776,11 @@ add_user() {
         exit 1
     fi
     echo -e "${YELLOW}正在重启 Xray 以应用新用户配置...${NC}"
-    systemctl restart "$XRAY_SERVICE_NAME" || { echo -e "${RED}Xray 重启失败!${NC}"; exit 1; }
+    if [ "$SYSTEMD" = "yes" ]; then
+        systemctl restart "$XRAY_SERVICE_NAME" || { echo -e "${RED}Xray 重启失败!${NC}"; exit 1; }
+    else
+        service "$XRAY_SERVICE_NAME" restart || { echo -e "${RED}Xray 重启失败!${NC}"; exit 1; }
+    fi
     WS_LINK="vless://$UUID@$DOMAIN:443?encryption=none&security=tls&type=ws&path=$WS_PATH&sni=$DOMAIN&host=$DOMAIN#$USERNAME"
     echo "用户 $USERNAME 创建成功!"
     echo -e "\n${BLUE}=== 客户端配置信息 ===${NC}\n"
@@ -732,7 +853,11 @@ delete_user() {
             exit 1
         fi
         echo -e "${YELLOW}正在重启 Xray 以应用删除用户配置...${NC}"
-        systemctl restart "$XRAY_SERVICE_NAME" || { echo -e "${RED}Xray 重启失败!${NC}"; exit 1; }
+        if [ "$SYSTEMD" = "yes" ]; then
+            systemctl restart "$XRAY_SERVICE_NAME" || { echo -e "${RED}Xray 重启失败!${NC}"; exit 1; }
+        else
+            service "$XRAY_SERVICE_NAME" restart || { echo -e "${RED}Xray 重启失败!${NC}"; exit 1; }
+        fi
         echo "用户 $USERNAME 已删除并重启 Xray。"
     else
         echo -e "${RED}用户 $USERNAME 不存在!${NC}"
@@ -751,7 +876,11 @@ protocol_management() {
     [ ${#PROTOCOLS[@]} -eq 0 ] && PROTOCOLS=(1)
     configure_nginx
     configure_xray
-    systemctl restart nginx "$XRAY_SERVICE_NAME" || { echo -e "${RED}服务重启失败!${NC}"; exit 1; }
+    if [ "$SYSTEMD" = "yes" ]; then
+        systemctl restart nginx "$XRAY_SERVICE_NAME" || { echo -e "${RED}服务重启失败!${NC}"; exit 1; }
+    else
+        service nginx restart && service "$XRAY_SERVICE_NAME" restart || { echo -e "${RED}服务重启失败!${NC}"; exit 1; }
+    fi
     for PROTOCOL in "${PROTOCOLS[@]}"; do
         case "$PROTOCOL" in
             1) echo "配置 VLESS+WS+TLS 成功! (端口: 443)" ;;
@@ -815,7 +944,11 @@ backup_restore() {
                     echo "证书申请中... 成功!"
                     echo "订阅链接已更新: https://subscribe.$NEW_DOMAIN"
                 fi
-                systemctl restart nginx "$XRAY_SERVICE_NAME" || { echo -e "${RED}服务重启失败!${NC}"; exit 1; }
+                if [ "$SYSTEMD" = "yes" ]; then
+                    systemctl restart nginx "$XRAY_SERVICE_NAME" || { echo -e "${RED}服务重启失败!${NC}"; exit 1; }
+                else
+                    service nginx restart && service "$XRAY_SERVICE_NAME" restart || { echo -e "${RED}服务重启失败!${NC}"; exit 1; }
+                fi
                 echo "备份恢复完成!"
             else
                 echo -e "${RED}备份文件不存在!${NC}"
