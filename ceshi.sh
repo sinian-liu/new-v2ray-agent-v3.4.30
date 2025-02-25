@@ -1,6 +1,6 @@
 #!/bin/bash
 # Xray 高级管理脚本
-# 版本: v1.0.4-fix19
+# 版本: v1.0.4-fix22
 # 支持系统: Ubuntu 20.04/22.04, CentOS 7/8, Debian 10/11 (systemd)
 
 # 配置常量
@@ -46,7 +46,7 @@ main_menu() {
                     1) PROTOCOL_TEXT="$PROTOCOL_TEXT VLESS+WS+TLS" ;;
                     2) PROTOCOL_TEXT="$PROTOCOL_TEXT VMess+WS+TLS" ;;
                     3) PROTOCOL_TEXT="$PROTOCOL_TEXT VLESS+gRPC+TLS" ;;
-                    4) PROTOCOL_TEXT="$PROTOCOL_TEXT VLESS+TCP+TLS" ;;
+                    4) PROTOCOL_TEXT="$PROTOCOL_TEXT VLESS+TCP+TLS (HTTP/2)" ;;
                 esac
             done
             PROTOCOL_TEXT="使用协议:${PROTOCOL_TEXT}"
@@ -166,7 +166,7 @@ load_config() {
                     case "$network" in
                         "ws") [[ "$protocol" == "vless" ]] && PROTOCOLS+=(1) || PROTOCOLS+=(2) ;;
                         "grpc") PROTOCOLS+=(3) ;;
-                        "tcp") PROTOCOLS+=(4) ;;
+                        "http") PROTOCOLS+=(4) ;;
                     esac ;;
             esac
         done < <(jq -r '.inbounds[] | [.port, .protocol] | join(" ")' "$XRAY_CONFIG")
@@ -481,7 +481,7 @@ server {
     return 301 https://\$host\$request_uri;
 }
 server {
-    listen 443 ssl;
+    listen 443 ssl http2;  # 启用 HTTP/2
     server_name $DOMAIN;
     ssl_certificate $CERTS_DIR/$DOMAIN/fullchain.pem;
     ssl_certificate_key $CERTS_DIR/$DOMAIN/privkey.pem;
@@ -517,13 +517,18 @@ EOF
     }" >> "$NGINX_CONF" ;;
             4) echo "    location $TCP_PATH {
         proxy_pass http://127.0.0.1:$PORT;
+        proxy_http_version 2.0;  # 使用 HTTP/2 伪装
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
     }" >> "$NGINX_CONF" ;;
         esac
     done
     echo "}" >> "$NGINX_CONF"
     nginx -t || { echo -e "${RED}Nginx 配置错误! 检查 $NGINX_CONF${NC}"; cat "$NGINX_CONF"; exit 1; }
     systemctl restart nginx || { echo -e "${RED}Nginx 重启失败!${NC}"; exit 1; }
-    echo "Nginx 配置完成，路径: $WS_PATH (VLESS+WS), $VMESS_PATH (VMess+WS), $GRPC_SERVICE (gRPC), $TCP_PATH (TCP)"
+    echo "Nginx 配置完成，路径: $WS_PATH (VLESS+WS), $VMESS_PATH (VMess+WS), $GRPC_SERVICE (gRPC), $TCP_PATH (TCP with HTTP/2)"
 }
 
 # 创建默认用户
@@ -562,13 +567,13 @@ EOF
             1) jq ".inbounds += [{\"port\": $PORT, \"protocol\": \"vless\", \"settings\": {\"clients\": [{\"id\": \"$UUID\"}], \"decryption\": \"none\"}, \"streamSettings\": {\"network\": \"ws\", \"wsSettings\": {\"path\": \"$WS_PATH\"}}}]" "$XRAY_CONFIG" > tmp.json && mv tmp.json "$XRAY_CONFIG" ;;
             2) jq ".inbounds += [{\"port\": $PORT, \"protocol\": \"vmess\", \"settings\": {\"clients\": [{\"id\": \"$UUID\", \"alterId\": 0}]}, \"streamSettings\": {\"network\": \"ws\", \"wsSettings\": {\"path\": \"$VMESS_PATH\"}}}]" "$XRAY_CONFIG" > tmp.json && mv tmp.json "$XRAY_CONFIG" ;;
             3) jq ".inbounds += [{\"port\": $PORT, \"protocol\": \"vless\", \"settings\": {\"clients\": [{\"id\": \"$UUID\"}], \"decryption\": \"none\"}, \"streamSettings\": {\"network\": \"grpc\", \"grpcSettings\": {\"serviceName\": \"$GRPC_SERVICE\"}}}]" "$XRAY_CONFIG" > tmp.json && mv tmp.json "$XRAY_CONFIG" ;;
-            4) jq ".inbounds += [{\"port\": $PORT, \"protocol\": \"vless\", \"settings\": {\"clients\": [{\"id\": \"$UUID\"}], \"decryption\": \"none\"}, \"streamSettings\": {\"network\": \"tcp\"}}]" "$XRAY_CONFIG" > tmp.json && mv tmp.json "$XRAY_CONFIG" ;;
+            4) jq ".inbounds += [{\"port\": $PORT, \"protocol\": \"vless\", \"settings\": {\"clients\": [{\"id\": \"$UUID\"}], \"decryption\": \"none\"}, \"streamSettings\": {\"network\": \"http\", \"httpSettings\": {\"path\": \"$TCP_PATH\", \"host\": [\"$DOMAIN\"]}}}]" "$XRAY_CONFIG" > tmp.json && mv tmp.json "$XRAY_CONFIG" ;;
         esac
     done
     chmod 600 "$XRAY_CONFIG"
     chown nobody:nogroup "$XRAY_CONFIG"
-    echo "- 协议: $(for p in "${PROTOCOLS[@]}"; do case $p in 1) echo -n "VLESS+WS+TLS "; ;; 2) echo -n "VMess+WS+TLS "; ;; 3) echo -n "VLESS+gRPC+TLS "; ;; 4) echo -n "VLESS+TCP+TLS "; ;; esac; done)"
-    echo "- 路径: $WS_PATH (VLESS+WS), $VMESS_PATH (VMess+WS), $GRPC_SERVICE (gRPC), $TCP_PATH (TCP)"
+    echo "- 协议: $(for p in "${PROTOCOLS[@]}"; do case $p in 1) echo -n "VLESS+WS+TLS "; ;; 2) echo -n "VMess+WS+TLS "; ;; 3) echo -n "VLESS+gRPC+TLS "; ;; 4) echo -n "VLESS+TCP+TLS (HTTP/2) "; ;; esac; done)"
+    echo "- 路径: $WS_PATH (VLESS+WS), $VMESS_PATH (VMess+WS), $GRPC_SERVICE (gRPC), $TCP_PATH (TCP with HTTP/2)"
     echo "- 内部端口: ${PORTS[*]}"
     echo "Xray 配置文件内容:"
     cat "$XRAY_CONFIG"
@@ -665,10 +670,10 @@ show_user_link() {
                 echo -e "\n链接地址 (VLESS+gRPC+TLS):\n$VLESS_GRPC_LINK"
                 ;;
             4)
-                VLESS_TCP_LINK="vless://$UUID@$DOMAIN:443?encryption=none&security=tls&type=tcp&path=$TCP_PATH&sni=$DOMAIN#$USERNAME"
-                echo "[二维码 (VLESS+TCP+TLS)]:"
+                VLESS_TCP_LINK="vless://$UUID@$DOMAIN:443?encryption=none&security=tls&type=http&path=$TCP_PATH&sni=$DOMAIN&host=$DOMAIN#$USERNAME"
+                echo "[二维码 (VLESS+TCP+TLS with HTTP/2)]:"
                 qrencode -t ansiutf8 "$VLESS_TCP_LINK" || echo -e "${YELLOW}二维码生成失败，请检查 qrencode 是否安装${NC}"
-                echo -e "\n链接地址 (VLESS+TCP+TLS):\n$VLESS_TCP_LINK"
+                echo -e "\n链接地址 (VLESS+TCP+TLS with HTTP/2):\n$VLESS_TCP_LINK"
                 ;;
         esac
     done
@@ -709,11 +714,16 @@ show_user_link() {
                 fi
                 ;;
             4) 
-                RESPONSE=$(curl -s -I --connect-timeout 2 --max-time 5 "https://$DOMAIN$TCP_PATH" || echo "Failed to connect")
+                RESPONSE=$(curl -s -I --http2 --connect-timeout 2 --max-time 5 "https://$DOMAIN$TCP_PATH" || echo "Failed to connect")
                 if echo "$RESPONSE" | grep -q "200 OK"; then
-                    echo "VLESS+TCP+TLS 测试通过!"
+                    echo "VLESS+TCP+TLS (HTTP/2) 测试通过!"
                 else
-                    echo -e "${RED}VLESS+TCP+TLS 测试失败! 响应: $RESPONSE${NC}"
+                    echo -e "${RED}VLESS+TCP+TLS (HTTP/2) 测试失败! 响应: $RESPONSE${NC}"
+                    echo "Nginx 错误日志:"
+                    cat /var/log/nginx/xray_error.log | tail -n 20
+                    echo "Xray 错误日志:"
+                    cat "$LOG_DIR/error.log" | tail -n 20
+                    exit 1
                 fi
                 ;;
         esac
@@ -733,7 +743,7 @@ install_xray() {
     echo "1. VLESS+WS+TLS (推荐)"
     echo "2. VMess+WS+TLS"
     echo "3. VLESS+gRPC+TLS"
-    echo "4. VLESS+TCP+TLS"
+    echo "4. VLESS+TCP+TLS (HTTP/2)"
     read -p "请选择 (多选用空格分隔, 默认1): " -a PROTOCOLS
     [ ${#PROTOCOLS[@]} -eq 0 ] && PROTOCOLS=(1)
     check_ports
@@ -758,8 +768,8 @@ disable_expired_users() {
         return
     fi
     flock -x 200
-    TODAY=$(date +%F)
-    EXPIRED_USERS=$(jq -r ".users[] | select(.expire != \"永久\" and .expire < \"$TODAY\" and .status == \"启用\") | .uuid" "$USER_DATA")
+    TODAY=$(date +%s)  # 使用时间戳比较，以支持小时、分钟等精度
+    EXPIRED_USERS=$(jq -r ".users[] | select(.expire != \"永久\" and (.expire | strptime(\"%Y-%m-%d %H:%M:%S\") | mktime) < $TODAY and .status == \"启用\") | .uuid" "$USER_DATA")
     if [ -n "$EXPIRED_USERS" ]; then
         cp "$XRAY_CONFIG" "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)"
         cp "$USER_DATA" "$USER_DATA.bak.$(date +%F_%H%M%S)"
@@ -768,7 +778,7 @@ disable_expired_users() {
             for i in "${!PROTOCOLS[@]}"; do
                 jq --arg uuid "$UUID" ".inbounds[$i].settings.clients -= [{\"id\": \$uuid}]" "$XRAY_CONFIG" > tmp.json && mv tmp.json "$XRAY_CONFIG" || { echo -e "${RED}Xray 配置更新失败!${NC}"; cp "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)" "$XRAY_CONFIG"; exit 1; }
             done
-            echo "用户 UUID $UUID 已禁用（过期日期: $(jq -r ".users[] | select(.uuid == \"$UUID\") | .expire" "$USER_DATA")）"
+            echo "用户 UUID $UUID 已禁用（过期时间: $(jq -r ".users[] | select(.uuid == \"$UUID\") | .expire" "$USER_DATA")）"
         done
         if ! jq -e . "$USER_DATA" >/dev/null 2>&1 || ! jq -e . "$XRAY_CONFIG" >/dev/null 2>&1; then
             echo -e "${RED}配置文件损坏，恢复备份!${NC}"
@@ -842,13 +852,22 @@ add_user() {
     echo "1. 月费 (默认)"
     echo "2. 年费"
     echo "3. 永久"
+    echo "4. 自定义时间"
     read -p "请选择 [默认1]: " EXPIRE_TYPE
     EXPIRE_TYPE=${EXPIRE_TYPE:-1}
     case "$EXPIRE_TYPE" in
-        1) EXPIRE_DATE=$(date -d "$(date +%F) +1 month" +%F) ;;
-        2) EXPIRE_DATE=$(date -d "$(date +%F) +1 year" +%F) ;;
+        1) EXPIRE_DATE=$(date -d "$(date +%F %H:%M:%S) +1 month" "+%Y-%m-%d %H:%M:%S") ;;
+        2) EXPIRE_DATE=$(date -d "$(date +%F %H:%M:%S) +1 year" "+%Y-%m-%d %H:%M:%S") ;;
         3) EXPIRE_DATE="永久" ;;
-        *) echo -e "${RED}无效选择，使用默认月费${NC}"; EXPIRE_DATE=$(date -d "$(date +%F) +1 month" +%F) ;;
+        4) 
+            read -p "请输入自定义时间 (如 '1 hour', '10 minutes', '200 days'): " CUSTOM_TIME
+            EXPIRE_DATE=$(date -d "$(date +%F %H:%M:%S) +$CUSTOM_TIME" "+%Y-%m-%d %H:%M:%S" 2>/dev/null)
+            if [ $? -ne 0 ]; then
+                echo -e "${RED}无效时间格式，请使用如 '1 hour', '10 minutes', '200 days'${NC}"
+                exit 1
+            fi
+            ;;
+        *) echo -e "${RED}无效选择，使用默认月费${NC}"; EXPIRE_DATE=$(date -d "$(date +%F %H:%M:%S) +1 month" "+%Y-%m-%d %H:%M:%S") ;;
     esac
     jq --arg name "$USERNAME" --arg uuid "$UUID" --arg expire "$EXPIRE_DATE" \
        '.users += [{"id": (.users | length + 1), "name": $name, "uuid": $uuid, "expire": $expire, "used_traffic": 0, "status": "启用"}]' \
@@ -894,12 +913,19 @@ add_user() {
 # 用户列表
 list_users() {
     echo -e "${BLUE}用户列表:${NC}"
-    printf "%-5s %-16s %-36s %-12s %-10s %-8s\n" "ID" "用户名" "UUID" "过期时间" "已用流量" "状态"
-    printf "%-5s %-16s %-36s %-12s %-10s %-8s\n" "----" "----------------" "------------------------------------" "-----------" "---------" "-----"
-    jq -r '.users[] | "\(.id) \(.name) \(.uuid) \(.expire) \(.used_traffic) \(.status)"' "$USER_DATA" | \
-    while read -r id name uuid expire used status; do
-        used_fmt=$(awk "BEGIN {printf \"%.2f\", $used/1073741824}")G
-        printf "%-5s %-16s %-36s %-12s %-10s %-8s\n" "$id" "$name" "$uuid" "$expire" "$used_fmt" "$status"
+    # 固定列宽，使用 | 分隔
+    printf "| %-4s | %-16s | %-36s | %-20s | %-12s | %-6s |\n" "ID" "用户名" "UUID" "过期时间" "已用流量" "状态"
+    printf "|------|------------------|--------------------------------------|----------------------|--------------|--------|\n"
+    jq -r '.users[] | [.id, .name, .uuid, .expire, .used_traffic, .status] | join("\t")' "$USER_DATA" | \
+    while IFS=$'\t' read -r id name uuid expire used status; do
+        used_fmt=$(awk "BEGIN {printf \"%.2fG\", $used/1073741824}")
+        # 截断或填充，确保固定宽度
+        name=$(printf "%-16.16s" "$name")
+        uuid=$(printf "%-36.36s" "$uuid")
+        expire=$(printf "%-20.20s" "$expire")
+        used_fmt=$(printf "%-12.12s" "$used_fmt")
+        status=$(printf "%-6.6s" "$status")
+        printf "| %-4s | %s | %s | %s | %s | %s |\n" "$id" "$name" "$uuid" "$expire" "$used_fmt" "$status"
     done
 }
 
@@ -914,13 +940,22 @@ renew_user() {
     echo "1. 月费 (+1个月)"
     echo "2. 年费 (+1年)"
     echo "3. 永久"
+    echo "4. 自定义时间"
     read -p "请选择 [默认1]: " RENEW_TYPE
     RENEW_TYPE=${RENEW_TYPE:-1}
     case "$RENEW_TYPE" in
-        1) NEW_EXPIRE=$(date -d "$CURRENT_EXPIRE +1 month" +%F) ;;
-        2) NEW_EXPIRE=$(date -d "$CURRENT_EXPIRE +1 year" +%F) ;;
+        1) NEW_EXPIRE=$(date -d "$CURRENT_EXPIRE +1 month" "+%Y-%m-%d %H:%M:%S") ;;
+        2) NEW_EXPIRE=$(date -d "$CURRENT_EXPIRE +1 year" "+%Y-%m-%d %H:%M:%S") ;;
         3) NEW_EXPIRE="永久" ;;
-        *) echo -e "${RED}无效选择，使用默认月费${NC}"; NEW_EXPIRE=$(date -d "$CURRENT_EXPIRE +1 month" +%F) ;;
+        4) 
+            read -p "请输入自定义时间 (如 '1 hour', '10 minutes', '200 days'): " CUSTOM_TIME
+            NEW_EXPIRE=$(date -d "$CURRENT_EXPIRE +$CUSTOM_TIME" "+%Y-%m-%d %H:%M:%S" 2>/dev/null)
+            if [ $? -ne 0 ]; then
+                echo -e "${RED}无效时间格式，请使用如 '1 hour', '10 minutes', '200 days'${NC}"
+                exit 1
+            fi
+            ;;
+        *) echo -e "${RED}无效选择，使用默认月费${NC}"; NEW_EXPIRE=$(date -d "$CURRENT_EXPIRE +1 month" "+%Y-%m-%d %H:%M:%S") ;;
     esac
     jq --arg name "$USERNAME" --arg expire "$NEW_EXPIRE" \
        '(.users[] | select(.name == $name)).expire = $expire' "$USER_DATA" > tmp.json && mv tmp.json "$USER_DATA"
@@ -984,7 +1019,7 @@ protocol_management() {
     echo "1. VLESS+WS+TLS (推荐)"
     echo "2. VMess+WS+TLS"
     echo "3. VLESS+gRPC+TLS"
-    echo "4. VLESS+TCP+TLS"
+    echo "4. VLESS+TCP+TLS (HTTP/2)"
     read -p "请选择 (多选用空格分隔, 默认1): " -a PROTOCOLS
     [ ${#PROTOCOLS[@]} -eq 0 ] && PROTOCOLS=(1)
     check_ports
@@ -996,7 +1031,7 @@ protocol_management() {
             1) echo "配置 VLESS+WS+TLS 成功! (端口: 443)" ;;
             2) echo "配置 VMess+WS+TLS 成功! (端口: 443)" ;;
             3) echo "配置 VLESS+gRPC+TLS 成功! (端口: 443)" ;;
-            4) echo "配置 VLESS+TCP+TLS 成功! (端口: 443)" ;;
+            4) echo "配置 VLESS+TCP+TLS (HTTP/2) 成功! (端口: 443)" ;;
             *) echo -e "${RED}无效选择: $PROTOCOL，跳过${NC}" ;;
         esac
     done
@@ -1005,12 +1040,15 @@ protocol_management() {
 # 流量统计（8小时更新）
 traffic_stats() {
     echo -e "${BLUE}=== 流量统计 ===${NC}"
-    printf "%-16s %-10s %-8s %-8s\n" "用户名" "已用流量" "总流量" "状态"
-    printf "%-16s %-10s %-8s %-8s\n" "----------------" "---------" "--------" "-----"
-    jq -r '.users[] | "\(.name) \(.used_traffic) \(.status)"' "$USER_DATA" | \
-    while read -r name used status; do
-        used_fmt=$(awk "BEGIN {printf \"%.2f\", $used/1073741824}")G
-        printf "%-16s %-10s %-8s %-8s\n" "$name" "$used_fmt" "无限" "$status"
+    printf "| %-16s | %-12s | %-8s | %-8s |\n" "用户名" "已用流量" "总流量" "状态"
+    printf "|------------------|--------------|--------|--------|\n"
+    jq -r '.users[] | [.name, .used_traffic, .status] | join("\t")' "$USER_DATA" | \
+    while IFS=$'\t' read -r name used status; do
+        used_fmt=$(awk "BEGIN {printf \"%.2fG\", $used/1073741824}")
+        name=$(printf "%-16.16s" "$name")
+        used_fmt=$(printf "%-12.12s" "$used_fmt")
+        status=$(printf "%-8.8s" "$status")
+        printf "| %s | %s | %-8s | %s |\n" "$name" "$used_fmt" "无限" "$status"
     done
     if [ -f "$LOG_DIR/access.log" ]; then
         TOTAL_BYTES=$(awk -v uuid="$UUID" '$0 ~ uuid {sum += $NF} END {print sum}' "$LOG_DIR/access.log" || echo "0")
