@@ -13,7 +13,7 @@ CERTS_DIR="/etc/letsencrypt/live"
 LOG_DIR="/usr/local/var/log/xray"
 SCRIPT_NAME="xray-menu"
 LOCK_FILE="/tmp/xray_users.lock"
-XRAY_SERVICE_NAME="xray"  # 默认服务名，后续动态检测
+XRAY_SERVICE_NAME="xray"
 
 # 颜色定义
 RED='\033[31m'
@@ -21,6 +21,30 @@ GREEN='\033[32m'
 YELLOW='\033[33m'
 BLUE='\033[36m'
 NC='\033[0m'
+
+# 主菜单（移动到顶部）
+main_menu() {
+    init_environment
+    while true; do
+        echo -e "${GREEN}==== Xray高级管理脚本 ====${NC}"
+        echo "1. 全新安装"
+        echo "2. 用户管理"
+        echo "3. 协议管理"
+        echo "4. 流量统计"
+        echo "5. 备份恢复"
+        echo "6. 退出脚本"
+        read -p "请选择操作 [1-6]: " CHOICE
+        case "$CHOICE" in
+            1) install_xray ;;
+            2) user_management ;;
+            3) protocol_management ;;
+            4) traffic_stats ;;
+            5) backup_restore ;;
+            6) exit 0 ;;
+            *) echo -e "${RED}无效选择!${NC}" ;;
+        esac
+    done
+}
 
 # 检测系统类型
 detect_system() {
@@ -63,7 +87,7 @@ init_environment() {
         echo '{"users": []}' > "$USER_DATA"
     fi
     chmod 660 "$USER_DATA"
-    chmod 600 "$XRAY_CONFIG" 2>/dev/null || true  # 初次运行可能不存在
+    chmod 600 "$XRAY_CONFIG" 2>/dev/null || true
     detect_xray_service
     setup_logrotate
     setup_cert_renewal
@@ -537,7 +561,250 @@ disable_expired_users() {
     else
         echo "没有发现过期用户。"
     fi
-    # 设置每天检查过期用户的定时任务
+    (crontab -l 2>/dev/null; echo "0 0 * * * bash $(realpath $0) --disable-expired") | crontab -
+    echo "已设置每天自动检查并禁用过期用户。"
+    flock -u 200
+}
+
+# 用户管理菜单
+user_management() {
+    exec 200>$LOCK_FILE
+    while true; do
+        echo -e "${BLUE}用户管理菜单${NC}"
+        echo "1. 新建用户"
+        echo "2. 用户列表"
+        echo "3. 用户续期"
+        echo "4. 删除用户"
+        echo "5. 检查并禁用过期用户"
+        echo "6. 返回主菜单"
+        read -p "请选择操作: " CHOICE
+        case "$CHOICE" in
+            1) add_user ;;
+            2) list_users ;;
+            3) renew_user ;;
+            4) delete_user ;;
+            5) disable_expired_users ;;
+            6) break ;;
+            *) echo -e "${RED}无效选项!${NC}" ;;
+        esac
+    done
+    exec 200>&-
+}
+
+# 新建用户
+add_user() {
+    echo -e "${GREEN}=== 新建用户流程 ===${NC}"
+    flock -x 200
+
+    # 备份现有配置文件
+    cp "$XRAY_CONFIG" "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)"
+    cp "$USER_DATA" "$USER_DATA.bak.$(date +%F_%H%M%S)"
+
+    # 获取用户输入
+    read -p "输入用户名: " USERNAME
+    UUID=$(uuidgen)
+    while jq -r ".users[] | .uuid" "$USER_DATA" | grep -q "$UUID"; do
+        UUID=$(uuidgen)
+    done
+    echo -e "\n选择有效期类型:"
+    echo "1. 月费 (默认)"
+    echo "2. 年费"
+    echo "3. 永久"
+    read -p "请选择 [默认1]: " EXPIRE_TYPE
+    EXPIRE_TYPE=${EXPIRE_TYPE:-1}
+    case "$EXPIRE_TYPE" in
+        1) EXPIRE_DATE=$(date -d "$(date +%F) +1 month" +%F) ;;
+        2) EXPIRE_DATE=$(date -d "$(date +%F) +1 year" +%F) ;;
+        3) EXPIRE_DATE="永久" ;;
+        *) echo -e "${RED}无效选择，使用默认月费${NC}"; EXPIRE_DATE=$(date -d "$(date +%F) +1 month" +%F) ;;
+    esac
+
+    # 更新用户数据文件
+    jq --arg name "$USERNAME" --arg uuid "$UUID" --arg expire "$EXPIRE_DATE" \
+       '.users += [{"id": (.users | length + 1), "name": $name, "uuid": $uuid, "expire": $expire, "used_traffic": 0, "status": "启用"}]' \
+       "$USER_DATA" > tmp.json && mv tmp.json "$USER_DATA" || { echo -e "${RED}用户数据保存失败!${NC}"; cp "$USER_DATA.bak.$(date +%F_%H%M%S)" "$USER_DATA"; exit 1; }
+    if ! jq -e . "$USER_DATA" >/dev/null 2>&1; then
+        echo -e "${RED}用户数据文件损坏，恢复备份!${NC}"
+        cp "$USER_DATA.bak.$(date +%F_%H%M%S)" "$USER_DATA"
+        exit 1
+    fi
+
+    # 更新 Xray 配置文件
+    for i in "${!PROTOCOLS[@]}"; do
+        jq --arg uuid "$UUID" ".inbounds[$i].settings.clients += [{\"id\": \$uuid$(if [ \"${PROTOCOLS[$i]}\" = \"2\" ]; then echo \", \\\"alterId\\\": 0\"; fi)}]" \
+           "$XRAY_CONFIG" > tmp.json && mv tmp.json "$XRAY_CONFIG" || { echo -e "${RED}Xray 配置更新失败!${NC}"; cp "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)" "$XRAY_CONFIG"; exit 1; }
+    done
+    if ! jq -e . "$XRAY_CONFIG" >/dev/null 2>&1; then
+        echo -e "${RED}Xray 配置文件损坏，恢复备份!${NC}"
+        cp "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)" "$XRAY_CONFIG"
+        exit 1
+    fi
+
+    # 重启 Xray 服务
+    echo -e "${YELLOW}正在重启 Xray 以应用新用户配置，现有连接可能短暂中断...${NC}"
+    if [ "$SYSTEMD" = "yes" ]; then
+        systemctl restart "$XRAY_SERVICE_NAME" >/dev/null 2>&1
+        if ! pgrep xray >/dev/null; then
+            echo -e "${RED}Xray 重启失败，恢复旧配置!${NC}"
+            cp "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)" "$XRAY_CONFIG"
+            systemctl restart "$XRAY_SERVICE_NAME" >/dev/null 2>&1
+            exit 1
+        fi
+    else
+        service "$XRAY_SERVICE_NAME" restart >/dev/null 2>&1
+        if ! pgrep xray >/dev/null; then
+            echo -e "${RED}Xray 重启失败，恢复旧配置!${NC}"
+            cp "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)" "$XRAY_CONFIG"
+            service "$XRAY_SERVICE_NAME" restart >/dev/null 2>&1
+            exit 1
+        fi
+    fi
+
+    # 显示用户链接
+    WS_PATH=$(jq -r '.inbounds[] | select(.port == '"${PORTS[0]}"') | .streamSettings.wsSettings.path' "$XRAY_CONFIG")
+    VLESS_LINK="vless://$UUID@$DOMAIN:443?encryption=none&security=tls&type=ws&path=$WS_PATH&host=$DOMAIN#$USERNAME"
+    echo "用户 $USERNAME 创建成功!"
+    echo -e "\n${BLUE}=== 客户端配置信息 ===${NC}\n"
+    echo "[二维码]:"
+    qrencode -t ansiutf8 "$VLESS_LINK"
+    echo -e "\n链接地址:\n$VLESS_LINK"
+    echo -e "\n订阅链接:\nhttps://subscribe.$DOMAIN/subscribe/$USERNAME.yml"
+    echo -e "\nClash 配置链接:\nhttps://subscribe.$DOMAIN/clash/$USERNAME.yml"
+    flock -u 200
+}
+
+# 用户列表
+list_users() {
+    echo -e "${BLUE}用户列表:${NC}"
+    printf "%-5s %-16s %-36s %-12s %-10s %-8s\n" "ID" "用户名" "UUID" "过期时间" "已用流量" "状态"
+    printf "%-5s %-16s %-36s %-12s %-10s %-8s\n" "----" "----------------" "------------------------------------" "-----------" "---------" "-----"
+    jq -r '.users[] | "\(.id) \(.name) \(.uuid) \(.expire) \(.used_traffic) \(.status)"' "$USER_DATA" | \
+    while read -r id name uuid expire used status; do
+        used_fmt=$(awk "BEGIN {printf \"%.2f\", $used/1073741824}")G
+        printf "%-5s %-16s %-36s %-12s %-10s %-8s\n" "$id" "$name" "$uuid" "$expire" "$used_fmt" "$status"
+    done
+}
+
+# 用户续期
+renew_user() {
+    echo -e "${GREEN}=== 用户续期流程 ===${NC}"
+    flock -x 200
+    read -p "输入要续期的用户名: " USERNAME
+    CURRENT_EXPIRE=$(jq -r ".users[] | select(.name == \"$USERNAME\") | .expire" "$USER_DATA")
+    echo "当前有效期: $CURRENT_EXPIRE"
+    echo -e "\n选择续期类型:"
+    echo "1. 月费 (+1个月)"
+    echo "2. 年费 (+1年)"
+    echo "3. 永久"
+    read -p "请选择 [默认1]: " RENEW_TYPE
+    RENEW_TYPE=${RENEW_TYPE:-1}
+    case "$RENEW_TYPE" in
+        1) NEW_EXPIRE=$(date -d "$CURRENT_EXPIRE +1 month" +%F) ;;
+        2) NEW_EXPIRE=$(date -d "$CURRENT_EXPIRE +1 year" +%F) ;;
+        3) NEW_EXPIRE="永久" ;;
+        *) echo -e "${RED}无效选择，使用默认月费${NC}"; NEW_EXPIRE=$(date -d "$CURRENT_EXPIRE +1 month" +%F) ;;
+    esac
+    jq --arg name "$USERNAME" --arg expire "$NEW_EXPIRE" \
+       '(.users[] | select(.name == $name)).expire = $expire' "$USER_DATA" > tmp.json && mv tmp.json "$USER_DATA"
+    echo "用户 $USERNAME 已续期至: $NEW_EXPIRE"
+    flock -u 200
+}
+
+# 删除用户
+delete_user() {
+    echo -e "${GREEN}=== 删除用户流程 ===${NC}"
+    flock -x 200
+
+    # 备份现有配置文件
+    cp "$XRAY_CONFIG" "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)"
+    cp "$USER_DATA" "$USER_DATA.bak.$(date +%F_%H%M%S)"
+
+    read -p "输入要删除的用户名: " USERNAME
+    UUID=$(jq -r ".users[] | select(.name == \"$USERNAME\") | .uuid" "$USER_DATA")
+    if [ -n "$UUID" ]; then
+        jq "del(.users[] | select(.name == \"$USERNAME\"))" "$USER_DATA" > tmp.json && mv tmp.json "$USER_DATA" || { echo -e "${RED}用户数据删除失败!${NC}"; cp "$USER_DATA.bak.$(date +%F_%H%M%S)" "$USER_DATA"; exit 1; }
+        if ! jq -e . "$USER_DATA" >/dev/null 2>&1; then
+            echo -e "${RED}用户数据文件损坏，恢复备份!${NC}"
+            cp "$USER_DATA.bak.$(date +%F_%H%M%S)" "$USER_DATA"
+            exit 1
+        fi
+        for i in {0..3}; do
+            jq --arg uuid "$UUID" ".inbounds[$i].settings.clients -= [{\"id\": \$uuid}]" "$XRAY_CONFIG" > tmp.json && mv tmp.json "$XRAY_CONFIG" || { echo -e "${RED}Xray 配置更新失败!${NC}"; cp "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)" "$XRAY_CONFIG"; exit 1; }
+        done
+        if ! jq -e . "$XRAY_CONFIG" >/dev/null 2>&1; then
+            echo -e "${RED}Xray 配置文件损坏，恢复备份!${NC}"
+            cp "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)" "$XRAY_CONFIG"
+            exit 1
+        fi
+        echo -e "${YELLOW}正在重启 Xray 以应用删除用户配置，现有连接可能短暂中断...${NC}"
+        if [ "$SYSTEMD" = "yes" ]; then
+            systemctl restart "$XRAY_SERVICE_NAME" >/dev/null 2>&1
+            if ! pgrep xray >/dev/null; then
+                echo -e "${RED}Xray 重启失败，恢复旧配置!${NC}"
+                cp "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)" "$XRAY_CONFIG"
+                systemctl restart "$XRAY_SERVICE_NAME" >/dev/null 2>&1
+                exit 1
+            fi
+        else
+            service "$XRAY_SERVICE_NAME" restart >/dev/null 2>&1
+            if ! pgrep xray >/dev/null; then
+                echo -e "${RED}Xray 重启失败，恢复旧配置!${NC}"
+                cp "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)" "$XRAY_CONFIG"
+                service "$XRAY_SERVICE_NAME" restart >/dev/null 2>&1
+                exit 1
+            fi
+        fi
+        echo "用户 $USERNAME 已删除并重启 Xray。"
+    else
+        echo -e "${RED}用户 $USERNAME 不存在!${NC}"
+    fi
+    flock -u 200
+}
+
+# 检查并禁用过期用户
+disable_expired_users() {
+    echo -e "${GREEN}=== 检查并禁用过期用户 ===${NC}"
+    flock -x 200
+    TODAY=$(date +%F)
+    EXPIRED_USERS=$(jq -r ".users[] | select(.expire != \"永久\" and .expire < \"$TODAY\" and .status == \"启用\") | .uuid" "$USER_DATA")
+    if [ -n "$EXPIRED_USERS" ]; then
+        cp "$XRAY_CONFIG" "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)"
+        cp "$USER_DATA" "$USER_DATA.bak.$(date +%F_%H%M%S)"
+        for UUID in $EXPIRED_USERS; do
+            jq --arg uuid "$UUID" '.users[] | select(.uuid == $uuid) | .status = "禁用"' "$USER_DATA" > tmp.json && mv tmp.json "$USER_DATA"
+            for i in {0..3}; do
+                jq --arg uuid "$UUID" ".inbounds[$i].settings.clients -= [{\"id\": \$uuid}]" "$XRAY_CONFIG" > tmp.json && mv tmp.json "$XRAY_CONFIG" || { echo -e "${RED}Xray 配置更新失败!${NC}"; cp "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)" "$XRAY_CONFIG"; exit 1; }
+            done
+            echo "用户 UUID $UUID 已禁用（过期日期: $(jq -r ".users[] | select(.uuid == \"$UUID\") | .expire" "$USER_DATA")）"
+        done
+        if ! jq -e . "$USER_DATA" >/dev/null 2>&1 || ! jq -e . "$XRAY_CONFIG" >/dev/null 2>&1; then
+            echo -e "${RED}配置文件损坏，恢复备份!${NC}"
+            cp "$USER_DATA.bak.$(date +%F_%H%M%S)" "$USER_DATA"
+            cp "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)" "$XRAY_CONFIG"
+            exit 1
+        fi
+        echo -e "${YELLOW}正在重启 Xray 以应用禁用用户配置，现有连接可能短暂中断...${NC}"
+        if [ "$SYSTEMD" = "yes" ]; then
+            systemctl restart "$XRAY_SERVICE_NAME" >/dev/null 2>&1
+            if ! pgrep xray >/dev/null; then
+                echo -e "${RED}Xray 重启失败，恢复旧配置!${NC}"
+                cp "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)" "$XRAY_CONFIG"
+                systemctl restart "$XRAY_SERVICE_NAME" >/dev/null 2>&1
+                exit 1
+            fi
+        else
+            service "$XRAY_SERVICE_NAME" restart >/dev/null 2>&1
+            if ! pgrep xray >/dev/null; then
+                echo -e "${RED}Xray 重启失败，恢复旧配置!${NC}"
+                cp "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)" "$XRAY_CONFIG"
+                service "$XRAY_SERVICE_NAME" restart >/dev/null 2>&1
+                exit 1
+            fi
+        fi
+        echo "过期用户禁用完成并已重启 Xray。"
+    else
+        echo "没有发现过期用户。"
+    fi
     (crontab -l 2>/dev/null; echo "0 0 * * * bash $(realpath $0) --disable-expired") | crontab -
     echo "已设置每天自动检查并禁用过期用户。"
     flock -u 200
