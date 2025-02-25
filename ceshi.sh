@@ -1,6 +1,6 @@
 #!/bin/bash
 # Xray 高级管理脚本
-# 版本: v1.9.2
+# 版本: v1.9.3
 # 支持系统: Ubuntu 20.04/22.04, CentOS 7/8, Debian 10/11
 
 # 配置常量
@@ -78,15 +78,15 @@ detect_xray_service() {
 # 初始化环境
 init_environment() {
     [ "$EUID" -ne 0 ] && echo -e "${RED}请使用 root 权限运行脚本!${NC}" && exit 1
-    mkdir -p "$LOG_DIR" "$SUBSCRIPTION_DIR" "$BACKUP_DIR"
+    mkdir -p "$LOG_DIR" "$SUBSCRIPTION_DIR" "$BACKUP_DIR" "/usr/local/etc/xray"
     chmod 770 "$LOG_DIR"
     chown root:root "$LOG_DIR"
     touch "$LOG_DIR/access.log" "$LOG_DIR/error.log"
     chmod 660 "$LOG_DIR"/*.log
     if [ ! -s "$USER_DATA" ] || ! jq -e . "$USER_DATA" >/dev/null 2>&1; then
         echo '{"users": []}' > "$USER_DATA"
+        chmod 660 "$USER_DATA"
     fi
-    chmod 660 "$USER_DATA"
     chmod 600 "$XRAY_CONFIG" 2>/dev/null || true
     detect_xray_service
     setup_auto_start
@@ -172,8 +172,8 @@ install_dependencies() {
     case "$PKG_MANAGER" in
         apt)
             apt update || { echo -e "${RED}更新软件源失败，请检查网络或权限!${NC}"; exit 1; }
-            # 只安装必须依赖
-            apt install -y curl jq nginx uuid-runtime || { 
+            # 安装必须依赖，包括 qrencode 和 certbot
+            apt install -y curl jq nginx uuid-runtime qrencode snapd || { 
                 echo -e "${RED}必须依赖安装失败，请检查网络或权限!${NC}"; 
                 exit 1; 
             }
@@ -181,34 +181,30 @@ install_dependencies() {
             if ! command -v flock >/dev/null; then
                 apt install -y util-linux || { echo -e "${RED}安装 util-linux (含 flock) 失败!${NC}"; exit 1; }
             fi
-            # 可选依赖：二维码和 SSL 支持
-            apt install -y qrencode || echo -e "${YELLOW}qrencode 安装失败，二维码功能不可用${NC}"
+            # 安装 Certbot
             if ! command -v certbot >/dev/null; then
-                apt install -y snapd && snap install --classic certbot && ln -sf /snap/bin/certbot /usr/bin/certbot || { 
-                    echo -e "${YELLOW}Certbot 安装失败，SSL 证书需手动配置${NC}"; 
-                }
+                systemctl enable snapd >/dev/null 2>&1
+                systemctl start snapd >/dev/null 2>&1
+                snap install --classic certbot || { echo -e "${RED}Certbot 安装失败!${NC}"; exit 1; }
+                ln -sf /snap/bin/certbot /usr/bin/certbot
             fi
             ;;
         yum|dnf)
             $PKG_MANAGER update -y || { echo -e "${RED}更新软件源失败，请检查网络或权限!${NC}"; exit 1; }
-            $PKG_MANAGER install -y curl jq nginx uuid-runtime || { 
+            $PKG_MANAGER install -y curl jq nginx uuid-runtime qrencode || { 
                 echo -e "${RED}必须依赖安装失败，请检查网络或权限!${NC}"; 
                 exit 1; 
             }
             if ! command -v flock >/dev/null; then
                 $PKG_MANAGER install -y util-linux || { echo -e "${RED}安装 util-linux (含 flock) 失败!${NC}"; exit 1; }
             fi
-            $PKG_MANAGER install -y qrencode || echo -e "${YELLOW}qrencode 安装失败，二维码功能不可用${NC}"
             if ! command -v certbot >/dev/null; then
-                $PKG_MANAGER install -y certbot python3-certbot-nginx || { 
-                    echo -e "${YELLOW}Certbot 安装失败，SSL 证书需手动配置${NC}"; 
-                }
+                $PKG_MANAGER install -y certbot python3-certbot-nginx || { echo -e "${RED}Certbot 安装失败!${NC}"; exit 1; }
             fi
             ;;
     esac
     systemctl start nginx || service nginx start || { echo -e "${RED}Nginx 启动失败!${NC}"; exit 1; }
-    echo "- 已安装必须依赖: curl, jq, nginx, uuid-runtime"
-    echo "- 可选依赖: qrencode (二维码), certbot (SSL)"
+    echo "- 已安装依赖: curl, jq, nginx, uuid-runtime, qrencode, certbot"
 }
 
 # 检查 Xray 版本
@@ -277,10 +273,6 @@ configure_domain() {
 # 申请 SSL 证书
 apply_ssl() {
     echo -e "${GREEN}[5] 申请SSL证书...${NC}"
-    if ! command -v certbot >/dev/null; then
-        echo -e "${YELLOW}Certbot 未安装，跳过 SSL 证书申请，请手动配置${NC}"
-        return
-    fi
     local retries=3
     while [ $retries -gt 0 ]; do
         certbot certonly --nginx -d "$DOMAIN" --non-interactive --agree-tos -m "admin@$DOMAIN" || {
@@ -358,8 +350,8 @@ EOF
 configure_xray() {
     echo -e "${GREEN}[6] 配置Xray核心...${NC}"
     WS_PATH=$(grep "location" "$NGINX_CONF" | grep "${PORTS[0]}" | awk '{print $2}' | tr -d '{')
-    GRPC_SERVICE=$(grep "location" "$NGINX_CONF" | grep "${PORTS[2]}" | awk '{print $2}' | tr -d '{/')
     VMESS_PATH=$(grep "location" "$NGINX_CONF" | grep "${PORTS[1]}" | awk '{print $2}' | tr -d '{')
+    GRPC_SERVICE=$(grep "location" "$NGINX_CONF" | grep "${PORTS[2]}" | awk '{print $2}' | tr -d '{/' | head -n 1)
     TCP_PATH=$(grep "location" "$NGINX_CONF" | grep "${PORTS[3]}" | awk '{print $2}' | tr -d '{')
     cat > "$XRAY_CONFIG" <<EOF
 {
@@ -389,7 +381,7 @@ create_default_user() {
     echo -e "${GREEN}[7] 创建用户...${NC}"
     USERNAME="自用"
     UUID=$(uuidgen)
-    while jq -r ".users[] | .uuid" "$USER_DATA" | grep -q "$UUID"; do
+    while jq -r ".users[] | .uuid" "$USER_DATA" 2>/dev/null | grep -q "$UUID"; do
         UUID=$(uuidgen)
     done
     EXPIRE_DATE="永久"
@@ -437,42 +429,26 @@ show_user_link() {
         case "$PROTOCOL" in
             1)
                 VLESS_WS_LINK="vless://$UUID@$DOMAIN:443?encryption=none&security=tls&type=ws&path=$WS_PATH&host=$DOMAIN#$USERNAME"
-                if command -v qrencode >/dev/null; then
-                    echo "[二维码 (VLESS+WS+TLS)]:"
-                    qrencode -t ansiutf8 "$VLESS_WS_LINK"
-                else
-                    echo -e "${YELLOW}qrencode 未安装，跳过二维码生成${NC}"
-                fi
+                echo "[二维码 (VLESS+WS+TLS)]:"
+                qrencode -t ansiutf8 "$VLESS_WS_LINK"
                 echo -e "\n链接地址 (VLESS+WS+TLS):\n$VLESS_WS_LINK"
                 ;;
             2)
                 VMESS_LINK="vmess://$(echo -n '{\"v\":\"2\",\"ps\":\"$USERNAME\",\"add\":\"$DOMAIN\",\"port\":\"443\",\"id\":\"$UUID\",\"aid\":\"0\",\"net\":\"ws\",\"type\":\"none\",\"host\":\"$DOMAIN\",\"path\":\"$VMESS_PATH\",\"tls\":\"tls\"}' | base64 -w 0)"
-                if command -v qrencode >/dev/null; then
-                    echo "[二维码 (VMess+WS+TLS)]:"
-                    qrencode -t ansiutf8 "$VMESS_LINK"
-                else
-                    echo -e "${YELLOW}qrencode 未安装，跳过二维码生成${NC}"
-                fi
+                echo "[二维码 (VMess+WS+TLS)]:"
+                qrencode -t ansiutf8 "$VMESS_LINK"
                 echo -e "\n链接地址 (VMess+WS+TLS):\n$VMESS_LINK"
                 ;;
             3)
                 VLESS_GRPC_LINK="vless://$UUID@$DOMAIN:443?encryption=none&security=tls&type=grpc&serviceName=$GRPC_SERVICE#$USERNAME"
-                if command -v qrencode >/dev/null; then
-                    echo "[二维码 (VLESS+gRPC+TLS)]:"
-                    qrencode -t ansiutf8 "$VLESS_GRPC_LINK"
-                else
-                    echo -e "${YELLOW}qrencode 未安装，跳过二维码生成${NC}"
-                fi
+                echo "[二维码 (VLESS+gRPC+TLS)]:"
+                qrencode -t ansiutf8 "$VLESS_GRPC_LINK"
                 echo -e "\n链接地址 (VLESS+gRPC+TLS):\n$VLESS_GRPC_LINK"
                 ;;
             4)
                 VLESS_TCP_LINK="vless://$UUID@$DOMAIN:443?encryption=none&security=tls&type=tcp&path=$TCP_PATH#$USERNAME"
-                if command -v qrencode >/dev/null; then
-                    echo "[二维码 (VLESS+TCP+TLS)]:"
-                    qrencode -t ansiutf8 "$VLESS_TCP_LINK"
-                else
-                    echo -e "${YELLOW}qrencode 未安装，跳过二维码生成${NC}"
-                fi
+                echo "[二维码 (VLESS+TCP+TLS)]:"
+                qrencode -t ansiutf8 "$VLESS_TCP_LINK"
                 echo -e "\n链接地址 (VLESS+TCP+TLS):\n$VLESS_TCP_LINK"
                 ;;
         esac
@@ -601,7 +577,7 @@ add_user() {
     cp "$USER_DATA" "$USER_DATA.bak.$(date +%F_%H%M%S)"
     read -p "输入用户名: " USERNAME
     UUID=$(uuidgen)
-    while jq -r ".users[] | .uuid" "$USER_DATA" | grep -q "$UUID"; do
+    while jq -r ".users[] | .uuid" "$USER_DATA" 2>/dev/null | grep -q "$UUID"; do
         UUID=$(uuidgen)
     done
     echo -e "\n选择有效期类型:"
@@ -655,12 +631,8 @@ add_user() {
     VLESS_LINK="vless://$UUID@$DOMAIN:443?encryption=none&security=tls&type=ws&path=$WS_PATH&host=$DOMAIN#$USERNAME"
     echo "用户 $USERNAME 创建成功!"
     echo -e "\n${BLUE}=== 客户端配置信息 ===${NC}\n"
-    if command -v qrencode >/dev/null; then
-        echo "[二维码]:"
-        qrencode -t ansiutf8 "$VLESS_LINK"
-    else
-        echo -e "${YELLOW}qrencode 未安装，跳过二维码生成${NC}"
-    fi
+    echo "[二维码]:"
+    qrencode -t ansiutf8 "$VLESS_LINK"
     echo -e "\n链接地址:\n$VLESS_LINK"
     echo -e "\n订阅链接:\nhttps://subscribe.$DOMAIN/subscribe/$USERNAME.yml"
     echo -e "\nClash 配置链接:\nhttps://subscribe.$DOMAIN/clash/$USERNAME.yml"
@@ -822,14 +794,10 @@ backup_restore() {
                 if [[ "$CHANGE_DOMAIN" =~ ^[Yy] ]]; then
                     read -p "输入新域名: " NEW_DOMAIN
                     sed -i "s/$DOMAIN/$NEW_DOMAIN/g" "$XRAY_CONFIG" "$NGINX_CONF"
-                    if command -v certbot >/dev/null; then
-                        certbot certonly --nginx -d "$NEW_DOMAIN" --non-interactive --agree-tos -m "admin@$NEW_DOMAIN" >/dev/null 2>&1
-                        DOMAIN="$NEW_DOMAIN"
-                        echo "证书申请中... 成功!"
-                        echo "订阅链接已更新: https://subscribe.$NEW_DOMAIN"
-                    else
-                        echo -e "${YELLOW}Certbot 未安装，跳过证书更新${NC}"
-                    fi
+                    certbot certonly --nginx -d "$NEW_DOMAIN" --non-interactive --agree-tos -m "admin@$NEW_DOMAIN" >/dev/null 2>&1
+                    DOMAIN="$NEW_DOMAIN"
+                    echo "证书申请中... 成功!"
+                    echo "订阅链接已更新: https://subscribe.$NEW_DOMAIN"
                 fi
                 systemctl restart nginx "$XRAY_SERVICE_NAME" >/dev/null 2>&1 || service nginx restart >/dev/null 2>&1 && service "$XRAY_SERVICE_NAME" restart >/dev/null 2>&1
                 echo "备份恢复完成!"
