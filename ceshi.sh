@@ -1,6 +1,6 @@
 #!/bin/bash
 # Xray 高级管理脚本
-# 版本: v1.9.8
+# 版本: v1.9.9
 # 支持系统: Ubuntu 20.04/22.04, CentOS 7/8, Debian 10/11
 
 # 配置常量
@@ -332,12 +332,17 @@ server {
     ssl_certificate_key $CERTS_DIR/$DOMAIN/privkey.pem;
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_ciphers HIGH:!aNULL:!MD5;
+    access_log /var/log/nginx/xray_access.log;
+    error_log /var/log/nginx/xray_error.log;
 EOF
     for i in "${!PROTOCOLS[@]}"; do
         PROTOCOL=${PROTOCOLS[$i]}
         PORT=${PORTS[$i]}
         case "$PROTOCOL" in
             1) echo "    location $WS_PATH {
+        if (\$http_upgrade != \"websocket\") {
+            return 403;
+        }
         proxy_pass http://127.0.0.1:$PORT;
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
@@ -345,6 +350,9 @@ EOF
         proxy_set_header Host \$host;
     }" >> "$NGINX_CONF" ;;
             2) echo "    location $VMESS_PATH {
+        if (\$http_upgrade != \"websocket\") {
+            return 403;
+        }
         proxy_pass http://127.0.0.1:$PORT;
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
@@ -446,6 +454,15 @@ start_services() {
             exit 1
         fi
     fi
+    # 测试 Xray 的 WebSocket 响应
+    WEBSOCKET_RESPONSE=$(curl -s -v -H "Host: localhost" -H "Connection: Upgrade" -H "Upgrade: websocket" "http://127.0.0.1:${PORTS[0]}$WS_PATH" 2>&1 || echo "Failed to connect")
+    if ! echo "$WEBSOCKET_RESPONSE" | grep -q "101 Switching Protocols"; then
+        echo -e "${RED}Xray WebSocket 响应异常! 输出:${NC}"
+        echo "$WEBSOCKET_RESPONSE"
+        echo "Xray 错误日志:"
+        cat "$LOG_DIR/error.log"
+        exit 1
+    fi
     # 启动 Nginx
     systemctl restart nginx >/dev/null 2>&1 || service nginx restart >/dev/null 2>&1
     sleep 2  # 等待服务启动
@@ -469,7 +486,7 @@ start_services() {
         echo "Nginx状态: $(pgrep nginx >/dev/null && echo '运行中' || echo '未运行')"
         echo "Xray状态: $(pgrep xray >/dev/null && echo '运行中' || echo '未运行')"
         echo "Nginx 错误日志:"
-        cat /var/log/nginx/error.log | tail -n 10
+        cat /var/log/nginx/xray_error.log | tail -n 10
         echo "Xray 错误日志:"
         cat "$LOG_DIR/error.log"
         exit 1
@@ -514,7 +531,7 @@ show_user_link() {
     for PROTOCOL in "${PROTOCOLS[@]}"; do
         case "$PROTOCOL" in
             1) 
-                RESPONSE=$(curl -s -I --http1.1 -H "Host: $DOMAIN" -H "Connection: Upgrade" -H "Upgrade: websocket" "https://$DOMAIN$WS_PATH" || echo "Failed to connect")
+                RESPONSE=$(curl -s -v -H "Host: $DOMAIN" -H "Connection: Upgrade" -H "Upgrade: websocket" -H "Sec-WebSocket-Key: SGVsbG8sIHdvcmxkIQ==" -H "Sec-WebSocket-Version: 13" "https://$DOMAIN$WS_PATH" 2>&1 || echo "Failed to connect")
                 if echo "$RESPONSE" | grep -q "101 Switching Protocols"; then
                     echo "VLESS+WS+TLS 测试通过!"
                 else
@@ -522,7 +539,7 @@ show_user_link() {
                 fi
                 ;;
             2) 
-                RESPONSE=$(curl -s -I --http1.1 -H "Host: $DOMAIN" -H "Connection: Upgrade" -H "Upgrade: websocket" "https://$DOMAIN$VMESS_PATH" || echo "Failed to connect")
+                RESPONSE=$(curl -s -v -H "Host: $DOMAIN" -H "Connection: Upgrade" -H "Upgrade: websocket" -H "Sec-WebSocket-Key: SGVsbG8sIHdvcmxkIQ==" -H "Sec-WebSocket-Version: 13" "https://$DOMAIN$VMESS_PATH" 2>&1 || echo "Failed to connect")
                 if echo "$RESPONSE" | grep -q "101 Switching Protocols"; then
                     echo "VMess+WS+TLS 测试通过!"
                 else
