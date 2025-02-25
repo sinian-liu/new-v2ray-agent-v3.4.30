@@ -1,6 +1,6 @@
 #!/bin/bash
 # Xray 高级管理脚本
-# 版本: v1.0.4-fix1
+# 版本: v1.0.4-fix3
 # 支持系统: Ubuntu 20.04/22.04, CentOS 7/8, Debian 10/11 (systemd)
 
 # 配置常量
@@ -103,8 +103,8 @@ init_environment() {
     chmod 770 "$LOG_DIR" "$SUBSCRIPTION_DIR" "$BACKUP_DIR" "/usr/local/etc/xray"
     chown nobody:nogroup "$LOG_DIR" "$SUBSCRIPTION_DIR" "$BACKUP_DIR" "/usr/local/etc/xray"
     touch "$LOG_DIR/access.log" "$LOG_DIR/error.log"
-    chmod 660 "$LOG_DIR"/*.log
-    chown nobody:nogroup "$LOG_DIR"/*.log
+    chmod 660 "$LOG_DIR/access.log" "$LOG_DIR/error.log"
+    chown nobody:nogroup "$LOG_DIR/access.log" "$LOG_DIR/error.log"
     if [ ! -s "$USER_DATA" ] || ! jq -e . "$USER_DATA" >/dev/null 2>&1; then
         echo '{"users": []}' > "$USER_DATA"
         chmod 660 "$USER_DATA"
@@ -135,7 +135,7 @@ setup_auto_start() {
     systemctl restart $SCRIPT_NAME.service || echo -e "${YELLOW}警告: $SCRIPT_NAME 服务启动失败，但将继续执行${NC}"
 
     # Xray 服务
-    printf "[Unit]\nDescription=Xray Service\nAfter=network.target nss-lookup.target\n\n[Service]\nType=simple\nExecStartPre=/bin/mkdir -p %s\nExecStartPre=/bin/chown -R nobody:nogroup %s\nExecStartPre=/bin/chmod -R 770 %s\nExecStart=%s -config %s\nRestart=always\nRestartSec=5\nUser=nobody\nGroup=nogroup\nLimitNOFILE=51200\nAmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE\nCapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE\nExecStartPre=/bin/chown nobody:nogroup %s\nExecStartPre=/bin/chmod 600 %s\n\n[Install]\nWantedBy=multi-user.target\n" "$LOG_DIR" "$LOG_DIR" "$LOG_DIR" "$XRAY_BIN" "$XRAY_CONFIG" "$XRAY_CONFIG" "$XRAY_CONFIG" > /etc/systemd/system/$XRAY_SERVICE_NAME.service
+    printf "[Unit]\nDescription=Xray Service\nAfter=network.target nss-lookup.target\n\n[Service]\nType=simple\nExecStartPre=/bin/mkdir -p %s\nExecStartPre=/bin/chown -R nobody:nogroup %s\nExecStartPre=/bin/chmod -R 770 %s\nExecStartPre=/bin/touch %s/access.log %s/error.log\nExecStartPre=/bin/chown nobody:nogroup %s/access.log %s/error.log\nExecStartPre=/bin/chmod 660 %s/access.log %s/error.log\nExecStart=%s -config %s\nRestart=always\nRestartSec=5\nUser=nobody\nGroup=nogroup\nLimitNOFILE=51200\nAmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE\nCapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE\nExecStartPre=/bin/chown nobody:nogroup %s\nExecStartPre=/bin/chmod 600 %s\n\n[Install]\nWantedBy=multi-user.target\n" "$LOG_DIR" "$LOG_DIR" "$LOG_DIR" "$LOG_DIR" "$LOG_DIR" "$LOG_DIR" "$LOG_DIR" "$LOG_DIR" "$LOG_DIR" "$XRAY_BIN" "$XRAY_CONFIG" "$XRAY_CONFIG" "$XRAY_CONFIG" > /etc/systemd/system/$XRAY_SERVICE_NAME.service
     chmod 644 /etc/systemd/system/$XRAY_SERVICE_NAME.service
     systemctl daemon-reload
     if ! systemctl enable "$XRAY_SERVICE_NAME" >/dev/null 2>&1; then
@@ -430,6 +430,15 @@ start_services() {
     systemctl stop "$XRAY_SERVICE_NAME" >/dev/null 2>&1
     systemctl stop nginx >/dev/null 2>&1
 
+    # 测试 Xray 配置
+    echo "测试 Xray 配置..."
+    if ! $XRAY_BIN -test -config "$XRAY_CONFIG" >/dev/null 2>&1; then
+        echo -e "${RED}Xray 配置无效!${NC}"
+        $XRAY_BIN -test -config "$XRAY_CONFIG"
+        cat "$XRAY_CONFIG"
+        exit 1
+    fi
+
     # 启动 Xray
     echo "通过 systemd 启动 Xray..."
     systemctl daemon-reload
@@ -440,14 +449,15 @@ start_services() {
         cat "$XRAY_CONFIG"
         echo "Xray 二进制权限:"
         ls -l "$XRAY_BIN"
-        echo "测试 Xray 配置:"
-        $XRAY_BIN -test -config "$XRAY_CONFIG"
+        echo "Xray 错误日志:"
+        cat "$LOG_DIR/error.log"
         exit 1
     }
     sleep 3
     if ! systemctl is-active "$XRAY_SERVICE_NAME" >/dev/null; then
         echo -e "${RED}Xray 服务未运行! 查看 systemctl status $XRAY_SERVICE_NAME${NC}"
         systemctl status "$XRAY_SERVICE_NAME"
+        cat "$LOG_DIR/error.log"
         exit 1
     fi
     echo "Xray 服务启动成功!"
@@ -615,7 +625,7 @@ disable_expired_users() {
             exit 1
         fi
         echo -e "${YELLOW}正在重启 Xray 以应用禁用用户配置...${NC}"
-        systemctl restart "$XRAY_SERVICE_NAME" || { echo -e "${RED}Xray 重启失败!${NC}"; exit 1; }
+        systemctl restart "$XRAY_SERVICE_NAME" || { echo -e "${RED}Xray 重启失败!${NC}"; systemctl status "$XRAY_SERVICE_NAME"; cat "$LOG_DIR/error.log"; exit 1; }
         echo "过期用户禁用完成并已重启 Xray。"
     else
         echo "没有发现过期用户。"
@@ -681,6 +691,7 @@ add_user() {
         cp "$USER_DATA.bak.$(date +%F_%H%M%S)" "$USER_DATA"
         exit 1
     fi
+    # 更新 Xray 配置并验证
     for i in "${!PROTOCOLS[@]}"; do
         jq --arg uuid "$UUID" ".inbounds[$i].settings.clients += [{\"id\": \$uuid$(if [ \"${PROTOCOLS[$i]}\" = \"2\" ]; then echo \", \\\"alterId\\\": 0\"; fi)}]" \
            "$XRAY_CONFIG" > tmp.json && mv tmp.json "$XRAY_CONFIG" || { echo -e "${RED}Xray 配置更新失败!${NC}"; cp "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)" "$XRAY_CONFIG"; exit 1; }
@@ -690,8 +701,22 @@ add_user() {
         cp "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)" "$XRAY_CONFIG"
         exit 1
     fi
+    # 测试新配置
+    if ! $XRAY_BIN -test -config "$XRAY_CONFIG" >/dev/null 2>&1; then
+        echo -e "${RED}Xray 配置无效!${NC}"
+        $XRAY_BIN -test -config "$XRAY_CONFIG"
+        cat "$XRAY_CONFIG"
+        cp "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)" "$XRAY_CONFIG"
+        exit 1
+    fi
     echo -e "${YELLOW}正在重启 Xray 以应用新用户配置...${NC}"
-    systemctl restart "$XRAY_SERVICE_NAME" || { echo -e "${RED}Xray 重启失败!${NC}"; exit 1; }
+    systemctl restart "$XRAY_SERVICE_NAME" || { 
+        echo -e "${RED}Xray 重启失败!${NC}"
+        systemctl status "$XRAY_SERVICE_NAME"
+        echo "Xray 错误日志:"
+        cat "$LOG_DIR/error.log"
+        exit 1
+    }
     WS_LINK="vless://$UUID@$DOMAIN:443?encryption=none&security=tls&type=ws&path=$WS_PATH&sni=$DOMAIN&host=$DOMAIN#$USERNAME"
     echo "用户 $USERNAME 创建成功!"
     echo -e "\n${BLUE}=== 客户端配置信息 ===${NC}\n"
@@ -764,7 +789,7 @@ delete_user() {
             exit 1
         fi
         echo -e "${YELLOW}正在重启 Xray 以应用删除用户配置...${NC}"
-        systemctl restart "$XRAY_SERVICE_NAME" || { echo -e "${RED}Xray 重启失败!${NC}"; exit 1; }
+        systemctl restart "$XRAY_SERVICE_NAME" || { echo -e "${RED}Xray 重启失败!${NC}"; systemctl status "$XRAY_SERVICE_NAME"; cat "$LOG_DIR/error.log"; exit 1; }
         echo "用户 $USERNAME 已删除并重启 Xray。"
     else
         echo -e "${RED}用户 $USERNAME 不存在!${NC}"
