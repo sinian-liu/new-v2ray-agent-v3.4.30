@@ -1,6 +1,6 @@
 #!/bin/bash
 # Xray 高级管理脚本
-# 版本: v1.10.5-fix3
+# 版本: v1.10.5-fix4
 # 支持系统: Ubuntu 20.04/22.04, CentOS 7/8, Debian 10/11 (systemd)
 
 # 配置常量
@@ -71,7 +71,7 @@ detect_system() {
         exit 1
     fi
     echo "检测到系统: $OS_NAME $OS_VERSION，包管理器: $PKG_MANAGER，Init系统: systemd"
-    # 等待 systemd 就绪，最多 30 秒
+    # 等待 systemd 就绪
     for i in {1..30}; do
         STATE=$(systemctl is-system-running 2>/dev/null)
         if [ "$STATE" = "running" ] || [ "$STATE" = "degraded" ]; then
@@ -93,7 +93,7 @@ detect_system() {
 
 # 检测 Xray 服务名
 detect_xray_service() {
-    XRAY_SERVICE_NAME="xray"  # 固定为 'xray'
+    XRAY_SERVICE_NAME="xray"
     echo "使用 Xray 服务名: $XRAY_SERVICE_NAME"
 }
 
@@ -120,6 +120,12 @@ init_environment() {
 # 设置脚本和 Xray 重启后自动运行
 setup_auto_start() {
     echo "配置 systemd 服务..."
+    # 检查并移除 Drop-In 文件
+    if [ -d "/etc/systemd/system/$XRAY_SERVICE_NAME.service.d" ]; then
+        echo -e "${YELLOW}检测到 $XRAY_SERVICE_NAME.service 的 Drop-In 配置，移除以避免冲突...${NC}"
+        rm -rf "/etc/systemd/system/$XRAY_SERVICE_NAME.service.d"
+    fi
+
     # 脚本服务
     printf "[Unit]\nDescription=Xray Management Script\nAfter=network.target\n\n[Service]\nType=simple\nExecStart=/bin/bash %s\nExecStop=/bin/kill -TERM \$MAINPID\nRestart=always\nRestartSec=5\nUser=root\n\n[Install]\nWantedBy=multi-user.target\n" "$(realpath "$0")" > /etc/systemd/system/$SCRIPT_NAME.service
     chmod 644 /etc/systemd/system/$SCRIPT_NAME.service
