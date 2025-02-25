@@ -1,6 +1,6 @@
 #!/bin/bash
 # Xray 高级管理脚本
-# 版本: v1.10.5-fix2
+# 版本: v1.10.5-fix3
 # 支持系统: Ubuntu 20.04/22.04, CentOS 7/8, Debian 10/11 (systemd)
 
 # 配置常量
@@ -71,8 +71,21 @@ detect_system() {
         exit 1
     fi
     echo "检测到系统: $OS_NAME $OS_VERSION，包管理器: $PKG_MANAGER，Init系统: systemd"
-    if ! systemctl is-system-running >/dev/null 2>&1; then
-        echo -e "${RED}systemd 未正常运行，请检查系统状态!${NC}"
+    # 等待 systemd 就绪，最多 30 秒
+    for i in {1..30}; do
+        STATE=$(systemctl is-system-running 2>/dev/null)
+        if [ "$STATE" = "running" ] || [ "$STATE" = "degraded" ]; then
+            break
+        fi
+        echo "等待 systemd 初始化 ($i/30)..."
+        sleep 1
+    done
+    if [ "$STATE" = "running" ]; then
+        echo "systemd 状态: running"
+    elif [ "$STATE" = "degraded" ]; then
+        echo -e "${YELLOW}警告: systemd 状态为 degraded，某些服务可能失败，请检查 'systemctl --failed'${NC}"
+    else
+        echo -e "${RED}systemd 未就绪，状态: $STATE，请检查系统状态!${NC}"
         systemctl status
         exit 1
     fi
@@ -80,7 +93,7 @@ detect_system() {
 
 # 检测 Xray 服务名
 detect_xray_service() {
-    XRAY_SERVICE_NAME="xray"  # 固定为 'xray'，避免混淆
+    XRAY_SERVICE_NAME="xray"  # 固定为 'xray'
     echo "使用 Xray 服务名: $XRAY_SERVICE_NAME"
 }
 
@@ -420,6 +433,8 @@ start_services() {
         cat "$XRAY_CONFIG"
         echo "Xray 二进制权限:"
         ls -l "$XRAY_BIN"
+        echo "测试 Xray 配置:"
+        $XRAY_BIN -test -config "$XRAY_CONFIG"
         exit 1
     }
     sleep 3
@@ -509,6 +524,7 @@ show_user_link() {
                     cat /var/log/nginx/xray_error.log | tail -n 20
                     echo "Xray 错误日志:"
                     cat "$LOG_DIR/error.log" | tail -n 20
+                    exit 1
                 fi
                 ;;
             2) 
