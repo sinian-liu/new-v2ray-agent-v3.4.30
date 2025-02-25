@@ -1,6 +1,6 @@
 #!/bin/bash
 # Xray 高级管理脚本
-# 版本: v1.0.4-fix11
+# 版本: v1.0.4-fix13
 # 支持系统: Ubuntu 20.04/22.04, CentOS 7/8, Debian 10/11 (systemd)
 
 # 配置常量
@@ -15,6 +15,8 @@ SCRIPT_NAME="xray-menu"
 LOCK_FILE="/tmp/xray_users.lock"
 XRAY_SERVICE_NAME="xray"
 XRAY_BIN="/usr/local/bin/xray"
+INSTALL_DIR="/root/v2ray"
+SCRIPT_PATH="$INSTALL_DIR/xray-install.sh"
 
 # 全局变量
 declare DOMAIN WS_PATH VMESS_PATH GRPC_SERVICE TCP_PATH PROTOCOLS PORTS
@@ -158,13 +160,56 @@ setup_auto_start() {
         rm -rf "/etc/systemd/system/$XRAY_SERVICE_NAME.service.d"
     fi
 
-    printf "[Unit]\nDescription=Xray Management Script\nAfter=network.target\n\n[Service]\nType=simple\nExecStart=/bin/bash %s\nExecStop=/bin/kill -TERM \$MAINPID\nRestart=always\nRestartSec=5\nUser=root\n\n[Install]\nWantedBy=multi-user.target\n" "$(realpath "$0")" > /etc/systemd/system/$SCRIPT_NAME.service
+    # 脚本服务
+    cat > /etc/systemd/system/$SCRIPT_NAME.service <<EOF
+[Unit]
+Description=Xray Management Script
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/bin/bash $SCRIPT_PATH
+ExecStop=/bin/kill -TERM \$MAINPID
+Restart=always
+RestartSec=5
+User=root
+
+[Install]
+WantedBy=multi-user.target
+EOF
     chmod 644 /etc/systemd/system/$SCRIPT_NAME.service
     systemctl daemon-reload
     systemctl enable $SCRIPT_NAME.service || { echo -e "${YELLOW}警告: 无法启用 $SCRIPT_NAME 服务，继续尝试启动...${NC}"; cat /etc/systemd/system/$SCRIPT_NAME.service; }
     systemctl restart $SCRIPT_NAME.service || echo -e "${YELLOW}警告: $SCRIPT_NAME 服务启动失败，但将继续执行${NC}"
 
-    printf "[Unit]\nDescription=Xray Service\nAfter=network.target nss-lookup.target\n\n[Service]\nType=simple\nExecStartPre=/bin/mkdir -p %s\nExecStartPre=/bin/chown -R nobody:nogroup %s\nExecStartPre=/bin/chmod -R 770 %s\nExecStartPre=/bin/touch %s/access.log %s/error.log\nExecStartPre=/bin/chown nobody:nogroup %s/access.log %s/error.log\nExecStartPre=/bin/chmod 660 %s/access.log %s/error.log\nExecStartPre=/bin/chown nobody:nogroup %s\nExecStartPre=/bin/chmod 600 %s\nExecStart=%s -config %s\nRestart=always\nRestartSec=5\nUser=nobody\nGroup=nogroup\nLimitNOFILE=51200\nAmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE\nCapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE\n\n[Install]\nWantedBy=multi-user.target\n" "$LOG_DIR" "$LOG_DIR" "$LOG_DIR" "$LOG_DIR" "$LOG_DIR" "$LOG_DIR" "$LOG_DIR" "$XRAY_CONFIG" "$XRAY_CONFIG" "$XRAY_BIN" "$XRAY_CONFIG" > /etc/systemd/system/$XRAY_SERVICE_NAME.service
+    # Xray 服务
+    cat > /etc/systemd/system/$XRAY_SERVICE_NAME.service <<EOF
+[Unit]
+Description=Xray Service
+After=network.target nss-lookup.target
+
+[Service]
+Type=simple
+ExecStartPre=/bin/mkdir -p $LOG_DIR
+ExecStartPre=/bin/chown -R nobody:nogroup $LOG_DIR
+ExecStartPre=/bin/chmod -R 770 $LOG_DIR
+ExecStartPre=/bin/touch $LOG_DIR/access.log $LOG_DIR/error.log
+ExecStartPre=/bin/chown nobody:nogroup $LOG_DIR/access.log $LOG_DIR/error.log
+ExecStartPre=/bin/chmod 660 $LOG_DIR/access.log $LOG_DIR/error.log
+ExecStartPre=/bin/chown nobody:nogroup $XRAY_CONFIG
+ExecStartPre=/bin/chmod 600 $XRAY_CONFIG
+ExecStart=$XRAY_BIN -config $XRAY_CONFIG
+Restart=always
+RestartSec=5
+User=nobody
+Group=nogroup
+LimitNOFILE=51200
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+
+[Install]
+WantedBy=multi-user.target
+EOF
     chmod 644 /etc/systemd/system/$XRAY_SERVICE_NAME.service
     systemctl daemon-reload
     if ! systemctl enable "$XRAY_SERVICE_NAME" >/dev/null 2>&1; then
@@ -665,7 +710,7 @@ install_xray() {
     configure_xray
     start_services
     show_user_link
-    echo -e "\n安装完成! 输入 '$SCRIPT_NAME' 打开管理菜单"
+    echo -e "\n安装完成! 输入 'v' 打开管理菜单"
 }
 
 # 检查并禁用过期用户
@@ -706,7 +751,7 @@ disable_expired_users() {
     else
         echo "没有发现过期用户。"
     fi
-    (crontab -l 2>/dev/null; echo "0 0 * * * bash $(realpath $0) --disable-expired") | crontab -
+    (crontab -l 2>/dev/null; echo "0 0 * * * bash $SCRIPT_PATH --disable-expired") | crontab -
     echo "已设置每天自动检查并禁用过期用户。"
     flock -u 200
 }
@@ -769,7 +814,6 @@ add_user() {
         3) EXPIRE_DATE="永久" ;;
         *) echo -e "${RED}无效选择，使用默认月费${NC}"; EXPIRE_DATE=$(date -d "$(date +%F) +1 month" +%F) ;;
     esac
-    # 添加用户到 users.json
     jq --arg name "$USERNAME" --arg uuid "$UUID" --arg expire "$EXPIRE_DATE" \
        '.users += [{"id": (.users | length + 1), "name": $name, "uuid": $uuid, "expire": $expire, "used_traffic": 0, "status": "启用"}]' \
        "$USER_DATA" > tmp.json && mv tmp.json "$USER_DATA" || { echo -e "${RED}用户数据保存失败!${NC}"; cp "$USER_DATA.bak.$(date +%F_%H%M%S)" "$USER_DATA"; exit 1; }
@@ -778,7 +822,6 @@ add_user() {
         cp "$USER_DATA.bak.$(date +%F_%H%M%S)" "$USER_DATA"
         exit 1
     fi
-    # 添加用户到现有 inbounds.clients
     for i in "${!PROTOCOLS[@]}"; do
         jq --arg uuid "$UUID" ".inbounds[$i].settings.clients += [{\"id\": \$uuid$(if [ \"${PROTOCOLS[$i]}\" = \"2\" ]; then echo \", \\\"alterId\\\": 0\"; fi)}]" \
            "$XRAY_CONFIG" > tmp.json || { echo -e "${RED}生成临时配置文件失败!${NC}"; exit 1; }
@@ -796,7 +839,6 @@ add_user() {
         cp "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)" "$XRAY_CONFIG"
         exit 1
     fi
-    # 确保文件权限正确
     chmod 600 "$XRAY_CONFIG"
     chown nobody:nogroup "$XRAY_CONFIG" || { echo -e "${RED}设置 config.json 权限失败!${NC}"; exit 1; }
     echo -e "${YELLOW}正在重启 Xray 以应用新用户配置...${NC}"
@@ -987,11 +1029,36 @@ backup_restore() {
     esac
 }
 
+# 安装脚本到指定目录并设置快捷命令
+install_script() {
+    if [ ! -f "$SCRIPT_PATH" ]; then
+        echo -e "${GREEN}首次运行，安装脚本到 $INSTALL_DIR...${NC}"
+        mkdir -p "$INSTALL_DIR"
+        cp "$0" "$SCRIPT_PATH"
+        chmod +x "$SCRIPT_PATH"
+        ln -sf "$SCRIPT_PATH" /usr/local/bin/v
+        if command -v v >/dev/null 2>&1; then
+            echo -e "${GREEN}脚本已安装到 $SCRIPT_PATH 并设置快捷命令 'v'${NC}"
+            echo "现在运行安装后的脚本..."
+            exec "$SCRIPT_PATH" "$@"
+        else
+            echo -e "${RED}设置快捷命令 'v' 失败，请检查权限或路径!${NC}"
+            exit 1
+        fi
+    else
+        echo -e "${GREEN}脚本已存在于 $SCRIPT_PATH，直接运行...${NC}"
+    fi
+}
+
 # 脚本入口
-if [ "$1" = "--disable-expired" ]; then
-    detect_system
-    detect_xray_service
-    disable_expired_users
+if [ ! -f "$SCRIPT_PATH" ] || [ "$0" != "$SCRIPT_PATH" ]; then
+    install_script "$@"
 else
-    main_menu
+    if [ "$1" = "--disable-expired" ]; then
+        detect_system
+        detect_xray_service
+        disable_expired_users
+    else
+        main_menu
+    fi
 fi
