@@ -1,6 +1,6 @@
 #!/bin/bash
 # Xray 高级管理脚本
-# 版本: v1.0.4-fix18
+# 版本: v1.0.4-fix19
 # 支持系统: Ubuntu 20.04/22.04, CentOS 7/8, Debian 10/11 (systemd)
 
 # 配置常量
@@ -19,7 +19,7 @@ INSTALL_DIR="/root/v2ray"
 SCRIPT_PATH="$INSTALL_DIR/xray-install.sh"
 
 # 全局变量
-declare DOMAIN WS_PATH VMESS_PATH GRPC_SERVICE TCP_PATH PROTOCOLS PORTS
+declare DOMAIN WS_PATH VMESS_PATH GRPC_SERVICE TCP_PATH PROTOCOLS PORTS BASE_PORT
 
 # 颜色定义
 RED='\033[31m'
@@ -243,36 +243,53 @@ EOF
 
 # 检测防火墙并开放端口
 check_firewall() {
-    echo -e "${GREEN}[检测防火墙状态...]${NC}"
+    echo -e "${GREEN}[检测防火墙状态并尝试开放端口...]${NC}"
+    BASE_PORT=49152  # 默认优先使用高端口范围
+
+    # 尝试开放 49152-49159
     if command -v ufw >/dev/null; then
         if ufw status | grep -q "Status: active"; then
-            echo "防火墙已启用，开放必要的端口..."
+            echo "防火墙 UFW 已启用，尝试开放端口..."
             ufw allow 80 >/dev/null
             ufw allow 443 >/dev/null
-            ufw allow 10000 >/dev/null
-            echo "- 已开放端口: 80, 443, 10000"
+            ufw allow 49152:49159/tcp >/dev/null
+            if ufw status | grep -q "49152:49159/tcp.*ALLOW"; then
+                echo "- 已成功开放端口: 80, 443, 49152-49159"
+            else
+                echo -e "${YELLOW}警告: 开放 49152-49159 端口失败，回退到 10000 范围${NC}"
+                BASE_PORT=10000
+                ufw allow 10000:10007/tcp >/dev/null
+                echo "- 已开放端口: 80, 443, 10000-10007"
+            fi
         else
-            echo "防火墙未启用，无需调整端口。"
+            echo "UFW 未启用，使用默认端口 49152-49159。"
         fi
     elif command -v firewall-cmd >/dev/null; then
         if firewall-cmd --state | grep -q "running"; then
-            echo "FirewallD 已启用，开放必要的端口..."
+            echo "FirewallD 已启用，尝试开放端口..."
             firewall-cmd --permanent --add-port=80/tcp >/dev/null
             firewall-cmd --permanent --add-port=443/tcp >/dev/null
-            firewall-cmd --permanent --add-port=10000/tcp >/dev/null
+            firewall-cmd --permanent --add-port=49152-49159/tcp >/dev/null
             firewall-cmd --reload >/dev/null
-            echo "- 已开放端口: 80, 443, 10000"
+            if firewall-cmd --list-ports | grep -q "49152-49159/tcp"; then
+                echo "- 已成功开放端口: 80, 443, 49152-49159"
+            else
+                echo -e "${YELLOW}警告: 开放 49152-49159 端口失败，回退到 10000 范围${NC}"
+                BASE_PORT=10000
+                firewall-cmd --permanent --add-port=10000-10007/tcp >/dev/null
+                firewall-cmd --reload >/dev/null
+                echo "- 已开放端口: 80, 443, 10000-10007"
+            fi
         else
-            echo "FirewallD 未启用，无需调整端口。"
+            echo "FirewallD 未启用，使用默认端口 49152-49159。"
         fi
     else
-        echo "未检测到 ufw 或 FirewallD，可能需要手动配置防火墙。"
+        echo "未检测到 ufw 或 FirewallD，使用默认端口 49152-49159（请手动确认端口可用性）。"
     fi
 }
 
 # 检查端口占用并分配可用端口
 check_ports() {
-    BASE_PORT=10000
     PORTS=()
     for i in "${!PROTOCOLS[@]}"; do
         PORT=$((BASE_PORT + i))
