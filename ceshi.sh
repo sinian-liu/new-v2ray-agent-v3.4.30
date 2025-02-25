@@ -1,6 +1,6 @@
 #!/bin/bash
 # Xray 高级管理脚本
-# 版本: v1.0.4-fix15
+# 版本: v1.0.4-fix17
 # 支持系统: Ubuntu 20.04/22.04, CentOS 7/8, Debian 10/11 (systemd)
 
 # 配置常量
@@ -33,7 +33,6 @@ main_menu() {
     init_environment
     while true; do
         echo -e "${GREEN}==== Xray高级管理脚本 ====${NC}"
-        # 检查 Xray 状态和协议
         XRAY_STATUS=$(systemctl is-active "$XRAY_SERVICE_NAME" 2>/dev/null || echo "未安装")
         if [ "$XRAY_STATUS" = "active" ]; then
             XRAY_STATUS_TEXT="运行中"
@@ -182,7 +181,6 @@ setup_auto_start() {
         rm -rf "/etc/systemd/system/$XRAY_SERVICE_NAME.service.d"
     fi
 
-    # 脚本服务
     cat > /etc/systemd/system/$SCRIPT_NAME.service <<EOF
 [Unit]
 Description=Xray Management Script
@@ -204,7 +202,6 @@ EOF
     systemctl enable $SCRIPT_NAME.service || { echo -e "${YELLOW}警告: 无法启用 $SCRIPT_NAME 服务，继续尝试启动...${NC}"; cat /etc/systemd/system/$SCRIPT_NAME.service; }
     systemctl restart $SCRIPT_NAME.service || echo -e "${YELLOW}警告: $SCRIPT_NAME 服务启动失败，但将继续执行${NC}"
 
-    # Xray 服务
     cat > /etc/systemd/system/$XRAY_SERVICE_NAME.service <<EOF
 [Unit]
 Description=Xray Service
@@ -1059,29 +1056,17 @@ install_script() {
         cp "$0" "$SCRIPT_PATH" || { echo -e "${RED}复制脚本到 $SCRIPT_PATH 失败!${NC}"; exit 1; }
         chmod +x "$SCRIPT_PATH" || { echo -e "${RED}设置 $SCRIPT_PATH 可执行权限失败!${NC}"; exit 1; }
         ln -sf "$SCRIPT_PATH" /usr/local/bin/v || { echo -e "${RED}创建快捷命令 'v' 失败!${NC}"; exit 1; }
-        if command -v v >/dev/null 2>&1; then
+        if [ -x "$SCRIPT_PATH" ] && [ -L "/usr/local/bin/v" ]; then
             echo -e "${GREEN}脚本已安装到 $SCRIPT_PATH 并设置快捷命令 'v'${NC}"
             echo "现在运行安装后的脚本..."
-            /bin/bash "$SCRIPT_PATH" "$@"
-            exit $?
+            exec /bin/bash "$SCRIPT_PATH" "$@"
         else
-            echo -e "${RED}设置快捷命令 'v' 失败，请检查权限或路径!${NC}"
+            echo -e "${RED}安装验证失败，请检查 $SCRIPT_PATH 和 /usr/local/bin/v!${NC}"
             exit 1
         fi
-    else
-        echo -e "${GREEN}脚本已存在于 $SCRIPT_PATH，直接运行...${NC}"
     fi
 }
 
 # 脚本入口
-if [ ! -f "$SCRIPT_PATH" ] || [ "$0" != "$SCRIPT_PATH" ]; then
-    install_script "$@"
-else
-    if [ "$1" = "--disable-expired" ]; then
-        detect_system
-        detect_xray_service
-        disable_expired_users
-    else
-        main_menu
-    fi
-fi
+install_script "$@"
+main_menu
