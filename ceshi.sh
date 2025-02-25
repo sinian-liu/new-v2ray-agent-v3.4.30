@@ -1,6 +1,6 @@
 #!/bin/bash
 # Xray 高级管理脚本
-# 版本: v1.9.6
+# 版本: v1.9.7
 # 支持系统: Ubuntu 20.04/22.04, CentOS 7/8, Debian 10/11
 
 # 配置常量
@@ -14,6 +14,7 @@ LOG_DIR="/usr/local/var/log/xray"
 SCRIPT_NAME="xray-menu"
 LOCK_FILE="/tmp/xray_users.lock"
 XRAY_SERVICE_NAME="xray"
+XRAY_BIN="/usr/local/bin/xray"
 
 # 全局路径变量
 declare WS_PATH VMESS_PATH GRPC_SERVICE TCP_PATH
@@ -164,6 +165,7 @@ check_ports() {
     for i in "${!PROTOCOLS[@]}"; do
         PORT=$((BASE_PORT + i))
         while lsof -i :$PORT >/dev/null 2>&1; do
+            echo -e "${YELLOW}端口 $PORT 已被占用，尝试下一个端口...${NC}"
             PORT=$((PORT + 1))
         done
         PORTS[$i]=$PORT
@@ -343,7 +345,7 @@ EOF
         esac
     done
     echo "}" >> "$NGINX_CONF"
-    nginx -t || { echo -e "${RED}Nginx 配置错误!${NC}"; exit 1; }
+    nginx -t || { echo -e "${RED}Nginx 配置错误! 检查 $NGINX_CONF${NC}"; cat "$NGINX_CONF"; exit 1; }
     systemctl reload nginx || service nginx reload
     echo "Nginx 配置完成，路径: $WS_PATH (VLESS+WS), $VMESS_PATH (VMess+WS), $GRPC_SERVICE (gRPC), $TCP_PATH (TCP)"
 }
@@ -399,17 +401,51 @@ create_default_user() {
 # 启动服务并检查状态
 start_services() {
     echo -e "${GREEN}[8] 启动服务...${NC}"
+    # 停止现有服务，确保无残留进程
     systemctl stop "$XRAY_SERVICE_NAME" >/dev/null 2>&1 || service "$XRAY_SERVICE_NAME" stop >/dev/null 2>&1
+    systemctl stop nginx >/dev/null 2>&1 || service nginx stop >/dev/null 2>&1
+    # 启动 Xray 并验证配置
+    if [ "$SYSTEMD" = "yes" ]; then
+        systemctl restart "$XRAY_SERVICE_NAME" >/dev/null 2>&1
+        if ! systemctl is-active "$XRAY_SERVICE_NAME" >/dev/null; then
+            echo -e "${RED}Xray 服务启动失败! 尝试手动启动并检查日志...${NC}"
+            $XRAY_BIN -config "$XRAY_CONFIG" > "$LOG_DIR/startup.log" 2>&1 &
+            sleep 2
+            if ! pgrep xray >/dev/null; then
+                echo -e "${RED}Xray 手动启动失败! 日志输出:${NC}"
+                cat "$LOG_DIR/startup.log"
+                echo "请检查 $XRAY_CONFIG 或 Xray 二进制文件"
+                exit 1
+            fi
+        fi
+    else
+        service "$XRAY_SERVICE_NAME" restart >/dev/null 2>&1
+        if ! pgrep xray >/dev/null; then
+            echo -e "${RED}Xray 服务启动失败! 尝试手动启动并检查日志...${NC}"
+            $XRAY_BIN -config "$XRAY_CONFIG" > "$LOG_DIR/startup.log" 2>&1 &
+            sleep 2
+            if ! pgrep xray >/dev/null; then
+                echo -e "${RED}Xray 手动启动失败! 日志输出:${NC}"
+                cat "$LOG_DIR/startup.log"
+                echo "请检查 $XRAY_CONFIG 或 Xray 二进制文件"
+                exit 1
+            fi
+        fi
+    fi
+    # 启动 Nginx
     systemctl restart nginx >/dev/null 2>&1 || service nginx restart >/dev/null 2>&1
-    systemctl restart "$XRAY_SERVICE_NAME" >/dev/null 2>&1 || service "$XRAY_SERVICE_NAME" restart >/dev/null 2>&1
-    systemctl enable nginx "$XRAY_SERVICE_NAME" >/dev/null 2>&1 || { service nginx enable >/dev/null 2>&1; service "$XRAY_SERVICE_NAME" enable >/dev/null 2>&1; }
     sleep 2  # 等待服务启动
+    # 检查服务状态
     if pgrep nginx >/dev/null && pgrep xray >/dev/null; then
         echo "- Nginx状态: 运行中"
         echo "- Xray状态: 运行中"
         for PORT in "${PORTS[@]}"; do
             if ! nc -z 127.0.0.1 "$PORT" >/dev/null 2>&1; then
                 echo -e "${RED}Xray 未监听端口 $PORT! 检查 $XRAY_CONFIG 或服务状态${NC}"
+                echo "当前监听端口:"
+                netstat -tuln | grep xray
+                echo "Xray 错误日志:"
+                cat "$LOG_DIR/error.log"
                 exit 1
             fi
         done
@@ -418,7 +454,10 @@ start_services() {
         echo -e "${RED}服务启动失败!${NC}"
         echo "Nginx状态: $(pgrep nginx >/dev/null && echo '运行中' || echo '未运行')"
         echo "Xray状态: $(pgrep xray >/dev/null && echo '运行中' || echo '未运行')"
-        echo "请检查日志文件: $LOG_DIR/error.log 或 /var/log/nginx/error.log"
+        echo "Nginx 错误日志:"
+        cat /var/log/nginx/error.log | tail -n 10
+        echo "Xray 错误日志:"
+        cat "$LOG_DIR/error.log"
         exit 1
     fi
 }
