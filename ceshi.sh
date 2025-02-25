@@ -1,6 +1,6 @@
 #!/bin/bash
 # Xray 高级管理脚本
-# 版本: v1.0.4-fix10
+# 版本: v1.0.4-fix11
 # 支持系统: Ubuntu 20.04/22.04, CentOS 7/8, Debian 10/11 (systemd)
 
 # 配置常量
@@ -110,8 +110,11 @@ init_environment() {
         chmod 660 "$USER_DATA"
         chown nobody:nogroup "$USER_DATA"
     fi
-    chmod 600 "$XRAY_CONFIG" 2>/dev/null || true
-    chown nobody:nogroup "$XRAY_CONFIG" 2>/dev/null || true
+    if [ ! -f "$XRAY_CONFIG" ]; then
+        echo '{"log": {"loglevel": "debug", "access": "'"$LOG_DIR/access.log"'", "error": "'"$LOG_DIR/error.log"'"}, "inbounds": [], "outbounds": [{"protocol": "freedom"}]}' > "$XRAY_CONFIG"
+        chmod 600 "$XRAY_CONFIG"
+        chown nobody:nogroup "$XRAY_CONFIG"
+    fi
     detect_system
     detect_xray_service
     setup_auto_start
@@ -161,7 +164,7 @@ setup_auto_start() {
     systemctl enable $SCRIPT_NAME.service || { echo -e "${YELLOW}警告: 无法启用 $SCRIPT_NAME 服务，继续尝试启动...${NC}"; cat /etc/systemd/system/$SCRIPT_NAME.service; }
     systemctl restart $SCRIPT_NAME.service || echo -e "${YELLOW}警告: $SCRIPT_NAME 服务启动失败，但将继续执行${NC}"
 
-    printf "[Unit]\nDescription=Xray Service\nAfter=network.target nss-lookup.target\n\n[Service]\nType=simple\nExecStartPre=/bin/mkdir -p %s\nExecStartPre=/bin/chown -R nobody:nogroup %s\nExecStartPre=/bin/chmod -R 770 %s\nExecStartPre=/bin/touch %s/access.log %s/error.log\nExecStartPre=/bin/chown nobody:nogroup %s/access.log %s/error.log\nExecStartPre=/bin/chmod 660 %s/access.log %s/error.log\nExecStart=%s -config %s\nRestart=always\nRestartSec=5\nUser=nobody\nGroup=nogroup\nLimitNOFILE=51200\nAmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE\nCapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE\nExecStartPre=/bin/chown nobody:nogroup %s\nExecStartPre=/bin/chmod 600 %s\n\n[Install]\nWantedBy=multi-user.target\n" "$LOG_DIR" "$LOG_DIR" "$LOG_DIR" "$LOG_DIR" "$LOG_DIR" "$LOG_DIR" "$LOG_DIR" "$LOG_DIR" "$LOG_DIR" "$XRAY_BIN" "$XRAY_CONFIG" "$XRAY_CONFIG" "$XRAY_CONFIG" > /etc/systemd/system/$XRAY_SERVICE_NAME.service
+    printf "[Unit]\nDescription=Xray Service\nAfter=network.target nss-lookup.target\n\n[Service]\nType=simple\nExecStartPre=/bin/mkdir -p %s\nExecStartPre=/bin/chown -R nobody:nogroup %s\nExecStartPre=/bin/chmod -R 770 %s\nExecStartPre=/bin/touch %s/access.log %s/error.log\nExecStartPre=/bin/chown nobody:nogroup %s/access.log %s/error.log\nExecStartPre=/bin/chmod 660 %s/access.log %s/error.log\nExecStartPre=/bin/chown nobody:nogroup %s\nExecStartPre=/bin/chmod 600 %s\nExecStart=%s -config %s\nRestart=always\nRestartSec=5\nUser=nobody\nGroup=nogroup\nLimitNOFILE=51200\nAmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE\nCapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE\n\n[Install]\nWantedBy=multi-user.target\n" "$LOG_DIR" "$LOG_DIR" "$LOG_DIR" "$LOG_DIR" "$LOG_DIR" "$LOG_DIR" "$LOG_DIR" "$XRAY_CONFIG" "$XRAY_CONFIG" "$XRAY_BIN" "$XRAY_CONFIG" > /etc/systemd/system/$XRAY_SERVICE_NAME.service
     chmod 644 /etc/systemd/system/$XRAY_SERVICE_NAME.service
     systemctl daemon-reload
     if ! systemctl enable "$XRAY_SERVICE_NAME" >/dev/null 2>&1; then
@@ -680,9 +683,7 @@ disable_expired_users() {
         cp "$XRAY_CONFIG" "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)"
         cp "$USER_DATA" "$USER_DATA.bak.$(date +%F_%H%M%S)"
         for UUID in $EXPIRED_USERS; do
-            # 更新用户状态为“禁用”
             jq --arg uuid "$UUID" '.users[] | select(.uuid == $uuid) | .status = "禁用"' "$USER_DATA" > tmp.json && mv tmp.json "$USER_DATA" || { echo -e "${RED}用户数据更新失败!${NC}"; cp "$USER_DATA.bak.$(date +%F_%H%M%S)" "$USER_DATA"; exit 1; }
-            # 从现有 inbounds.clients 中移除过期用户
             for i in "${!PROTOCOLS[@]}"; do
                 jq --arg uuid "$UUID" ".inbounds[$i].settings.clients -= [{\"id\": \$uuid}]" "$XRAY_CONFIG" > tmp.json && mv tmp.json "$XRAY_CONFIG" || { echo -e "${RED}Xray 配置更新失败!${NC}"; cp "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)" "$XRAY_CONFIG"; exit 1; }
             done
@@ -744,8 +745,8 @@ user_management() {
 add_user() {
     echo -e "${GREEN}=== 新建用户流程 ===${NC}"
     check_and_set_domain
-    if [ ${#PROTOCOLS[@]} -eq 0 ] || [ ! -f "$XRAY_CONFIG" ]; then
-        echo -e "${RED}未检测到有效的 Xray 配置，请先进行全新安装或协议管理${NC}"
+    if [ ${#PROTOCOLS[@]} -eq 0 ] || [ ! -f "$XRAY_CONFIG" ] || ! jq -e '.inbounds | length > 0' "$XRAY_CONFIG" >/dev/null 2>&1; then
+        echo -e "${RED}未检测到有效的 Xray 配置或 inbounds，请先进行全新安装或协议管理${NC}"
         return
     fi
     flock -x 200
@@ -780,7 +781,8 @@ add_user() {
     # 添加用户到现有 inbounds.clients
     for i in "${!PROTOCOLS[@]}"; do
         jq --arg uuid "$UUID" ".inbounds[$i].settings.clients += [{\"id\": \$uuid$(if [ \"${PROTOCOLS[$i]}\" = \"2\" ]; then echo \", \\\"alterId\\\": 0\"; fi)}]" \
-           "$XRAY_CONFIG" > tmp.json && mv tmp.json "$XRAY_CONFIG" || { echo -e "${RED}Xray 配置更新失败!${NC}"; cp "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)" "$XRAY_CONFIG"; exit 1; }
+           "$XRAY_CONFIG" > tmp.json || { echo -e "${RED}生成临时配置文件失败!${NC}"; exit 1; }
+        mv tmp.json "$XRAY_CONFIG" || { echo -e "${RED}移动临时配置文件失败!${NC}"; cp "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)" "$XRAY_CONFIG"; exit 1; }
     done
     if ! jq -e . "$XRAY_CONFIG" >/dev/null 2>&1; then
         echo -e "${RED}Xray 配置文件损坏，恢复备份!${NC}"
@@ -794,6 +796,9 @@ add_user() {
         cp "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)" "$XRAY_CONFIG"
         exit 1
     fi
+    # 确保文件权限正确
+    chmod 600 "$XRAY_CONFIG"
+    chown nobody:nogroup "$XRAY_CONFIG" || { echo -e "${RED}设置 config.json 权限失败!${NC}"; exit 1; }
     echo -e "${YELLOW}正在重启 Xray 以应用新用户配置...${NC}"
     systemctl restart "$XRAY_SERVICE_NAME" || { 
         echo -e "${RED}Xray 重启失败!${NC}"
@@ -859,14 +864,12 @@ delete_user() {
     read -p "输入要删除的用户名: " USERNAME
     UUID=$(jq -r ".users[] | select(.name == \"$USERNAME\") | .uuid" "$USER_DATA")
     if [ -n "$UUID" ]; then
-        # 从 users.json 中移除用户
         jq "del(.users[] | select(.name == \"$USERNAME\"))" "$USER_DATA" > tmp.json && mv tmp.json "$USER_DATA" || { echo -e "${RED}用户数据删除失败!${NC}"; cp "$USER_DATA.bak.$(date +%F_%H%M%S)" "$USER_DATA"; exit 1; }
         if ! jq -e . "$USER_DATA" >/dev/null 2>&1; then
             echo -e "${RED}用户数据文件损坏，恢复备份!${NC}"
             cp "$USER_DATA.bak.$(date +%F_%H%M%S)" "$USER_DATA"
             exit 1
         fi
-        # 从现有 inbounds.clients 中移除用户
         for i in "${!PROTOCOLS[@]}"; do
             jq --arg uuid "$UUID" ".inbounds[$i].settings.clients -= [{\"id\": \$uuid}]" "$XRAY_CONFIG" > tmp.json && mv tmp.json "$XRAY_CONFIG" || { echo -e "${RED}Xray 配置更新失败!${NC}"; cp "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)" "$XRAY_CONFIG"; exit 1; }
         done
