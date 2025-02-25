@@ -1,6 +1,6 @@
 #!/bin/bash
 # Xray 高级管理脚本
-# 版本: v1.10.3
+# 版本: v1.10.4
 # 支持系统: Ubuntu 20.04/22.04, CentOS 7/8, Debian 10/11
 
 # 配置常量
@@ -83,7 +83,7 @@ detect_xray_service() {
 init_environment() {
     [ "$EUID" -ne 0 ] && echo -e "${RED}请使用 root 权限运行脚本!${NC}" && exit 1
     mkdir -p "$LOG_DIR" "$SUBSCRIPTION_DIR" "$BACKUP_DIR" "/usr/local/etc/xray"
-    chmod 770 "$LOG_DIR"
+    chmod 770 "$LOG_DIR" "$SUBSCRIPTION_DIR" "$BACKUP_DIR" "/usr/local/etc/xray"
     chown nobody:nogroup "$LOG_DIR"
     touch "$LOG_DIR/access.log" "$LOG_DIR/error.log"
     chmod 660 "$LOG_DIR"/*.log
@@ -124,24 +124,7 @@ EOF
     fi
     # 设置 Xray 服务
     if [ "$SYSTEMD" = "yes" ]; then
-        cat > /etc/systemd/system/$XRAY_SERVICE_NAME.service <<EOF
-[Unit]
-Description=Xray Service
-Documentation=https://github.com/XTLS/Xray-core
-After=network.target nss-lookup.target
-
-[Service]
-Type=simple
-ExecStart=$XRAY_BIN -c $XRAY_CONFIG
-Restart=on-failure
-User=nobody
-Group=nogroup
-LimitNOFILE=51200
-AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
-
-[Install]
-WantedBy=multi-user.target
-EOF
+        echo -e "[Unit]\nDescription=Xray Service\nDocumentation=https://github.com/XTLS/Xray-core\nAfter=network.target nss-lookup.target\n\n[Service]\nType=simple\nExecStart=$XRAY_BIN -config $XRAY_CONFIG\nRestart=on-failure\nUser=nobody\nGroup=nogroup\nLimitNOFILE=51200\nAmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE\n\n[Install]\nWantedBy=multi-user.target" > /etc/systemd/system/$XRAY_SERVICE_NAME.service
         systemctl daemon-reload
         systemctl enable "$XRAY_SERVICE_NAME" >/dev/null 2>&1
     fi
@@ -395,6 +378,7 @@ EOF
         esac
     done
     chmod 600 "$XRAY_CONFIG"
+    chown nobody:nogroup "$XRAY_CONFIG"
     echo "- 协议: $(for p in "${PROTOCOLS[@]}"; do case $p in 1) echo -n "VLESS+WS+TLS "; ;; 2) echo -n "VMess+WS+TLS "; ;; 3) echo -n "VLESS+gRPC+TLS "; ;; 4) echo -n "VLESS+TCP+TLS "; ;; esac; done)"
     echo "- 路径: $WS_PATH (VLESS+WS), $VMESS_PATH (VMess+WS), $GRPC_SERVICE (gRPC), $TCP_PATH (TCP)"
     echo "- 内部端口: ${PORTS[*]}"
@@ -430,15 +414,28 @@ start_services() {
     # 启动 Xray 并验证配置
     if [ "$SYSTEMD" = "yes" ]; then
         systemctl daemon-reload
-        systemctl restart "$XRAY_SERVICE_NAME" || { echo -e "${RED}Xray 服务启动失败! 检查 systemctl status $XRAY_SERVICE_NAME${NC}"; exit 1; }
-        sleep 2
-        if ! systemctl is-active "$XRAY_SERVICE_NAME" >/dev/null; then
-            echo -e "${RED}Xray 服务未运行! 查看 systemctl status $XRAY_SERVICE_NAME${NC}"
-            systemctl status "$XRAY_SERVICE_NAME"
-            exit 1
+        if ! systemctl restart "$XRAY_SERVICE_NAME"; then
+            echo -e "${RED}Xray 服务启动失败! 尝试手动启动并检查日志...${NC}"
+            $XRAY_BIN -config "$XRAY_CONFIG" > "$LOG_DIR/startup.log" 2>&1 &
+            sleep 2
+            if ! pgrep xray >/dev/null; then
+                echo -e "${RED}Xray 手动启动失败! 日志输出:${NC}"
+                cat "$LOG_DIR/startup.log"
+                echo "请检查 $XRAY_CONFIG 或 Xray 二进制文件"
+                exit 1
+            else
+                echo "Xray 手动启动成功，继续流程..."
+            fi
+        else
+            sleep 2
+            if ! systemctl is-active "$XRAY_SERVICE_NAME" >/dev/null; then
+                echo -e "${RED}Xray 服务未运行! 查看 systemctl status $XRAY_SERVICE_NAME${NC}"
+                systemctl status "$XRAY_SERVICE_NAME"
+                exit 1
+            fi
         fi
     else
-        $XRAY_BIN -c "$XRAY_CONFIG" > "$LOG_DIR/startup.log" 2>&1 &
+        $XRAY_BIN -config "$XRAY_CONFIG" > "$LOG_DIR/startup.log" 2>&1 &
         sleep 2
         if ! pgrep xray >/dev/null; then
             echo -e "${RED}Xray 启动失败! 日志输出:${NC}"
