@@ -1,6 +1,6 @@
 #!/bin/bash
 # Xray 高级管理脚本
-# 版本: v1.10.1
+# 版本: v1.10.2
 # 支持系统: Ubuntu 20.04/22.04, CentOS 7/8, Debian 10/11
 
 # 配置常量
@@ -329,7 +329,7 @@ server {
     return 301 https://\$host\$request_uri;
 }
 server {
-    listen 443 ssl http2;
+    listen 443 ssl;
     server_name $DOMAIN;
     ssl_certificate $CERTS_DIR/$DOMAIN/fullchain.pem;
     ssl_certificate_key $CERTS_DIR/$DOMAIN/privkey.pem;
@@ -343,9 +343,6 @@ EOF
         PORT=${PORTS[$i]}
         case "$PROTOCOL" in
             1) echo "    location $WS_PATH {
-        if (\$http_upgrade != \"websocket\") {
-            return 403;
-        }
         proxy_pass http://127.0.0.1:$PORT;
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
@@ -353,9 +350,6 @@ EOF
         proxy_set_header Host \$host;
     }" >> "$NGINX_CONF" ;;
             2) echo "    location $VMESS_PATH {
-        if (\$http_upgrade != \"websocket\") {
-            return 403;
-        }
         proxy_pass http://127.0.0.1:$PORT;
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
@@ -456,7 +450,7 @@ start_services() {
     fi
     # 测试 Xray 的 WebSocket 响应，使用随机 16 字节 Sec-WebSocket-Key
     WS_KEY=$(openssl rand -base64 16)
-    WEBSOCKET_RESPONSE=$(curl -s -v -H "Host: localhost" -H "Connection: Upgrade" -H "Upgrade: websocket" -H "Sec-WebSocket-Key: $WS_KEY" -H "Sec-WebSocket-Version: 13" "http://127.0.0.1:${PORTS[0]}$WS_PATH" 2>&1 || echo "Failed to connect")
+    WEBSOCKET_RESPONSE=$(curl -s -v --http1.1 -H "Host: localhost" -H "Connection: Upgrade" -H "Upgrade: websocket" -H "Sec-WebSocket-Key: $WS_KEY" -H "Sec-WebSocket-Version: 13" "http://127.0.0.1:${PORTS[0]}$WS_PATH" 2>&1 || echo "Failed to connect")
     if ! echo "$WEBSOCKET_RESPONSE" | grep -q "101 Switching Protocols"; then
         echo -e "${RED}Xray WebSocket 响应异常! 输出:${NC}"
         echo "$WEBSOCKET_RESPONSE"
@@ -533,7 +527,7 @@ show_user_link() {
         case "$PROTOCOL" in
             1) 
                 WS_KEY=$(openssl rand -base64 16)
-                RESPONSE=$(curl -s -v -H "Host: $DOMAIN" -H "Connection: Upgrade" -H "Upgrade: websocket" -H "Sec-WebSocket-Key: $WS_KEY" -H "Sec-WebSocket-Version: 13" "https://$DOMAIN$WS_PATH" 2>&1 || echo "Failed to connect")
+                RESPONSE=$(curl -s -v --http1.1 -H "Host: $DOMAIN" -H "Connection: Upgrade" -H "Upgrade: websocket" -H "Sec-WebSocket-Key: $WS_KEY" -H "Sec-WebSocket-Version: 13" "https://$DOMAIN$WS_PATH" 2>&1 || echo "Failed to connect")
                 if echo "$RESPONSE" | grep -q "101 Switching Protocols"; then
                     echo "VLESS+WS+TLS 测试通过!"
                 else
@@ -542,7 +536,7 @@ show_user_link() {
                 ;;
             2) 
                 WS_KEY=$(openssl rand -base64 16)
-                RESPONSE=$(curl -s -v -H "Host: $DOMAIN" -H "Connection: Upgrade" -H "Upgrade: websocket" -H "Sec-WebSocket-Key: $WS_KEY" -H "Sec-WebSocket-Version: 13" "https://$DOMAIN$VMESS_PATH" 2>&1 || echo "Failed to connect")
+                RESPONSE=$(curl -s -v --http1.1 -H "Host: $DOMAIN" -H "Connection: Upgrade" -H "Upgrade: websocket" -H "Sec-WebSocket-Key: $WS_KEY" -H "Sec-WebSocket-Version: 13" "https://$DOMAIN$VMESS_PATH" 2>&1 || echo "Failed to connect")
                 if echo "$RESPONSE" | grep -q "101 Switching Protocols"; then
                     echo "VMess+WS+TLS 测试通过!"
                 else
