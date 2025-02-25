@@ -1,6 +1,6 @@
 #!/bin/bash
 # Xray 高级管理脚本
-# 版本: v1.10.5-fix
+# 版本: v1.10.5-fix2
 # 支持系统: Ubuntu 20.04/22.04, CentOS 7/8, Debian 10/11 (systemd)
 
 # 配置常量
@@ -80,8 +80,8 @@ detect_system() {
 
 # 检测 Xray 服务名
 detect_xray_service() {
-    XRAY_SERVICE_NAME=$(systemctl list-units --type=service | grep -oE 'xray[a-zA-Z0-9_-]*\.service' | head -n 1 | sed 's/\.service//') || XRAY_SERVICE_NAME="xray"
-    echo "检测到 Xray 服务名: $XRAY_SERVICE_NAME"
+    XRAY_SERVICE_NAME="xray"  # 固定为 'xray'，避免混淆
+    echo "使用 Xray 服务名: $XRAY_SERVICE_NAME"
 }
 
 # 初始化环境
@@ -109,6 +109,7 @@ setup_auto_start() {
     echo "配置 systemd 服务..."
     # 脚本服务
     printf "[Unit]\nDescription=Xray Management Script\nAfter=network.target\n\n[Service]\nType=simple\nExecStart=/bin/bash %s\nExecStop=/bin/kill -TERM \$MAINPID\nRestart=always\nRestartSec=5\nUser=root\n\n[Install]\nWantedBy=multi-user.target\n" "$(realpath "$0")" > /etc/systemd/system/$SCRIPT_NAME.service
+    chmod 644 /etc/systemd/system/$SCRIPT_NAME.service
     systemctl daemon-reload
     systemctl enable $SCRIPT_NAME.service || { echo -e "${YELLOW}警告: 无法启用 $SCRIPT_NAME 服务，继续尝试启动...${NC}"; cat /etc/systemd/system/$SCRIPT_NAME.service; }
     systemctl restart $SCRIPT_NAME.service || echo -e "${YELLOW}警告: $SCRIPT_NAME 服务启动失败，但将继续执行${NC}"
@@ -415,6 +416,10 @@ start_services() {
     systemctl restart "$XRAY_SERVICE_NAME" || { 
         echo -e "${RED}Xray 服务启动失败! 检查服务状态...${NC}"
         systemctl status "$XRAY_SERVICE_NAME"
+        echo "Xray 配置内容:"
+        cat "$XRAY_CONFIG"
+        echo "Xray 二进制权限:"
+        ls -l "$XRAY_BIN"
         exit 1
     }
     sleep 3
