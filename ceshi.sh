@@ -1,6 +1,6 @@
 #!/bin/bash
 # Xray 高级管理脚本
-# 版本: v1.9.9
+# 版本: v1.10.0
 # 支持系统: Ubuntu 20.04/22.04, CentOS 7/8, Debian 10/11
 
 # 配置常量
@@ -84,7 +84,7 @@ init_environment() {
     [ "$EUID" -ne 0 ] && echo -e "${RED}请使用 root 权限运行脚本!${NC}" && exit 1
     mkdir -p "$LOG_DIR" "$SUBSCRIPTION_DIR" "$BACKUP_DIR" "/usr/local/etc/xray"
     chmod 770 "$LOG_DIR"
-    chown root:root "$LOG_DIR"
+    chown nobody:nogroup "$LOG_DIR"
     touch "$LOG_DIR/access.log" "$LOG_DIR/error.log"
     chmod 660 "$LOG_DIR"/*.log
     if [ ! -s "$USER_DATA" ] || ! jq -e . "$USER_DATA" >/dev/null 2>&1; then
@@ -134,6 +134,7 @@ Type=simple
 ExecStart=$XRAY_BIN -config $XRAY_CONFIG
 Restart=on-failure
 User=nobody
+Group=nogroup
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
 
 [Install]
@@ -378,7 +379,7 @@ configure_xray() {
     echo -e "${GREEN}[6] 配置Xray核心...${NC}"
     cat > "$XRAY_CONFIG" <<EOF
 {
-    "log": {"loglevel": "warning", "access": "$LOG_DIR/access.log", "error": "$LOG_DIR/error.log"},
+    "log": {"loglevel": "debug", "access": "$LOG_DIR/access.log", "error": "$LOG_DIR/error.log"},
     "inbounds": [],
     "outbounds": [{"protocol": "freedom"}]
 }
@@ -387,10 +388,10 @@ EOF
         PROTOCOL=${PROTOCOLS[$i]}
         PORT=${PORTS[$i]}
         case "$PROTOCOL" in
-            1) jq ".inbounds += [{\"port\": $PORT, \"protocol\": \"vless\", \"settings\": {\"clients\": [], \"decryption\": \"none\"}, \"streamSettings\": {\"network\": \"ws\", \"wsSettings\": {\"path\": \"$WS_PATH\"}}}]" "$XRAY_CONFIG" > tmp.json && mv tmp.json "$XRAY_CONFIG" ;;
-            2) jq ".inbounds += [{\"port\": $PORT, \"protocol\": \"vmess\", \"settings\": {\"clients\": []}, \"streamSettings\": {\"network\": \"ws\", \"wsSettings\": {\"path\": \"$VMESS_PATH\"}}}]" "$XRAY_CONFIG" > tmp.json && mv tmp.json "$XRAY_CONFIG" ;;
-            3) jq ".inbounds += [{\"port\": $PORT, \"protocol\": \"vless\", \"settings\": {\"clients\": [], \"decryption\": \"none\"}, \"streamSettings\": {\"network\": \"grpc\", \"grpcSettings\": {\"serviceName\": \"$GRPC_SERVICE\"}}}]" "$XRAY_CONFIG" > tmp.json && mv tmp.json "$XRAY_CONFIG" ;;
-            4) jq ".inbounds += [{\"port\": $PORT, \"protocol\": \"vless\", \"settings\": {\"clients\": [], \"decryption\": \"none\"}, \"streamSettings\": {\"network\": \"tcp\"}}]" "$XRAY_CONFIG" > tmp.json && mv tmp.json "$XRAY_CONFIG" ;;
+            1) jq ".inbounds += [{\"port\": $PORT, \"protocol\": \"vless\", \"settings\": {\"clients\": [{\"id\": \"$UUID\"}], \"decryption\": \"none\"}, \"streamSettings\": {\"network\": \"ws\", \"wsSettings\": {\"path\": \"$WS_PATH\"}}}]" "$XRAY_CONFIG" > tmp.json && mv tmp.json "$XRAY_CONFIG" ;;
+            2) jq ".inbounds += [{\"port\": $PORT, \"protocol\": \"vmess\", \"settings\": {\"clients\": [{\"id\": \"$UUID\", \"alterId\": 0}]}, \"streamSettings\": {\"network\": \"ws\", \"wsSettings\": {\"path\": \"$VMESS_PATH\"}}}]" "$XRAY_CONFIG" > tmp.json && mv tmp.json "$XRAY_CONFIG" ;;
+            3) jq ".inbounds += [{\"port\": $PORT, \"protocol\": \"vless\", \"settings\": {\"clients\": [{\"id\": \"$UUID\"}], \"decryption\": \"none\"}, \"streamSettings\": {\"network\": \"grpc\", \"grpcSettings\": {\"serviceName\": \"$GRPC_SERVICE\"}}}]" "$XRAY_CONFIG" > tmp.json && mv tmp.json "$XRAY_CONFIG" ;;
+            4) jq ".inbounds += [{\"port\": $PORT, \"protocol\": \"vless\", \"settings\": {\"clients\": [{\"id\": \"$UUID\"}], \"decryption\": \"none\"}, \"streamSettings\": {\"network\": \"tcp\"}}]" "$XRAY_CONFIG" > tmp.json && mv tmp.json "$XRAY_CONFIG" ;;
         esac
     done
     chmod 600 "$XRAY_CONFIG"
@@ -414,9 +415,7 @@ create_default_user() {
     jq --arg name "$USERNAME" --arg uuid "$UUID" --arg expire "$EXPIRE_DATE" \
        '.users += [{"id": (.users | length + 1), "name": $name, "uuid": $uuid, "expire": $expire, "used_traffic": 0, "status": "启用"}]' \
        "$USER_DATA" > tmp.json && mv tmp.json "$USER_DATA" || { echo -e "${RED}用户数据保存失败!${NC}"; exit 1; }
-    for i in "${!PROTOCOLS[@]}"; do
-        jq --arg uuid "$UUID" ".inbounds[$i].settings.clients += [{\"id\": \$uuid$(if [ \"${PROTOCOLS[$i]}\" = \"2\" ]; then echo \", \\\"alterId\\\": 0\"; fi)}]" "$XRAY_CONFIG" > tmp.json && mv tmp.json "$XRAY_CONFIG" || { echo -e "${RED}Xray 配置更新失败!${NC}"; exit 1; }
-    done
+    # 在 configure_xray 中添加 UUID
     echo "- 用户名: $USERNAME"
     echo "- UUID: $UUID"
     echo "- 过期时间: $EXPIRE_DATE"
@@ -455,7 +454,7 @@ start_services() {
         fi
     fi
     # 测试 Xray 的 WebSocket 响应
-    WEBSOCKET_RESPONSE=$(curl -s -v -H "Host: localhost" -H "Connection: Upgrade" -H "Upgrade: websocket" "http://127.0.0.1:${PORTS[0]}$WS_PATH" 2>&1 || echo "Failed to connect")
+    WEBSOCKET_RESPONSE=$(curl -s -v -H "Host: localhost" -H "Connection: Upgrade" -H "Upgrade: websocket" -H "Sec-WebSocket-Key: SGVsbG8sIHdvcmxkIQ==" -H "Sec-WebSocket-Version: 13" "http://127.0.0.1:${PORTS[0]}$WS_PATH" 2>&1 || echo "Failed to connect")
     if ! echo "$WEBSOCKET_RESPONSE" | grep -q "101 Switching Protocols"; then
         echo -e "${RED}Xray WebSocket 响应异常! 输出:${NC}"
         echo "$WEBSOCKET_RESPONSE"
@@ -586,10 +585,10 @@ install_xray() {
     install_dependencies
     configure_domain
     apply_ssl
+    create_default_user  # 先创建用户，确保 UUID 可用
     configure_nginx
     check_xray_version
-    configure_xray
-    create_default_user
+    configure_xray        # 后配置 Xray，使用已创建的 UUID
     start_services
     show_user_link
     echo -e "\n安装完成! 输入 '$SCRIPT_NAME' 打开管理菜单"
