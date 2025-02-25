@@ -1,6 +1,6 @@
 #!/bin/bash
 # Xray 高级管理脚本
-# 版本: v1.0.4-fix14
+# 版本: v1.0.4-fix15
 # 支持系统: Ubuntu 20.04/22.04, CentOS 7/8, Debian 10/11 (systemd)
 
 # 配置常量
@@ -33,6 +33,28 @@ main_menu() {
     init_environment
     while true; do
         echo -e "${GREEN}==== Xray高级管理脚本 ====${NC}"
+        # 检查 Xray 状态和协议
+        XRAY_STATUS=$(systemctl is-active "$XRAY_SERVICE_NAME" 2>/dev/null || echo "未安装")
+        if [ "$XRAY_STATUS" = "active" ]; then
+            XRAY_STATUS_TEXT="运行中"
+        else
+            XRAY_STATUS_TEXT="未运行"
+        fi
+        PROTOCOL_TEXT=""
+        if [ ${#PROTOCOLS[@]} -gt 0 ]; then
+            for PROTOCOL in "${PROTOCOLS[@]}"; do
+                case "$PROTOCOL" in
+                    1) PROTOCOL_TEXT="$PROTOCOL_TEXT VLESS+WS+TLS" ;;
+                    2) PROTOCOL_TEXT="$PROTOCOL_TEXT VMess+WS+TLS" ;;
+                    3) PROTOCOL_TEXT="$PROTOCOL_TEXT VLESS+gRPC+TLS" ;;
+                    4) PROTOCOL_TEXT="$PROTOCOL_TEXT VLESS+TCP+TLS" ;;
+                esac
+            done
+            PROTOCOL_TEXT="使用协议:${PROTOCOL_TEXT}"
+        else
+            PROTOCOL_TEXT="未配置协议"
+        fi
+        echo -e "${YELLOW}Xray状态: $XRAY_STATUS_TEXT | $PROTOCOL_TEXT${NC}"
         echo "1. 全新安装"
         echo "2. 用户管理"
         echo "3. 协议管理"
@@ -1033,7 +1055,7 @@ backup_restore() {
 install_script() {
     if [ ! -f "$SCRIPT_PATH" ]; then
         echo -e "${GREEN}首次运行，安装脚本到 $INSTALL_DIR...${NC}"
-        mkdir -p "$INSTALL_DIR"
+        mkdir -p "$INSTALL_DIR" || { echo -e "${RED}创建目录 $INSTALL_DIR 失败!${NC}"; exit 1; }
         cp "$0" "$SCRIPT_PATH" || { echo -e "${RED}复制脚本到 $SCRIPT_PATH 失败!${NC}"; exit 1; }
         chmod +x "$SCRIPT_PATH" || { echo -e "${RED}设置 $SCRIPT_PATH 可执行权限失败!${NC}"; exit 1; }
         ln -sf "$SCRIPT_PATH" /usr/local/bin/v || { echo -e "${RED}创建快捷命令 'v' 失败!${NC}"; exit 1; }
