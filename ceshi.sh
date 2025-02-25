@@ -1,6 +1,6 @@
 #!/bin/bash
 # Xray 高级管理脚本
-# 版本: v1.9.7
+# 版本: v1.9.8
 # 支持系统: Ubuntu 20.04/22.04, CentOS 7/8, Debian 10/11
 
 # 配置常量
@@ -122,10 +122,25 @@ EOF
     elif [ "$SYSTEMD" = "no" ]; then
         echo "非 systemd 系统，请手动配置开机自启。"
     fi
+    # 设置 Xray 服务
     if [ "$SYSTEMD" = "yes" ]; then
+        cat > /etc/systemd/system/$XRAY_SERVICE_NAME.service <<EOF
+[Unit]
+Description=Xray Service
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=$XRAY_BIN -config $XRAY_CONFIG
+Restart=on-failure
+User=nobody
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+
+[Install]
+WantedBy=multi-user.target
+EOF
+        systemctl daemon-reload
         systemctl enable "$XRAY_SERVICE_NAME" >/dev/null 2>&1
-    else
-        chkconfig "$XRAY_SERVICE_NAME" on >/dev/null 2>&1 || service "$XRAY_SERVICE_NAME" enable >/dev/null 2>&1
     fi
 }
 
@@ -326,14 +341,14 @@ EOF
         proxy_pass http://127.0.0.1:$PORT;
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection \"upgrade\";
+        proxy_set_header Connection \"Upgrade\";
         proxy_set_header Host \$host;
     }" >> "$NGINX_CONF" ;;
             2) echo "    location $VMESS_PATH {
         proxy_pass http://127.0.0.1:$PORT;
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection \"upgrade\";
+        proxy_set_header Connection \"Upgrade\";
         proxy_set_header Host \$host;
     }" >> "$NGINX_CONF" ;;
             3) echo "    location /$GRPC_SERVICE {
@@ -374,6 +389,8 @@ EOF
     echo "- 协议: $(for p in "${PROTOCOLS[@]}"; do case $p in 1) echo -n "VLESS+WS+TLS "; ;; 2) echo -n "VMess+WS+TLS "; ;; 3) echo -n "VLESS+gRPC+TLS "; ;; 4) echo -n "VLESS+TCP+TLS "; ;; esac; done)"
     echo "- 路径: $WS_PATH (VLESS+WS), $VMESS_PATH (VMess+WS), $GRPC_SERVICE (gRPC), $TCP_PATH (TCP)"
     echo "- 内部端口: ${PORTS[*]}"
+    echo "Xray 配置文件内容:"
+    cat "$XRAY_CONFIG"
 }
 
 # 创建默认用户
@@ -402,10 +419,11 @@ create_default_user() {
 start_services() {
     echo -e "${GREEN}[8] 启动服务...${NC}"
     # 停止现有服务，确保无残留进程
-    systemctl stop "$XRAY_SERVICE_NAME" >/dev/null 2>&1 || service "$XRAY_SERVICE_NAME" stop >/dev/null 2>&1
+    systemctl stop "$XRAY_SERVICE_NAME" >/dev/null 2>&1 || pkill -f xray >/dev/null 2>&1
     systemctl stop nginx >/dev/null 2>&1 || service nginx stop >/dev/null 2>&1
     # 启动 Xray 并验证配置
     if [ "$SYSTEMD" = "yes" ]; then
+        systemctl daemon-reload
         systemctl restart "$XRAY_SERVICE_NAME" >/dev/null 2>&1
         if ! systemctl is-active "$XRAY_SERVICE_NAME" >/dev/null; then
             echo -e "${RED}Xray 服务启动失败! 尝试手动启动并检查日志...${NC}"
@@ -419,17 +437,13 @@ start_services() {
             fi
         fi
     else
-        service "$XRAY_SERVICE_NAME" restart >/dev/null 2>&1
+        $XRAY_BIN -config "$XRAY_CONFIG" > "$LOG_DIR/startup.log" 2>&1 &
+        sleep 2
         if ! pgrep xray >/dev/null; then
-            echo -e "${RED}Xray 服务启动失败! 尝试手动启动并检查日志...${NC}"
-            $XRAY_BIN -config "$XRAY_CONFIG" > "$LOG_DIR/startup.log" 2>&1 &
-            sleep 2
-            if ! pgrep xray >/dev/null; then
-                echo -e "${RED}Xray 手动启动失败! 日志输出:${NC}"
-                cat "$LOG_DIR/startup.log"
-                echo "请检查 $XRAY_CONFIG 或 Xray 二进制文件"
-                exit 1
-            fi
+            echo -e "${RED}Xray 启动失败! 日志输出:${NC}"
+            cat "$LOG_DIR/startup.log"
+            echo "请检查 $XRAY_CONFIG 或 Xray 二进制文件"
+            exit 1
         fi
     fi
     # 启动 Nginx
@@ -500,7 +514,7 @@ show_user_link() {
     for PROTOCOL in "${PROTOCOLS[@]}"; do
         case "$PROTOCOL" in
             1) 
-                RESPONSE=$(echo -e "HEAD https://$DOMAIN$WS_PATH HTTP/1.1\r\nHost: $DOMAIN\r\n\r\n" | nc -w 5 "$DOMAIN" 443 2>/dev/null)
+                RESPONSE=$(curl -s -I --http1.1 -H "Host: $DOMAIN" -H "Connection: Upgrade" -H "Upgrade: websocket" "https://$DOMAIN$WS_PATH" || echo "Failed to connect")
                 if echo "$RESPONSE" | grep -q "101 Switching Protocols"; then
                     echo "VLESS+WS+TLS 测试通过!"
                 else
@@ -508,7 +522,7 @@ show_user_link() {
                 fi
                 ;;
             2) 
-                RESPONSE=$(echo -e "HEAD https://$DOMAIN$VMESS_PATH HTTP/1.1\r\nHost: $DOMAIN\r\n\r\n" | nc -w 5 "$DOMAIN" 443 2>/dev/null)
+                RESPONSE=$(curl -s -I --http1.1 -H "Host: $DOMAIN" -H "Connection: Upgrade" -H "Upgrade: websocket" "https://$DOMAIN$VMESS_PATH" || echo "Failed to connect")
                 if echo "$RESPONSE" | grep -q "101 Switching Protocols"; then
                     echo "VMess+WS+TLS 测试通过!"
                 else
@@ -516,7 +530,7 @@ show_user_link() {
                 fi
                 ;;
             3) 
-                RESPONSE=$(echo -e "HEAD https://$DOMAIN/$GRPC_SERVICE HTTP/1.1\r\nHost: $DOMAIN\r\n\r\n" | nc -w 5 "$DOMAIN" 443 2>/dev/null)
+                RESPONSE=$(curl -s -I "https://$DOMAIN/$GRPC_SERVICE" || echo "Failed to connect")
                 if echo "$RESPONSE" | grep -q "200 OK"; then
                     echo "VLESS+gRPC+TLS 测试通过!"
                 else
@@ -524,7 +538,7 @@ show_user_link() {
                 fi
                 ;;
             4) 
-                RESPONSE=$(echo -e "HEAD https://$DOMAIN$TCP_PATH HTTP/1.1\r\nHost: $DOMAIN\r\n\r\n" | nc -w 5 "$DOMAIN" 443 2>/dev/null)
+                RESPONSE=$(curl -s -I "https://$DOMAIN$TCP_PATH" || echo "Failed to connect")
                 if echo "$RESPONSE" | grep -q "200 OK"; then
                     echo "VLESS+TCP+TLS 测试通过!"
                 else
