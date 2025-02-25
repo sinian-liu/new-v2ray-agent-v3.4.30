@@ -1,6 +1,6 @@
 #!/bin/bash
 # Xray 高级管理脚本
-# 版本: v1.10.2
+# 版本: v1.10.3
 # 支持系统: Ubuntu 20.04/22.04, CentOS 7/8, Debian 10/11
 
 # 配置常量
@@ -132,7 +132,7 @@ After=network.target nss-lookup.target
 
 [Service]
 Type=simple
-ExecStart=$XRAY_BIN -config $XRAY_CONFIG
+ExecStart=$XRAY_BIN -c $XRAY_CONFIG
 Restart=on-failure
 User=nobody
 Group=nogroup
@@ -336,7 +336,7 @@ server {
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_ciphers HIGH:!aNULL:!MD5;
     access_log /var/log/nginx/xray_access.log;
-    error_log /var/log/nginx/xray_error.log;
+    error_log /var/log/nginx/xray_error.log debug;
 EOF
     for i in "${!PROTOCOLS[@]}"; do
         PROTOCOL=${PROTOCOLS[$i]}
@@ -348,6 +348,8 @@ EOF
         proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection \"Upgrade\";
         proxy_set_header Host \$host;
+        proxy_read_timeout 300s;
+        proxy_connect_timeout 60s;
     }" >> "$NGINX_CONF" ;;
             2) echo "    location $VMESS_PATH {
         proxy_pass http://127.0.0.1:$PORT;
@@ -355,6 +357,8 @@ EOF
         proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection \"Upgrade\";
         proxy_set_header Host \$host;
+        proxy_read_timeout 300s;
+        proxy_connect_timeout 60s;
     }" >> "$NGINX_CONF" ;;
             3) echo "    location /$GRPC_SERVICE {
         grpc_pass grpc://127.0.0.1:$PORT;
@@ -366,7 +370,7 @@ EOF
     done
     echo "}" >> "$NGINX_CONF"
     nginx -t || { echo -e "${RED}Nginx 配置错误! 检查 $NGINX_CONF${NC}"; cat "$NGINX_CONF"; exit 1; }
-    systemctl reload nginx || service nginx reload
+    systemctl reload nginx || service nginx reload || { echo -e "${RED}Nginx 重载失败!${NC}"; exit 1; }
     echo "Nginx 配置完成，路径: $WS_PATH (VLESS+WS), $VMESS_PATH (VMess+WS), $GRPC_SERVICE (gRPC), $TCP_PATH (TCP)"
 }
 
@@ -426,20 +430,15 @@ start_services() {
     # 启动 Xray 并验证配置
     if [ "$SYSTEMD" = "yes" ]; then
         systemctl daemon-reload
-        systemctl restart "$XRAY_SERVICE_NAME" >/dev/null 2>&1
+        systemctl restart "$XRAY_SERVICE_NAME" || { echo -e "${RED}Xray 服务启动失败! 检查 systemctl status $XRAY_SERVICE_NAME${NC}"; exit 1; }
+        sleep 2
         if ! systemctl is-active "$XRAY_SERVICE_NAME" >/dev/null; then
-            echo -e "${RED}Xray 服务启动失败! 尝试手动启动并检查日志...${NC}"
-            $XRAY_BIN -config "$XRAY_CONFIG" > "$LOG_DIR/startup.log" 2>&1 &
-            sleep 2
-            if ! pgrep xray >/dev/null; then
-                echo -e "${RED}Xray 手动启动失败! 日志输出:${NC}"
-                cat "$LOG_DIR/startup.log"
-                echo "请检查 $XRAY_CONFIG 或 Xray 二进制文件"
-                exit 1
-            fi
+            echo -e "${RED}Xray 服务未运行! 查看 systemctl status $XRAY_SERVICE_NAME${NC}"
+            systemctl status "$XRAY_SERVICE_NAME"
+            exit 1
         fi
     else
-        $XRAY_BIN -config "$XRAY_CONFIG" > "$LOG_DIR/startup.log" 2>&1 &
+        $XRAY_BIN -c "$XRAY_CONFIG" > "$LOG_DIR/startup.log" 2>&1 &
         sleep 2
         if ! pgrep xray >/dev/null; then
             echo -e "${RED}Xray 启动失败! 日志输出:${NC}"
@@ -448,19 +447,9 @@ start_services() {
             exit 1
         fi
     fi
-    # 测试 Xray 的 WebSocket 响应，使用随机 16 字节 Sec-WebSocket-Key
-    WS_KEY=$(openssl rand -base64 16)
-    WEBSOCKET_RESPONSE=$(curl -s -v --http1.1 -H "Host: localhost" -H "Connection: Upgrade" -H "Upgrade: websocket" -H "Sec-WebSocket-Key: $WS_KEY" -H "Sec-WebSocket-Version: 13" "http://127.0.0.1:${PORTS[0]}$WS_PATH" 2>&1 || echo "Failed to connect")
-    if ! echo "$WEBSOCKET_RESPONSE" | grep -q "101 Switching Protocols"; then
-        echo -e "${RED}Xray WebSocket 响应异常! 输出:${NC}"
-        echo "$WEBSOCKET_RESPONSE"
-        echo "Xray 错误日志:"
-        cat "$LOG_DIR/error.log"
-        exit 1
-    fi
     # 启动 Nginx
-    systemctl restart nginx >/dev/null 2>&1 || service nginx restart >/dev/null 2>&1
-    sleep 2  # 等待服务启动
+    systemctl restart nginx >/dev/null 2>&1 || service nginx restart >/dev/null 2>&1 || { echo -e "${RED}Nginx 启动失败!${NC}"; exit 1; }
+    sleep 2
     # 检查服务状态
     if pgrep nginx >/dev/null && pgrep xray >/dev/null; then
         echo "- Nginx状态: 运行中"
@@ -481,7 +470,7 @@ start_services() {
         echo "Nginx状态: $(pgrep nginx >/dev/null && echo '运行中' || echo '未运行')"
         echo "Xray状态: $(pgrep xray >/dev/null && echo '运行中' || echo '未运行')"
         echo "Nginx 错误日志:"
-        cat /var/log/nginx/xray_error.log | tail -n 10
+        cat /var/log/nginx/xray_error.log | tail -n 20
         echo "Xray 错误日志:"
         cat "$LOG_DIR/error.log"
         exit 1
@@ -532,6 +521,10 @@ show_user_link() {
                     echo "VLESS+WS+TLS 测试通过!"
                 else
                     echo -e "${RED}VLESS+WS+TLS 测试失败! 响应: $RESPONSE${NC}"
+                    echo "Nginx 错误日志:"
+                    cat /var/log/nginx/xray_error.log | tail -n 20
+                    echo "Xray 错误日志:"
+                    cat "$LOG_DIR/error.log" | tail -n 20
                 fi
                 ;;
             2) 
