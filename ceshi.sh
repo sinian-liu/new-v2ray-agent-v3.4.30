@@ -1,6 +1,6 @@
 #!/bin/bash
 # Xray 高级管理脚本
-# 版本: v1.0.4-fix3
+# 版本: v1.0.4-fix6
 # 支持系统: Ubuntu 20.04/22.04, CentOS 7/8, Debian 10/11 (systemd)
 
 # 配置常量
@@ -198,7 +198,7 @@ install_dependencies() {
     case "$PKG_MANAGER" in
         apt)
             apt update || { echo -e "${RED}更新软件源失败，请检查网络或权限!${NC}"; exit 1; }
-            apt install -y curl jq nginx uuid-runtime qrencode snapd netcat-openbsd || { 
+            apt install -y curl jq nginx uuid-runtime qrencode snapd netcat-openbsd unzip || { 
                 echo -e "${RED}必须依赖安装失败，请检查网络或权限!${NC}"; 
                 exit 1; 
             }
@@ -214,7 +214,7 @@ install_dependencies() {
             ;;
         yum|dnf)
             $PKG_MANAGER update -y || { echo -e "${RED}更新软件源失败，请检查网络或权限!${NC}"; exit 1; }
-            $PKG_MANAGER install -y curl jq nginx uuid-runtime qrencode nc || { 
+            $PKG_MANAGER install -y curl jq nginx uuid-runtime qrencode nc unzip || { 
                 echo -e "${RED}必须依赖安装失败，请检查网络或权限!${NC}"; 
                 exit 1; 
             }
@@ -227,7 +227,7 @@ install_dependencies() {
             ;;
     esac
     systemctl start nginx || { echo -e "${RED}Nginx 启动失败!${NC}"; exit 1; }
-    echo "- 已安装依赖: curl, jq, nginx, uuid-runtime, qrencode, certbot, netcat"
+    echo "- 已安装依赖: curl, jq, nginx, uuid-runtime, qrencode, certbot, netcat, unzip"
 }
 
 # 检查 Xray 版本
@@ -238,12 +238,48 @@ check_xray_version() {
         LATEST_VERSION=$(curl -s https://api.github.com/repos/XTLS/Xray-core/releases/latest | jq -r '.tag_name' | sed 's/v//' || echo "unknown")
         if [ "$LATEST_VERSION" = "unknown" ]; then
             echo "无法获取最新版本，使用默认安装。"
+            bash <(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh) || { echo -e "${RED}Xray 安装失败!${NC}"; exit 1; }
         else
             echo "当前版本: 未安装，最新版本: $LATEST_VERSION"
             read -p "是否安装最新版本? [y/N]: " UPDATE
-            [[ "$UPDATE" =~ ^[Yy] ]] || exit 1
+            if [[ "$UPDATE" =~ ^[Yy] ]]; then
+                bash <(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh) || { echo -e "${RED}Xray 安装失败!${NC}"; exit 1; }
+            else
+                echo -e "${YELLOW}以下是 Xray 可选版本：${NC}"
+                VERSIONS=("25.2.21" "25.1.0" "25.0.0" "24.12.0" "24.11.0" "1.7.5")
+                for i in "${!VERSIONS[@]}"; do
+                    echo "$((i+1)). ${VERSIONS[$i]}"
+                done
+                read -p "请选择要安装的版本编号（输入 q 退出）: " VERSION_CHOICE
+                if [[ "$VERSION_CHOICE" == "q" || "$VERSION_CHOICE" == "Q" ]]; then
+                    echo "退出安装。"
+                    exit 0
+                elif [[ "$VERSION_CHOICE" =~ ^[0-9]+$ ]] && [ "$VERSION_CHOICE" -ge 1 ] && [ "$VERSION_CHOICE" -le ${#VERSIONS[@]} ]; then
+                    SELECTED_VERSION="${VERSIONS[$((VERSION_CHOICE-1))]}"
+                    echo "正在安装 Xray 版本 v$SELECTED_VERSION..."
+                    if [ "$SELECTED_VERSION" = "1.7.5" ]; then
+                        # 从特定来源安装 v1.7.5
+                        curl -L -o /tmp/xray-v1.7.5.zip "https://github.com/sinian-liu/v2ray-agent-2.5.73/releases/download/v1.7.5/xray-linux-64.zip" || { echo -e "${RED}下载 Xray v1.7.5 失败!${NC}"; exit 1; }
+                        unzip -o /tmp/xray-v1.7.5.zip -d /tmp/xray-v1.7.5 || { echo -e "${RED}解压 Xray v1.7.5 失败!${NC}"; exit 1; }
+                        mv /tmp/xray-v1.7.5/xray /usr/local/bin/xray || { echo -e "${RED}移动 Xray 二进制文件失败!${NC}"; exit 1; }
+                        chmod +x /usr/local/bin/xray
+                        rm -rf /tmp/xray-v1.7.5 /tmp/xray-v1.7.5.zip
+                    else
+                        # 从官方安装其他版本
+                        bash <(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh) -v "v$SELECTED_VERSION" || { echo -e "${RED}Xray 版本 v$SELECTED_VERSION 安装失败!${NC}"; exit 1; }
+                    fi
+                    # 验证安装版本
+                    INSTALLED_VERSION=$(xray --version 2>/dev/null | grep -oP 'Xray \K[0-9]+\.[0-9]+\.[0-9]+' || echo "未安装")
+                    if [ "$INSTALLED_VERSION" != "$SELECTED_VERSION" ]; then
+                        echo -e "${RED}安装版本验证失败！期望 v$SELECTED_VERSION，实际安装 $INSTALLED_VERSION${NC}"
+                        exit 1
+                    fi
+                else
+                    echo -e "${RED}无效选择，退出安装!${NC}"
+                    exit 1
+                fi
+            fi
         fi
-        bash <(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh) || { echo -e "${RED}Xray 安装失败!${NC}"; exit 1; }
         if ! command -v xray >/dev/null; then
             echo -e "${RED}Xray 未正确安装，请检查网络或手动安装!${NC}"
             exit 1
@@ -426,11 +462,9 @@ EOF
 # 启动服务并检查状态
 start_services() {
     echo -e "${GREEN}[8] 启动服务...${NC}"
-    # 停止现有服务
     systemctl stop "$XRAY_SERVICE_NAME" >/dev/null 2>&1
     systemctl stop nginx >/dev/null 2>&1
 
-    # 测试 Xray 配置
     echo "测试 Xray 配置..."
     if ! $XRAY_BIN -test -config "$XRAY_CONFIG" >/dev/null 2>&1; then
         echo -e "${RED}Xray 配置无效!${NC}"
@@ -439,7 +473,6 @@ start_services() {
         exit 1
     fi
 
-    # 启动 Xray
     echo "通过 systemd 启动 Xray..."
     systemctl daemon-reload
     systemctl restart "$XRAY_SERVICE_NAME" || { 
@@ -462,11 +495,9 @@ start_services() {
     fi
     echo "Xray 服务启动成功!"
 
-    # 启动 Nginx
     systemctl restart nginx || { echo -e "${RED}Nginx 重启失败!${NC}"; exit 1; }
     sleep 3
 
-    # 检查服务状态
     if systemctl is-active nginx >/dev/null && systemctl is-active "$XRAY_SERVICE_NAME" >/dev/null; then
         echo "- Nginx状态: 运行中"
         echo "- Xray状态: 运行中"
@@ -691,7 +722,6 @@ add_user() {
         cp "$USER_DATA.bak.$(date +%F_%H%M%S)" "$USER_DATA"
         exit 1
     fi
-    # 更新 Xray 配置并验证
     for i in "${!PROTOCOLS[@]}"; do
         jq --arg uuid "$UUID" ".inbounds[$i].settings.clients += [{\"id\": \$uuid$(if [ \"${PROTOCOLS[$i]}\" = \"2\" ]; then echo \", \\\"alterId\\\": 0\"; fi)}]" \
            "$XRAY_CONFIG" > tmp.json && mv tmp.json "$XRAY_CONFIG" || { echo -e "${RED}Xray 配置更新失败!${NC}"; cp "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)" "$XRAY_CONFIG"; exit 1; }
@@ -701,7 +731,6 @@ add_user() {
         cp "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)" "$XRAY_CONFIG"
         exit 1
     fi
-    # 测试新配置
     if ! $XRAY_BIN -test -config "$XRAY_CONFIG" >/dev/null 2>&1; then
         echo -e "${RED}Xray 配置无效!${NC}"
         $XRAY_BIN -test -config "$XRAY_CONFIG"
