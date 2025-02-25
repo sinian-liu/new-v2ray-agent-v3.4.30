@@ -1,6 +1,6 @@
 #!/bin/bash
 # Xray 高级管理脚本
-# 版本: v1.9.5
+# 版本: v1.9.6
 # 支持系统: Ubuntu 20.04/22.04, CentOS 7/8, Debian 10/11
 
 # 配置常量
@@ -136,7 +136,8 @@ check_firewall() {
             echo "防火墙已启用，开放必要的端口..."
             ufw allow 80 >/dev/null
             ufw allow 443 >/dev/null
-            echo "- 已开放端口: 80, 443"
+            ufw allow 10000 >/dev/null
+            echo "- 已开放端口: 80, 443, 10000"
         else
             echo "防火墙未启用，无需调整端口。"
         fi
@@ -145,8 +146,9 @@ check_firewall() {
             echo "FirewallD 已启用，开放必要的端口..."
             firewall-cmd --permanent --add-port=80/tcp >/dev/null
             firewall-cmd --permanent --add-port=443/tcp >/dev/null
+            firewall-cmd --permanent --add-port=10000/tcp >/dev/null
             firewall-cmd --reload >/dev/null
-            echo "- 已开放端口: 80, 443"
+            echo "- 已开放端口: 80, 443, 10000"
         else
             echo "FirewallD 未启用，无需调整端口。"
         fi
@@ -175,7 +177,7 @@ install_dependencies() {
     case "$PKG_MANAGER" in
         apt)
             apt update || { echo -e "${RED}更新软件源失败，请检查网络或权限!${NC}"; exit 1; }
-            apt install -y curl jq nginx uuid-runtime qrencode snapd || { 
+            apt install -y curl jq nginx uuid-runtime qrencode snapd netcat-openbsd || { 
                 echo -e "${RED}必须依赖安装失败，请检查网络或权限!${NC}"; 
                 exit 1; 
             }
@@ -191,7 +193,7 @@ install_dependencies() {
             ;;
         yum|dnf)
             $PKG_MANAGER update -y || { echo -e "${RED}更新软件源失败，请检查网络或权限!${NC}"; exit 1; }
-            $PKG_MANAGER install -y curl jq nginx uuid-runtime qrencode || { 
+            $PKG_MANAGER install -y curl jq nginx uuid-runtime qrencode nc || { 
                 echo -e "${RED}必须依赖安装失败，请检查网络或权限!${NC}"; 
                 exit 1; 
             }
@@ -204,7 +206,7 @@ install_dependencies() {
             ;;
     esac
     systemctl start nginx || service nginx start || { echo -e "${RED}Nginx 启动失败!${NC}"; exit 1; }
-    echo "- 已安装依赖: curl, jq, nginx, uuid-runtime, qrencode, certbot"
+    echo "- 已安装依赖: curl, jq, nginx, uuid-runtime, qrencode, certbot, netcat"
 }
 
 # 检查 Xray 版本
@@ -397,12 +399,20 @@ create_default_user() {
 # 启动服务并检查状态
 start_services() {
     echo -e "${GREEN}[8] 启动服务...${NC}"
+    systemctl stop "$XRAY_SERVICE_NAME" >/dev/null 2>&1 || service "$XRAY_SERVICE_NAME" stop >/dev/null 2>&1
     systemctl restart nginx >/dev/null 2>&1 || service nginx restart >/dev/null 2>&1
     systemctl restart "$XRAY_SERVICE_NAME" >/dev/null 2>&1 || service "$XRAY_SERVICE_NAME" restart >/dev/null 2>&1
     systemctl enable nginx "$XRAY_SERVICE_NAME" >/dev/null 2>&1 || { service nginx enable >/dev/null 2>&1; service "$XRAY_SERVICE_NAME" enable >/dev/null 2>&1; }
+    sleep 2  # 等待服务启动
     if pgrep nginx >/dev/null && pgrep xray >/dev/null; then
         echo "- Nginx状态: 运行中"
         echo "- Xray状态: 运行中"
+        for PORT in "${PORTS[@]}"; do
+            if ! nc -z 127.0.0.1 "$PORT" >/dev/null 2>&1; then
+                echo -e "${RED}Xray 未监听端口 $PORT! 检查 $XRAY_CONFIG 或服务状态${NC}"
+                exit 1
+            fi
+        done
         echo "检查服务状态... 成功!"
     else
         echo -e "${RED}服务启动失败!${NC}"
@@ -450,10 +460,38 @@ show_user_link() {
     echo -e "\n${GREEN}测试协议可用性...${NC}"
     for PROTOCOL in "${PROTOCOLS[@]}"; do
         case "$PROTOCOL" in
-            1) echo -e "HEAD https://$DOMAIN$WS_PATH HTTP/1.1\r\nHost: $DOMAIN\r\n\r\n" | nc -w 5 "$DOMAIN" 443 >/dev/null 2>&1 && echo "VLESS+WS+TLS 测试通过!" || echo -e "${RED}VLESS+WS+TLS 测试失败! 请使用客户端进一步验证${NC}" ;;
-            2) echo -e "HEAD https://$DOMAIN$VMESS_PATH HTTP/1.1\r\nHost: $DOMAIN\r\n\r\n" | nc -w 5 "$DOMAIN" 443 >/dev/null 2>&1 && echo "VMess+WS+TLS 测试通过!" || echo -e "${RED}VMess+WS+TLS 测试失败! 请使用客户端进一步验证${NC}" ;;
-            3) echo -e "HEAD https://$DOMAIN/$GRPC_SERVICE HTTP/1.1\r\nHost: $DOMAIN\r\n\r\n" | nc -w 5 "$DOMAIN" 443 >/dev/null 2>&1 && echo "VLESS+gRPC+TLS 测试通过!" || echo -e "${RED}VLESS+gRPC+TLS 测试失败! 请使用客户端进一步验证${NC}" ;;
-            4) echo -e "HEAD https://$DOMAIN$TCP_PATH HTTP/1.1\r\nHost: $DOMAIN\r\n\r\n" | nc -w 5 "$DOMAIN" 443 >/dev/null 2>&1 && echo "VLESS+TCP+TLS 测试通过!" || echo -e "${RED}VLESS+TCP+TLS 测试失败! 请使用客户端进一步验证${NC}" ;;
+            1) 
+                RESPONSE=$(echo -e "HEAD https://$DOMAIN$WS_PATH HTTP/1.1\r\nHost: $DOMAIN\r\n\r\n" | nc -w 5 "$DOMAIN" 443 2>/dev/null)
+                if echo "$RESPONSE" | grep -q "101 Switching Protocols"; then
+                    echo "VLESS+WS+TLS 测试通过!"
+                else
+                    echo -e "${RED}VLESS+WS+TLS 测试失败! 响应: $RESPONSE${NC}"
+                fi
+                ;;
+            2) 
+                RESPONSE=$(echo -e "HEAD https://$DOMAIN$VMESS_PATH HTTP/1.1\r\nHost: $DOMAIN\r\n\r\n" | nc -w 5 "$DOMAIN" 443 2>/dev/null)
+                if echo "$RESPONSE" | grep -q "101 Switching Protocols"; then
+                    echo "VMess+WS+TLS 测试通过!"
+                else
+                    echo -e "${RED}VMess+WS+TLS 测试失败! 响应: $RESPONSE${NC}"
+                fi
+                ;;
+            3) 
+                RESPONSE=$(echo -e "HEAD https://$DOMAIN/$GRPC_SERVICE HTTP/1.1\r\nHost: $DOMAIN\r\n\r\n" | nc -w 5 "$DOMAIN" 443 2>/dev/null)
+                if echo "$RESPONSE" | grep -q "200 OK"; then
+                    echo "VLESS+gRPC+TLS 测试通过!"
+                else
+                    echo -e "${RED}VLESS+gRPC+TLS 测试失败! 响应: $RESPONSE${NC}"
+                fi
+                ;;
+            4) 
+                RESPONSE=$(echo -e "HEAD https://$DOMAIN$TCP_PATH HTTP/1.1\r\nHost: $DOMAIN\r\n\r\n" | nc -w 5 "$DOMAIN" 443 2>/dev/null)
+                if echo "$RESPONSE" | grep -q "200 OK"; then
+                    echo "VLESS+TCP+TLS 测试通过!"
+                else
+                    echo -e "${RED}VLESS+TCP+TLS 测试失败! 响应: $RESPONSE${NC}"
+                fi
+                ;;
         esac
     done
 }
