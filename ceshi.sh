@@ -1,6 +1,6 @@
 #!/bin/bash
 # Xray 高级管理脚本
-# 版本: v1.0.4-fix32
+# 版本: v1.0.4-fix33
 # 支持系统: Ubuntu 20.04/22.04, CentOS 7/8, Debian 10/11 (systemd)
 
 XRAY_CONFIG="/usr/local/etc/xray/config.json"
@@ -339,8 +339,7 @@ install_xray() {
     create_default_user
     configure_nginx
     check_xray_version
-    configure_xray  # 在安装 Xray 后立即生成配置文件
-    # 覆盖服务文件，确保用户为 root
+    configure_xray
     cat > /etc/systemd/system/$XRAY_SERVICE_NAME.service <<EOF
 [Unit]
 Description=Xray Service
@@ -477,7 +476,21 @@ add_user() {
         1) EXPIRE_DATE=$(date -d "+1 month" "+%Y-%m-%d %H:%M:%S") ;;
         2) EXPIRE_DATE=$(date -d "+1 year" "+%Y-%m-%d %H:%M:%S") ;;
         3) EXPIRE_DATE="永久" ;;
-        4) read -p "请输入自定义时间 (如 1h/10m/200d): " CUSTOM_TIME; EXPIRE_DATE=$(date -d "+$CUSTOM_TIME" "+%Y-%m-%d %H:%M:%S" 2>/dev/null) || { echo -e "${RED}无效格式!${NC}"; exit 1; } ;;
+        4) read -p "请输入自定义时间 (如 1h/10m/200d): " CUSTOM_TIME
+           # 解析自定义时间格式
+           if [[ "$CUSTOM_TIME" =~ ^([0-9]+)([hmd])$ ]]; then
+               NUM=${BASH_REMATCH[1]}
+               UNIT=${BASH_REMATCH[2]}
+               case "$UNIT" in
+                   h) EXPIRE_DATE=$(date -d "+${NUM} hours" "+%Y-%m-%d %H:%M:%S") ;;
+                   m) EXPIRE_DATE=$(date -d "+${NUM} minutes" "+%Y-%m-%d %H:%M:%S") ;;
+                   d) EXPIRE_DATE=$(date -d "+${NUM} days" "+%Y-%m-%d %H:%M:%S") ;;
+               esac
+           else
+               echo -e "${RED}无效格式! 请使用如 1h、10m、200d${NC}"
+               exit 1
+           fi
+           ;;
         *) EXPIRE_DATE=$(date -d "+1 month" "+%Y-%m-%d %H:%M:%S") ;;
     esac
     jq --arg name "$USERNAME" --arg uuid "$UUID" --arg expire "$EXPIRE_DATE" \
@@ -524,16 +537,35 @@ renew_user() {
     flock -x 200
     read -p "输入要续期的用户名: " USERNAME
     CURRENT_EXPIRE=$(jq -r ".users[] | select(.name == \"$USERNAME\") | .expire" "$USER_DATA")
+    if [ -z "$CURRENT_EXPIRE" ]; then
+        echo -e "${RED}用户 $USERNAME 不存在!${NC}"
+        flock -u 200
+        return
+    fi
     echo "当前有效期: $CURRENT_EXPIRE"
     echo -e "1. 月费 (+1个月)\n2. 年费 (+1年)\n3. 永久\n4. 自定义时间"
     read -p "请选择 [默认1]: " RENEW_TYPE
     RENEW_TYPE=${RENEW_TYPE:-1}
     case "$RENEW_TYPE" in
-        1) NEW_EXPIRE=$(date -d "+1 month" "+%Y-%m-%d %H:%M:%S") ;;
-        2) NEW_EXPIRE=$(date -d "+1 year" "+%Y-%m-%d %H:%M:%S") ;;
+        1) NEW_EXPIRE=$(date -d "$CURRENT_EXPIRE +1 month" "+%Y-%m-%d %H:%M:%S") ;;
+        2) NEW_EXPIRE=$(date -d "$CURRENT_EXPIRE +1 year" "+%Y-%m-%d %H:%M:%S") ;;
         3) NEW_EXPIRE="永久" ;;
-        4) read -p "请输入自定义时间 (如 1h/10m/200d): " CUSTOM_TIME; NEW_EXPIRE=$(date -d "+$CUSTOM_TIME" "+%Y-%m-%d %H:%M:%S" 2>/dev/null) || { echo -e "${RED}无效格式!${NC}"; exit 1; } ;;
-        *) NEW_EXPIRE=$(date -d "+1 month" "+%Y-%m-%d %H:%M:%S") ;;
+        4) read -p "请输入自定义时间 (如 1h/10m/200d): " CUSTOM_TIME
+           if [[ "$CUSTOM_TIME" =~ ^([0-9]+)([hmd])$ ]]; then
+               NUM=${BASH_REMATCH[1]}
+               UNIT=${BASH_REMATCH[2]}
+               case "$UNIT" in
+                   h) NEW_EXPIRE=$(date -d "$CURRENT_EXPIRE +${NUM} hours" "+%Y-%m-%d %H:%M:%S") ;;
+                   m) NEW_EXPIRE=$(date -d "$CURRENT_EXPIRE +${NUM} minutes" "+%Y-%m-%d %H:%M:%S") ;;
+                   d) NEW_EXPIRE=$(date -d "$CURRENT_EXPIRE +${NUM} days" "+%Y-%m-%d %H:%M:%S") ;;
+               esac
+           else
+               echo -e "${RED}无效格式! 请使用如 1h、10m、200d${NC}"
+               flock -u 200
+               return
+           fi
+           ;;
+        *) NEW_EXPIRE=$(date -d "$CURRENT_EXPIRE +1 month" "+%Y-%m-%d %H:%M:%S") ;;
     esac
     jq --arg name "$USERNAME" --arg expire "$NEW_EXPIRE" '(.users[] | select(.name == $name)).expire = $expire' "$USER_DATA" > tmp.json && mv tmp.json "$USER_DATA"
     chmod 600 "$USER_DATA"
