@@ -1,6 +1,6 @@
 #!/bin/bash
 # Xray 高级管理脚本
-# 版本: v1.0.4-fix42
+# 版本: v1.0.4-fix44
 # 支持系统: Ubuntu 20.04/22.04, CentOS 7/8, Debian 10/11 (systemd)
 
 XRAY_CONFIG="/usr/local/etc/xray/config.json"
@@ -325,7 +325,6 @@ check_subscription() {
     echo -e "${GREEN}[检查订阅配置...]${NC}"
     local SUBSCRIPTION_URL="https://$DOMAIN/subscribe/$USERNAME.yml"
     local CLASH_URL="https://$DOMAIN/clash/$USERNAME.yml"
-    # 测试订阅链接
     local sub_status=$(curl -s -o /dev/null -w "%{http_code}" --insecure "$SUBSCRIPTION_URL")
     if [ "$sub_status" -eq 200 ]; then
         echo -e "${GREEN}订阅链接 $SUBSCRIPTION_URL 可正常访问${NC}"
@@ -358,7 +357,6 @@ check_subscription() {
             return 1
         fi
     fi
-    # 测试 Clash 链接
     local clash_status=$(curl -s -o /dev/null -w "%{http_code}" --insecure "$CLASH_URL")
     if [ "$clash_status" -eq 200 ]; then
         echo -e "${GREEN}Clash 配置链接 $CLASH_URL 可正常访问${NC}"
@@ -532,8 +530,8 @@ install_xray() {
     install_dependencies
     configure_domain
     apply_ssl
+    configure_nginx  # 先配置 Nginx 以确保路径变量可用
     create_default_user
-    configure_nginx
     check_xray_version
     configure_xray
     start_services
