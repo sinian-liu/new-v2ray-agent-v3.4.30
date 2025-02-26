@@ -1,6 +1,6 @@
 #!/bin/bash
 # Xray 高级管理脚本
-# 版本: v1.0.4-fix41
+# 版本: v1.0.4-fix42
 # 支持系统: Ubuntu 20.04/22.04, CentOS 7/8, Debian 10/11 (systemd)
 
 XRAY_CONFIG="/usr/local/etc/xray/config.json"
@@ -180,7 +180,6 @@ install_dependencies() {
     else
         echo -e "${GREEN}所有依赖已安装${NC}"
     fi
-    # 特殊处理 certbot
     if ! command -v certbot >/dev/null 2>&1; then
         case "$PKG_MANAGER" in
             apt) systemctl enable snapd; systemctl start snapd; snap install --classic certbot; ln -sf /snap/bin/certbot /usr/bin/certbot;;
@@ -201,6 +200,7 @@ check_xray_version() {
         read -p "是否安装最新版本? [y/N]: " UPDATE
         if [[ "$UPDATE" =~ ^[Yy] ]]; then
             bash <(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh) || exit 1
+            systemctl stop "$XRAY_SERVICE_NAME" >/dev/null 2>&1
             cat > /etc/systemd/system/$XRAY_SERVICE_NAME.service <<EOF
 [Unit]
 Description=Xray Service
@@ -326,10 +326,11 @@ check_subscription() {
     local SUBSCRIPTION_URL="https://$DOMAIN/subscribe/$USERNAME.yml"
     local CLASH_URL="https://$DOMAIN/clash/$USERNAME.yml"
     # 测试订阅链接
-    if curl -s --head --insecure "$SUBSCRIPTION_URL" | grep -q "200 OK"; then
+    local sub_status=$(curl -s -o /dev/null -w "%{http_code}" --insecure "$SUBSCRIPTION_URL")
+    if [ "$sub_status" -eq 200 ]; then
         echo -e "${GREEN}订阅链接 $SUBSCRIPTION_URL 可正常访问${NC}"
     else
-        echo -e "${YELLOW}订阅链接 $SUBSCRIPTION_URL 不可访问，尝试修复...${NC}"
+        echo -e "${YELLOW}订阅链接 $SUBSCRIPTION_URL 不可访问（状态码: $sub_status），尝试修复...${NC}"
         if [ ! -f "$SUBSCRIPTION_DIR/$USERNAME.yml" ]; then
             echo -e "${RED}订阅文件 $SUBSCRIPTION_DIR/$USERNAME.yml 不存在${NC}"
             ls -l "$SUBSCRIPTION_DIR"
@@ -340,7 +341,7 @@ check_subscription() {
             echo -e "${YELLOW}SSL 证书缺失，重新生成...${NC}"
             apply_ssl
         fi
-        if ! curl -s --head "http://$DOMAIN/subscribe/$USERNAME.yml" | grep -q "301 Moved Permanently"; then
+        if ! curl -s -o /dev/null -w "%{http_code}" "http://$DOMAIN/subscribe/$USERNAME.yml" | grep -q "301"; then
             echo -e "${YELLOW}HTTP 重定向未生效，修复默认站点...${NC}"
             rm -f /etc/nginx/sites-enabled/default
         fi
@@ -348,29 +349,32 @@ check_subscription() {
         echo -e "${YELLOW}检查端口和 Xray 服务${NC}"
         ss -tuln | grep -E '443|49152'
         systemctl status "$XRAY_SERVICE_NAME" | tail -n 10
-        if curl -s --head --insecure "$SUBSCRIPTION_URL" | grep -q "200 OK"; then
+        sub_status=$(curl -s -o /dev/null -w "%{http_code}" --insecure "$SUBSCRIPTION_URL")
+        if [ "$sub_status" -eq 200 ]; then
             echo -e "${GREEN}订阅链接修复成功${NC}"
         else
-            echo -e "${RED}订阅链接仍不可访问，请检查以下信息:${NC}"
+            echo -e "${RED}订阅链接仍不可访问（状态码: $sub_status），请检查以下信息:${NC}"
             curl -v "$SUBSCRIPTION_URL" 2>&1 | tail -n 20
             return 1
         fi
     fi
     # 测试 Clash 链接
-    if curl -s --head --insecure "$CLASH_URL" | grep -q "200 OK"; then
+    local clash_status=$(curl -s -o /dev/null -w "%{http_code}" --insecure "$CLASH_URL")
+    if [ "$clash_status" -eq 200 ]; then
         echo -e "${GREEN}Clash 配置链接 $CLASH_URL 可正常访问${NC}"
     else
-        echo -e "${YELLOW}Clash 配置链接 $CLASH_URL 不可访问，尝试修复...${NC}"
+        echo -e "${YELLOW}Clash 配置链接 $CLASH_URL 不可访问（状态码: $clash_status），尝试修复...${NC}"
         if [ ! -f "$CLASH_DIR/$USERNAME.yml" ]; then
             echo -e "${RED}Clash 文件 $CLASH_DIR/$USERNAME.yml 不存在${NC}"
             ls -l "$CLASH_DIR"
             return 1
         fi
         systemctl restart nginx
-        if curl -s --head --insecure "$CLASH_URL" | grep -q "200 OK"; then
+        clash_status=$(curl -s -o /dev/null -w "%{http_code}" --insecure "$CLASH_URL")
+        if [ "$clash_status" -eq 200 ]; then
             echo -e "${GREEN}Clash 配置链接修复成功${NC}"
         else
-            echo -e "${RED}Clash 配置链接仍不可访问，请检查以下信息:${NC}"
+            echo -e "${RED}Clash 配置链接仍不可访问（状态码: $clash_status），请检查以下信息:${NC}"
             curl -v "$CLASH_URL" 2>&1 | tail -n 20
             return 1
         fi
