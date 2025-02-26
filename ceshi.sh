@@ -1,6 +1,6 @@
 #!/bin/bash
 # Xray 高级管理脚本
-# 版本: v1.0.4-fix40
+# 版本: v1.0.4-fix41
 # 支持系统: Ubuntu 20.04/22.04, CentOS 7/8, Debian 10/11 (systemd)
 
 XRAY_CONFIG="/usr/local/etc/xray/config.json"
@@ -160,16 +160,35 @@ check_and_set_domain() {
 
 install_dependencies() {
     echo -e "${GREEN}[安装依赖...]${NC}"
+    local deps
     case "$PKG_MANAGER" in
-        apt) apt update && apt install -y curl jq nginx uuid-runtime qrencode snapd netcat-openbsd unzip dnsutils || exit 1
-             [ ! -f /usr/bin/certbot ] && { systemctl enable snapd; systemctl start snapd; snap install --classic certbot; ln -sf /snap/bin/certbot /usr/bin/certbot; }
-             ;;
-        yum|dnf) $PKG_MANAGER update -y && $PKG_MANAGER install -y curl jq nginx uuid-runtime qrencode nc unzip bind-utils || exit 1
-                 [ ! -f /usr/bin/certbot ] && $PKG_MANAGER install -y certbot python3-certbot-nginx
-                 ;;
+        apt) deps="curl jq nginx uuid-runtime qrencode snapd netcat-openbsd unzip dnsutils";;
+        yum|dnf) deps="curl jq nginx uuid-runtime qrencode nc unzip bind-utils";;
     esac
+    local missing_deps=""
+    for dep in $deps; do
+        if ! command -v "$dep" >/dev/null 2>&1 && ! dpkg -l "$dep" >/dev/null 2>&1 && ! rpm -q "$dep" >/dev/null 2>&1; then
+            missing_deps="$missing_deps $dep"
+        fi
+    done
+    if [ -n "$missing_deps" ]; then
+        echo -e "${YELLOW}以下依赖缺失，正在安装:${missing_deps}${NC}"
+        case "$PKG_MANAGER" in
+            apt) apt update && apt install -y $missing_deps || exit 1;;
+            yum|dnf) $PKG_MANAGER update -y && $PKG_MANAGER install -y $missing_deps || exit 1;;
+        esac
+    else
+        echo -e "${GREEN}所有依赖已安装${NC}"
+    fi
+    # 特殊处理 certbot
+    if ! command -v certbot >/dev/null 2>&1; then
+        case "$PKG_MANAGER" in
+            apt) systemctl enable snapd; systemctl start snapd; snap install --classic certbot; ln -sf /snap/bin/certbot /usr/bin/certbot;;
+            yum|dnf) $PKG_MANAGER install -y certbot python3-certbot-nginx;;
+        esac
+    fi
     systemctl enable nginx
-    systemctl start nginx || exit 1
+    systemctl start nginx || { echo -e "${RED}Nginx 启动失败${NC}"; systemctl status nginx; exit 1; }
 }
 
 check_xray_version() {
@@ -181,9 +200,7 @@ check_xray_version() {
         echo "当前版本: 未安装，最新版本: $LATEST_VERSION"
         read -p "是否安装最新版本? [y/N]: " UPDATE
         if [[ "$UPDATE" =~ ^[Yy] ]]; then
-            # 安装 Xray 并确保服务文件兼容
             bash <(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh) || exit 1
-            # 覆盖默认服务配置
             cat > /etc/systemd/system/$XRAY_SERVICE_NAME.service <<EOF
 [Unit]
 Description=Xray Service
@@ -315,6 +332,7 @@ check_subscription() {
         echo -e "${YELLOW}订阅链接 $SUBSCRIPTION_URL 不可访问，尝试修复...${NC}"
         if [ ! -f "$SUBSCRIPTION_DIR/$USERNAME.yml" ]; then
             echo -e "${RED}订阅文件 $SUBSCRIPTION_DIR/$USERNAME.yml 不存在${NC}"
+            ls -l "$SUBSCRIPTION_DIR"
             return 1
         fi
         nginx -t || { echo -e "${RED}Nginx 配置错误${NC}"; cat /var/log/nginx/xray_error.log | tail -n 20; return 1; }
@@ -327,10 +345,14 @@ check_subscription() {
             rm -f /etc/nginx/sites-enabled/default
         fi
         systemctl restart nginx
+        echo -e "${YELLOW}检查端口和 Xray 服务${NC}"
+        ss -tuln | grep -E '443|49152'
+        systemctl status "$XRAY_SERVICE_NAME" | tail -n 10
         if curl -s --head --insecure "$SUBSCRIPTION_URL" | grep -q "200 OK"; then
             echo -e "${GREEN}订阅链接修复成功${NC}"
         else
-            echo -e "${RED}订阅链接仍不可访问，请检查网络或防火墙设置${NC}"
+            echo -e "${RED}订阅链接仍不可访问，请检查以下信息:${NC}"
+            curl -v "$SUBSCRIPTION_URL" 2>&1 | tail -n 20
             return 1
         fi
     fi
@@ -341,13 +363,15 @@ check_subscription() {
         echo -e "${YELLOW}Clash 配置链接 $CLASH_URL 不可访问，尝试修复...${NC}"
         if [ ! -f "$CLASH_DIR/$USERNAME.yml" ]; then
             echo -e "${RED}Clash 文件 $CLASH_DIR/$USERNAME.yml 不存在${NC}"
+            ls -l "$CLASH_DIR"
             return 1
         fi
         systemctl restart nginx
         if curl -s --head --insecure "$CLASH_URL" | grep -q "200 OK"; then
             echo -e "${GREEN}Clash 配置链接修复成功${NC}"
         else
-            echo -e "${RED}Clash 配置链接仍不可访问，请检查网络或防火墙设置${NC}"
+            echo -e "${RED}Clash 配置链接仍不可访问，请检查以下信息:${NC}"
+            curl -v "$CLASH_URL" 2>&1 | tail -n 20
             return 1
         fi
     fi
