@@ -1,12 +1,13 @@
 #!/bin/bash
 # Xray 高级管理脚本
-# 版本: v1.0.4-fix37
+# 版本: v1.0.4-fix40
 # 支持系统: Ubuntu 20.04/22.04, CentOS 7/8, Debian 10/11 (systemd)
 
 XRAY_CONFIG="/usr/local/etc/xray/config.json"
 USER_DATA="/usr/local/etc/xray/users.json"
 NGINX_CONF="/etc/nginx/conf.d/xray.conf"
 SUBSCRIPTION_DIR="/var/www/subscribe"
+CLASH_DIR="/var/www/clash"
 BACKUP_DIR="/var/backups/xray"
 CERTS_DIR="/etc/letsencrypt/live"
 LOG_DIR="/usr/local/var/log/xray"
@@ -96,9 +97,9 @@ detect_xray_service() {
 
 init_environment() {
     [ "$EUID" -ne 0 ] && { echo -e "${RED}请使用 root 权限运行!${NC}"; exit 1; }
-    mkdir -p "$LOG_DIR" "$SUBSCRIPTION_DIR" "$BACKUP_DIR" "/usr/local/etc/xray" || exit 1
-    chmod 770 "$LOG_DIR" "$SUBSCRIPTION_DIR" "$BACKUP_DIR" "/usr/local/etc/xray"
-    chown root:root "$LOG_DIR" "$SUBSCRIPTION_DIR" "$BACKUP_DIR" "/usr/local/etc/xray"
+    mkdir -p "$LOG_DIR" "$SUBSCRIPTION_DIR" "$CLASH_DIR" "$BACKUP_DIR" "/usr/local/etc/xray" || exit 1
+    chmod 770 "$LOG_DIR" "$SUBSCRIPTION_DIR" "$CLASH_DIR" "$BACKUP_DIR" "/usr/local/etc/xray"
+    chown root:root "$LOG_DIR" "$SUBSCRIPTION_DIR" "$CLASH_DIR" "$BACKUP_DIR" "/usr/local/etc/xray"
     touch "$LOG_DIR/access.log" "$LOG_DIR/error.log"
     chmod 660 "$LOG_DIR/access.log" "$LOG_DIR/error.log"
     chown root:root "$LOG_DIR/access.log" "$LOG_DIR/error.log"
@@ -167,6 +168,7 @@ install_dependencies() {
                  [ ! -f /usr/bin/certbot ] && $PKG_MANAGER install -y certbot python3-certbot-nginx
                  ;;
     esac
+    systemctl enable nginx
     systemctl start nginx || exit 1
 }
 
@@ -179,7 +181,41 @@ check_xray_version() {
         echo "当前版本: 未安装，最新版本: $LATEST_VERSION"
         read -p "是否安装最新版本? [y/N]: " UPDATE
         if [[ "$UPDATE" =~ ^[Yy] ]]; then
+            # 安装 Xray 并确保服务文件兼容
             bash <(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh) || exit 1
+            # 覆盖默认服务配置
+            cat > /etc/systemd/system/$XRAY_SERVICE_NAME.service <<EOF
+[Unit]
+Description=Xray Service
+Documentation=https://github.com/xtls
+After=network.target nss-lookup.target
+
+[Service]
+Type=simple
+ExecStartPre=/bin/mkdir -p $LOG_DIR
+ExecStartPre=/bin/chown -R root:root $LOG_DIR
+ExecStartPre=/bin/chmod -R 770 $LOG_DIR
+ExecStartPre=/bin/touch $LOG_DIR/access.log $LOG_DIR/error.log
+ExecStartPre=/bin/chown root:root $LOG_DIR/access.log $LOG_DIR/error.log
+ExecStartPre=/bin/chmod 660 $LOG_DIR/access.log $LOG_DIR/error.log
+ExecStartPre=/bin/chown root:root $XRAY_CONFIG
+ExecStartPre=/bin/chmod 600 $XRAY_CONFIG
+ExecStart=$XRAY_BIN run -config $XRAY_CONFIG
+Restart=on-failure
+RestartSec=5
+User=root
+Group=root
+LimitNPROC=10000
+LimitNOFILE=1000000
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+
+[Install]
+WantedBy=multi-user.target
+EOF
+            chmod 644 /etc/systemd/system/$XRAY_SERVICE_NAME.service
+            systemctl daemon-reload
+            systemctl enable "$XRAY_SERVICE_NAME"
         else
             VERSIONS=("25.2.21" "25.1.0" "25.0.0" "24.12.0" "24.11.0" "1.7.5")
             for i in "${!VERSIONS[@]}"; do echo "$((i+1)). ${VERSIONS[$i]}"; done
@@ -218,7 +254,7 @@ apply_ssl() {
         retries=$((retries - 1))
         sleep 5
     done
-    [ $retries -eq 0 ] && exit 1
+    [ $retries -eq 0 ] && { echo -e "${RED}SSL 证书申请失败，请检查域名解析或网络${NC}"; }
 }
 
 configure_nginx() {
@@ -227,7 +263,6 @@ configure_nginx() {
     VMESS_PATH="/vmess_ws_$(openssl rand -hex 4)"
     TCP_PATH="/tcp_$(openssl rand -hex 4)"
     [ -f "$NGINX_CONF" ] && ! grep -q "Xray 配置" "$NGINX_CONF" && mv "$NGINX_CONF" "$NGINX_CONF.bak.$(date +%F_%H%M%S)"
-    # 移除默认站点以避免冲突
     rm -f /etc/nginx/sites-enabled/default
     cat > "$NGINX_CONF" <<EOF
 server {
@@ -248,6 +283,10 @@ server {
         root /var/www;
         autoindex off;
     }
+    location /clash/ {
+        root /var/www;
+        autoindex off;
+    }
 EOF
     for i in "${!PROTOCOLS[@]}"; do
         PROTOCOL=${PROTOCOLS[$i]}
@@ -261,46 +300,58 @@ EOF
     done
     echo "}" >> "$NGINX_CONF"
     nginx -t && systemctl restart nginx || { nginx -t; cat /var/log/nginx/xray_error.log | tail -n 20; exit 1; }
-    # 确保订阅目录权限正确
-    chown -R www-data:www-data "$SUBSCRIPTION_DIR"
-    chmod -R 755 "$SUBSCRIPTION_DIR"
+    chown -R www-data:www-data "$SUBSCRIPTION_DIR" "$CLASH_DIR"
+    chmod -R 755 "$SUBSCRIPTION_DIR" "$CLASH_DIR"
 }
 
 check_subscription() {
     echo -e "${GREEN}[检查订阅配置...]${NC}"
     local SUBSCRIPTION_URL="https://$DOMAIN/subscribe/$USERNAME.yml"
-    # 测试 HTTPS 访问
+    local CLASH_URL="https://$DOMAIN/clash/$USERNAME.yml"
+    # 测试订阅链接
     if curl -s --head --insecure "$SUBSCRIPTION_URL" | grep -q "200 OK"; then
         echo -e "${GREEN}订阅链接 $SUBSCRIPTION_URL 可正常访问${NC}"
     else
         echo -e "${YELLOW}订阅链接 $SUBSCRIPTION_URL 不可访问，尝试修复...${NC}"
-        # 检查文件是否存在
         if [ ! -f "$SUBSCRIPTION_DIR/$USERNAME.yml" ]; then
             echo -e "${RED}订阅文件 $SUBSCRIPTION_DIR/$USERNAME.yml 不存在${NC}"
-            exit 1
+            return 1
         fi
-        # 检查 Nginx 配置
-        nginx -t || { echo -e "${RED}Nginx 配置错误${NC}"; cat /var/log/nginx/xray_error.log | tail -n 20; exit 1; }
-        # 检查证书
+        nginx -t || { echo -e "${RED}Nginx 配置错误${NC}"; cat /var/log/nginx/xray_error.log | tail -n 20; return 1; }
         if [ ! -f "$CERTS_DIR/$DOMAIN/fullchain.pem" ] || [ ! -f "$CERTS_DIR/$DOMAIN/privkey.pem" ]; then
             echo -e "${YELLOW}SSL 证书缺失，重新生成...${NC}"
             apply_ssl
         fi
-        # 检查 HTTP 重定向
         if ! curl -s --head "http://$DOMAIN/subscribe/$USERNAME.yml" | grep -q "301 Moved Permanently"; then
             echo -e "${YELLOW}HTTP 重定向未生效，修复默认站点...${NC}"
             rm -f /etc/nginx/sites-enabled/default
         fi
-        # 重启 Nginx
         systemctl restart nginx
-        # 再次测试
         if curl -s --head --insecure "$SUBSCRIPTION_URL" | grep -q "200 OK"; then
             echo -e "${GREEN}订阅链接修复成功${NC}"
         else
             echo -e "${RED}订阅链接仍不可访问，请检查网络或防火墙设置${NC}"
-            exit 1
+            return 1
         fi
     fi
+    # 测试 Clash 链接
+    if curl -s --head --insecure "$CLASH_URL" | grep -q "200 OK"; then
+        echo -e "${GREEN}Clash 配置链接 $CLASH_URL 可正常访问${NC}"
+    else
+        echo -e "${YELLOW}Clash 配置链接 $CLASH_URL 不可访问，尝试修复...${NC}"
+        if [ ! -f "$CLASH_DIR/$USERNAME.yml" ]; then
+            echo -e "${RED}Clash 文件 $CLASH_DIR/$USERNAME.yml 不存在${NC}"
+            return 1
+        fi
+        systemctl restart nginx
+        if curl -s --head --insecure "$CLASH_URL" | grep -q "200 OK"; then
+            echo -e "${GREEN}Clash 配置链接修复成功${NC}"
+        else
+            echo -e "${RED}Clash 配置链接仍不可访问，请检查网络或防火墙设置${NC}"
+            return 1
+        fi
+    fi
+    return 0
 }
 
 create_default_user() {
@@ -315,17 +366,87 @@ create_default_user() {
     chmod 600 "$USER_DATA"
     chown root:root "$USER_DATA"
     SUBSCRIPTION_FILE="$SUBSCRIPTION_DIR/$USERNAME.yml"
+    CLASH_FILE="$CLASH_DIR/$USERNAME.yml"
     > "$SUBSCRIPTION_FILE"
+    > "$CLASH_FILE"
     for PROTOCOL in "${PROTOCOLS[@]}"; do
         case "$PROTOCOL" in
-            1) echo "vless://$UUID@$DOMAIN:443?encryption=none&security=tls&type=ws&path=$WS_PATH&sni=$DOMAIN&host=$DOMAIN#$USERNAME" >> "$SUBSCRIPTION_FILE" ;;
-            2) echo "vmess://$(echo -n '{\"v\":\"2\",\"ps\":\"$USERNAME\",\"add\":\"$DOMAIN\",\"port\":\"443\",\"id\":\"$UUID\",\"aid\":\"0\",\"net\":\"ws\",\"type\":\"none\",\"host\":\"$DOMAIN\",\"path\":\"$VMESS_PATH\",\"tls\":\"tls\",\"sni\":\"$DOMAIN\"}' | base64 -w 0)" >> "$SUBSCRIPTION_FILE" ;;
-            3) echo "vless://$UUID@$DOMAIN:443?encryption=none&security=tls&type=grpc&serviceName=$GRPC_SERVICE&sni=$DOMAIN#$USERNAME" >> "$SUBSCRIPTION_FILE" ;;
-            4) echo "vless://$UUID@$DOMAIN:443?encryption=none&security=tls&type=http&path=$TCP_PATH&sni=$DOMAIN&host=$DOMAIN#$USERNAME" >> "$SUBSCRIPTION_FILE" ;;
+            1) echo "vless://$UUID@$DOMAIN:443?encryption=none&security=tls&type=ws&path=$WS_PATH&sni=$DOMAIN&host=$DOMAIN#$USERNAME" >> "$SUBSCRIPTION_FILE"
+               cat >> "$CLASH_FILE" <<EOF
+proxies:
+  - name: "$USERNAME"
+    type: vless
+    server: $DOMAIN
+    port: 443
+    uuid: $UUID
+    network: ws
+    tls: true
+    udp: true
+    sni: $DOMAIN
+    ws-opts:
+      path: $WS_PATH
+      headers:
+        Host: $DOMAIN
+EOF
+               ;;
+            2) echo "vmess://$(echo -n '{\"v\":\"2\",\"ps\":\"$USERNAME\",\"add\":\"$DOMAIN\",\"port\":\"443\",\"id\":\"$UUID\",\"aid\":\"0\",\"net\":\"ws\",\"type\":\"none\",\"host\":\"$DOMAIN\",\"path\":\"$VMESS_PATH\",\"tls\":\"tls\",\"sni\":\"$DOMAIN\"}' | base64 -w 0)" >> "$SUBSCRIPTION_FILE"
+               cat >> "$CLASH_FILE" <<EOF
+proxies:
+  - name: "$USERNAME"
+    type: vmess
+    server: $DOMAIN
+    port: 443
+    uuid: $UUID
+    alterId: 0
+    cipher: auto
+    network: ws
+    tls: true
+    udp: true
+    sni: $DOMAIN
+    ws-opts:
+      path: $VMESS_PATH
+      headers:
+        Host: $DOMAIN
+EOF
+               ;;
+            3) echo "vless://$UUID@$DOMAIN:443?encryption=none&security=tls&type=grpc&serviceName=$GRPC_SERVICE&sni=$DOMAIN#$USERNAME" >> "$SUBSCRIPTION_FILE"
+               cat >> "$CLASH_FILE" <<EOF
+proxies:
+  - name: "$USERNAME"
+    type: vless
+    server: $DOMAIN
+    port: 443
+    uuid: $UUID
+    network: grpc
+    tls: true
+    udp: true
+    sni: $DOMAIN
+    grpc-opts:
+      grpc-service-name: $GRPC_SERVICE
+EOF
+               ;;
+            4) echo "vless://$UUID@$DOMAIN:443?encryption=none&security=tls&type=http&path=$TCP_PATH&sni=$DOMAIN&host=$DOMAIN#$USERNAME" >> "$SUBSCRIPTION_FILE"
+               cat >> "$CLASH_FILE" <<EOF
+proxies:
+  - name: "$USERNAME"
+    type: vless
+    server: $DOMAIN
+    port: 443
+    uuid: $UUID
+    network: http
+    tls: true
+    udp: true
+    sni: $DOMAIN
+    http-opts:
+      path: $TCP_PATH
+      headers:
+        Host: $DOMAIN
+EOF
+               ;;
         esac
     done
-    chmod 644 "$SUBSCRIPTION_FILE"
-    chown www-data:www-data "$SUBSCRIPTION_FILE"
+    chmod 644 "$SUBSCRIPTION_FILE" "$CLASH_FILE"
+    chown www-data:www-data "$SUBSCRIPTION_FILE" "$CLASH_FILE"
     flock -u 200
 }
 
@@ -362,6 +483,7 @@ start_services() {
     $XRAY_BIN -test -config "$XRAY_CONFIG" >/dev/null 2>&1 || { echo -e "${RED}Xray 配置无效!${NC}"; $XRAY_BIN -test -config "$XRAY_CONFIG"; cat "$XRAY_CONFIG"; exit 1; }
     systemctl daemon-reload
     systemctl enable "$XRAY_SERVICE_NAME" >/dev/null 2>&1
+    systemctl enable nginx >/dev/null 2>&1
     systemctl restart "$XRAY_SERVICE_NAME" || { echo -e "${RED}Xray 服务启动失败!${NC}"; systemctl status "$XRAY_SERVICE_NAME"; cat "$LOG_DIR/error.log"; exit 1; }
     sleep 3
     systemctl is-active "$XRAY_SERVICE_NAME" >/dev/null || { echo -e "${RED}Xray 服务未运行!${NC}"; systemctl status "$XRAY_SERVICE_NAME"; cat "$LOG_DIR/error.log"; exit 1; }
@@ -386,39 +508,8 @@ install_xray() {
     configure_nginx
     check_xray_version
     configure_xray
-    cat > /etc/systemd/system/$XRAY_SERVICE_NAME.service <<EOF
-[Unit]
-Description=Xray Service
-Documentation=https://github.com/xtls
-After=network.target nss-lookup.target
-
-[Service]
-Type=simple
-ExecStartPre=/bin/mkdir -p $LOG_DIR
-ExecStartPre=/bin/chown -R root:root $LOG_DIR
-ExecStartPre=/bin/chmod -R 770 $LOG_DIR
-ExecStartPre=/bin/touch $LOG_DIR/access.log $LOG_DIR/error.log
-ExecStartPre=/bin/chown root:root $LOG_DIR/access.log $LOG_DIR/error.log
-ExecStartPre=/bin/chmod 660 $LOG_DIR/access.log $LOG_DIR/error.log
-ExecStartPre=/bin/chown root:root $XRAY_CONFIG
-ExecStartPre=/bin/chmod 600 $XRAY_CONFIG
-ExecStart=$XRAY_BIN run -config $XRAY_CONFIG
-Restart=on-failure
-RestartSec=5
-User=root
-Group=root
-LimitNPROC=10000
-LimitNOFILE=1000000
-AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
-CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
-
-[Install]
-WantedBy=multi-user.target
-EOF
-    chmod 644 /etc/systemd/system/$XRAY_SERVICE_NAME.service
-    systemctl daemon-reload
     start_services
-    check_subscription
+    check_subscription || echo -e "${YELLOW}订阅检查失败，但安装将继续${NC}"
     show_user_link
     echo -e "\n安装完成! 输入 'v' 打开管理菜单"
 }
@@ -444,6 +535,7 @@ show_user_link() {
         esac
     done
     echo -e "\n订阅链接（使用主域名）:\nhttps://$DOMAIN/subscribe/$USERNAME.yml"
+    echo -e "Clash 配置链接:\nhttps://$DOMAIN/clash/$USERNAME.yml"
     echo -e "${GREEN}账号到期时间: $EXPIRE_DATE${NC}"
     echo -e "${GREEN}请使用主域名订阅链接以确保兼容性和证书有效性${NC}"
 }
@@ -553,17 +645,87 @@ add_user() {
     chmod 600 "$XRAY_CONFIG" "$USER_DATA"
     chown root:root "$XRAY_CONFIG" "$USER_DATA"
     SUBSCRIPTION_FILE="$SUBSCRIPTION_DIR/$USERNAME.yml"
+    CLASH_FILE="$CLASH_DIR/$USERNAME.yml"
     > "$SUBSCRIPTION_FILE"
+    > "$CLASH_FILE"
     for PROTOCOL in "${PROTOCOLS[@]}"; do
         case "$PROTOCOL" in
-            1) echo "vless://$UUID@$DOMAIN:443?encryption=none&security=tls&type=ws&path=$WS_PATH&sni=$DOMAIN&host=$DOMAIN#$USERNAME" >> "$SUBSCRIPTION_FILE" ;;
-            2) echo "vmess://$(echo -n '{\"v\":\"2\",\"ps\":\"$USERNAME\",\"add\":\"$DOMAIN\",\"port\":\"443\",\"id\":\"$UUID\",\"aid\":\"0\",\"net\":\"ws\",\"type\":\"none\",\"host\":\"$DOMAIN\",\"path\":\"$VMESS_PATH\",\"tls\":\"tls\",\"sni\":\"$DOMAIN\"}' | base64 -w 0)" >> "$SUBSCRIPTION_FILE" ;;
-            3) echo "vless://$UUID@$DOMAIN:443?encryption=none&security=tls&type=grpc&serviceName=$GRPC_SERVICE&sni=$DOMAIN#$USERNAME" >> "$SUBSCRIPTION_FILE" ;;
-            4) echo "vless://$UUID@$DOMAIN:443?encryption=none&security=tls&type=http&path=$TCP_PATH&sni=$DOMAIN&host=$DOMAIN#$USERNAME" >> "$SUBSCRIPTION_FILE" ;;
+            1) echo "vless://$UUID@$DOMAIN:443?encryption=none&security=tls&type=ws&path=$WS_PATH&sni=$DOMAIN&host=$DOMAIN#$USERNAME" >> "$SUBSCRIPTION_FILE"
+               cat >> "$CLASH_FILE" <<EOF
+proxies:
+  - name: "$USERNAME"
+    type: vless
+    server: $DOMAIN
+    port: 443
+    uuid: $UUID
+    network: ws
+    tls: true
+    udp: true
+    sni: $DOMAIN
+    ws-opts:
+      path: $WS_PATH
+      headers:
+        Host: $DOMAIN
+EOF
+               ;;
+            2) echo "vmess://$(echo -n '{\"v\":\"2\",\"ps\":\"$USERNAME\",\"add\":\"$DOMAIN\",\"port\":\"443\",\"id\":\"$UUID\",\"aid\":\"0\",\"net\":\"ws\",\"type\":\"none\",\"host\":\"$DOMAIN\",\"path\":\"$VMESS_PATH\",\"tls\":\"tls\",\"sni\":\"$DOMAIN\"}' | base64 -w 0)" >> "$SUBSCRIPTION_FILE"
+               cat >> "$CLASH_FILE" <<EOF
+proxies:
+  - name: "$USERNAME"
+    type: vmess
+    server: $DOMAIN
+    port: 443
+    uuid: $UUID
+    alterId: 0
+    cipher: auto
+    network: ws
+    tls: true
+    udp: true
+    sni: $DOMAIN
+    ws-opts:
+      path: $VMESS_PATH
+      headers:
+        Host: $DOMAIN
+EOF
+               ;;
+            3) echo "vless://$UUID@$DOMAIN:443?encryption=none&security=tls&type=grpc&serviceName=$GRPC_SERVICE&sni=$DOMAIN#$USERNAME" >> "$SUBSCRIPTION_FILE"
+               cat >> "$CLASH_FILE" <<EOF
+proxies:
+  - name: "$USERNAME"
+    type: vless
+    server: $DOMAIN
+    port: 443
+    uuid: $UUID
+    network: grpc
+    tls: true
+    udp: true
+    sni: $DOMAIN
+    grpc-opts:
+      grpc-service-name: $GRPC_SERVICE
+EOF
+               ;;
+            4) echo "vless://$UUID@$DOMAIN:443?encryption=none&security=tls&type=http&path=$TCP_PATH&sni=$DOMAIN&host=$DOMAIN#$USERNAME" >> "$SUBSCRIPTION_FILE"
+               cat >> "$CLASH_FILE" <<EOF
+proxies:
+  - name: "$USERNAME"
+    type: vless
+    server: $DOMAIN
+    port: 443
+    uuid: $UUID
+    network: http
+    tls: true
+    udp: true
+    sni: $DOMAIN
+    http-opts:
+      path: $TCP_PATH
+      headers:
+        Host: $DOMAIN
+EOF
+               ;;
         esac
     done
-    chmod 644 "$SUBSCRIPTION_FILE"
-    chown www-data:www-data "$SUBSCRIPTION_FILE"
+    chmod 644 "$SUBSCRIPTION_FILE" "$CLASH_FILE"
+    chown www-data:www-data "$SUBSCRIPTION_FILE" "$CLASH_FILE"
     systemctl restart "$XRAY_SERVICE_NAME" || { systemctl status "$XRAY_SERVICE_NAME"; cat "$LOG_DIR/error.log"; exit 1; }
     check_subscription
     show_user_link
@@ -641,17 +803,87 @@ view_links() {
             TODAY=$(date +%s)
             [ "$STATUS" = "禁用" ] || { [ "$EXPIRE" != "永久" ] && [ $(date -d "$EXPIRE" +%s) -lt $TODAY ]; } && { echo "此用户已过期或被禁用，续费后可查看"; return; }
             SUBSCRIPTION_FILE="$SUBSCRIPTION_DIR/$USERNAME.yml"
+            CLASH_FILE="$CLASH_DIR/$USERNAME.yml"
             > "$SUBSCRIPTION_FILE"
+            > "$CLASH_FILE"
             for PROTOCOL in "${PROTOCOLS[@]}"; do
                 case "$PROTOCOL" in
-                    1) echo "vless://$UUID@$DOMAIN:443?encryption=none&security=tls&type=ws&path=$WS_PATH&sni=$DOMAIN&host=$DOMAIN#$USERNAME" >> "$SUBSCRIPTION_FILE" ;;
-                    2) echo "vmess://$(echo -n '{\"v\":\"2\",\"ps\":\"$USERNAME\",\"add\":\"$DOMAIN\",\"port\":\"443\",\"id\":\"$UUID\",\"aid\":\"0\",\"net\":\"ws\",\"type\":\"none\",\"host\":\"$DOMAIN\",\"path\":\"$VMESS_PATH\",\"tls\":\"tls\",\"sni\":\"$DOMAIN\"}' | base64 -w 0)" >> "$SUBSCRIPTION_FILE" ;;
-                    3) echo "vless://$UUID@$DOMAIN:443?encryption=none&security=tls&type=grpc&serviceName=$GRPC_SERVICE&sni=$DOMAIN#$USERNAME" >> "$SUBSCRIPTION_FILE" ;;
-                    4) echo "vless://$UUID@$DOMAIN:443?encryption=none&security=tls&type=http&path=$TCP_PATH&sni=$DOMAIN&host=$DOMAIN#$USERNAME" >> "$SUBSCRIPTION_FILE" ;;
+                    1) echo "vless://$UUID@$DOMAIN:443?encryption=none&security=tls&type=ws&path=$WS_PATH&sni=$DOMAIN&host=$DOMAIN#$USERNAME" >> "$SUBSCRIPTION_FILE"
+                       cat >> "$CLASH_FILE" <<EOF
+proxies:
+  - name: "$USERNAME"
+    type: vless
+    server: $DOMAIN
+    port: 443
+    uuid: $UUID
+    network: ws
+    tls: true
+    udp: true
+    sni: $DOMAIN
+    ws-opts:
+      path: $WS_PATH
+      headers:
+        Host: $DOMAIN
+EOF
+                       ;;
+                    2) echo "vmess://$(echo -n '{\"v\":\"2\",\"ps\":\"$USERNAME\",\"add\":\"$DOMAIN\",\"port\":\"443\",\"id\":\"$UUID\",\"aid\":\"0\",\"net\":\"ws\",\"type\":\"none\",\"host\":\"$DOMAIN\",\"path\":\"$VMESS_PATH\",\"tls\":\"tls\",\"sni\":\"$DOMAIN\"}' | base64 -w 0)" >> "$SUBSCRIPTION_FILE"
+                       cat >> "$CLASH_FILE" <<EOF
+proxies:
+  - name: "$USERNAME"
+    type: vmess
+    server: $DOMAIN
+    port: 443
+    uuid: $UUID
+    alterId: 0
+    cipher: auto
+    network: ws
+    tls: true
+    udp: true
+    sni: $DOMAIN
+    ws-opts:
+      path: $VMESS_PATH
+      headers:
+        Host: $DOMAIN
+EOF
+                       ;;
+                    3) echo "vless://$UUID@$DOMAIN:443?encryption=none&security=tls&type=grpc&serviceName=$GRPC_SERVICE&sni=$DOMAIN#$USERNAME" >> "$SUBSCRIPTION_FILE"
+                       cat >> "$CLASH_FILE" <<EOF
+proxies:
+  - name: "$USERNAME"
+    type: vless
+    server: $DOMAIN
+    port: 443
+    uuid: $UUID
+    network: grpc
+    tls: true
+    udp: true
+    sni: $DOMAIN
+    grpc-opts:
+      grpc-service-name: $GRPC_SERVICE
+EOF
+                       ;;
+                    4) echo "vless://$UUID@$DOMAIN:443?encryption=none&security=tls&type=http&path=$TCP_PATH&sni=$DOMAIN&host=$DOMAIN#$USERNAME" >> "$SUBSCRIPTION_FILE"
+                       cat >> "$CLASH_FILE" <<EOF
+proxies:
+  - name: "$USERNAME"
+    type: vless
+    server: $DOMAIN
+    port: 443
+    uuid: $UUID
+    network: http
+    tls: true
+    udp: true
+    sni: $DOMAIN
+    http-opts:
+      path: $TCP_PATH
+      headers:
+        Host: $DOMAIN
+EOF
+                       ;;
                 esac
             done
-            chmod 644 "$SUBSCRIPTION_FILE"
-            chown www-data:www-data "$SUBSCRIPTION_FILE"
+            chmod 644 "$SUBSCRIPTION_FILE" "$CLASH_FILE"
+            chown www-data:www-data "$SUBSCRIPTION_FILE" "$CLASH_FILE"
             show_user_link
             break
         fi
@@ -745,12 +977,12 @@ uninstall_script() {
     echo -e "${GREEN}=== 卸载脚本 ===${NC}"
     read -p "确定要卸载? (y/N): " CONFIRM
     [[ ! "$CONFIRM" =~ ^[Yy] ]] && { echo "取消卸载"; return; }
-    systemctl stop "$XRAY_SERVICE_NAME" "$SCRIPT_NAME" >/dev/null 2>&1
-    systemctl disable "$XRAY_SERVICE_NAME" "$SCRIPT_NAME" >/dev/null 2>&1
-    rm -f "/etc/systemd/system/$XRAY_SERVICE_NAME.service" "/etc/systemd/system/$SCRIPT_NAME.service"
+    systemctl stop "$XRAY_SERVICE_NAME" >/dev/null 2>&1
+    systemctl disable "$XRAY_SERVICE_NAME" >/dev/null 2>&1
+    rm -f "/etc/systemd/system/$XRAY_SERVICE_NAME.service"
     systemctl daemon-reload
     systemctl reset-failed
-    rm -rf "$INSTALL_DIR" /usr/local/bin/v "$XRAY_BIN" /usr/local/etc/xray "$LOG_DIR" "$NGINX_CONF" "$SUBSCRIPTION_DIR" "$BACKUP_DIR" "$LOCK_FILE"
+    rm -rf "$INSTALL_DIR" /usr/local/bin/v "$XRAY_BIN" /usr/local/etc/xray "$LOG_DIR" "$NGINX_CONF" "$SUBSCRIPTION_DIR" "$CLASH_DIR" "$BACKUP_DIR" "$LOCK_FILE"
     systemctl restart nginx >/dev/null 2>&1
     crontab -l 2>/dev/null | grep -v "xray-install.sh" | crontab -
     crontab -l 2>/dev/null | grep -v "access.log" | crontab -
@@ -767,23 +999,6 @@ install_script() {
         chmod 700 "$SCRIPT_PATH"
         chown root:root "$SCRIPT_PATH"
         ln -sf "$SCRIPT_PATH" /usr/local/bin/v || exit 1
-        cat > /etc/systemd/system/$SCRIPT_NAME.service <<EOF
-[Unit]
-Description=Xray Management Script
-After=network.target
-[Service]
-Type=simple
-ExecStart=/bin/bash $SCRIPT_PATH
-ExecStop=/bin/kill -TERM \$MAINPID
-Restart=always
-RestartSec=5
-User=root
-[Install]
-WantedBy=multi-user.target
-EOF
-        chmod 644 /etc/systemd/system/$SCRIPT_NAME.service
-        systemctl daemon-reload
-        systemctl enable "$SCRIPT_NAME.service" || exit 1
     fi
     main_menu
 }
