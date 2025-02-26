@@ -1,6 +1,5 @@
 #!/bin/bash
-# Xray 高级管理脚本
-# 版本: v1.0.4-fix51
+# Xray 高级管理脚本 v1.0.4-fix52
 # 支持系统: Ubuntu 20.04/22.04, CentOS 7/8, Debian 10/11 (systemd)
 
 XRAY_CONFIG="/usr/local/etc/xray/config.json"
@@ -18,6 +17,7 @@ XRAY_BIN="/usr/local/bin/xray"
 INSTALL_DIR="/root/v2ray"
 SCRIPT_PATH="$INSTALL_DIR/xray-install.sh"
 SETTINGS_CONF="/usr/local/etc/xray/settings.conf"
+TOKEN="your-secret-token"  # 自定义 Token 用于绕过 Cloudflare
 
 declare DOMAIN WS_PATH VMESS_PATH GRPC_SERVICE TCP_PATH PROTOCOLS PORTS BASE_PORT UUID DELETE_THRESHOLD_DAYS SERVER_IP
 
@@ -55,8 +55,8 @@ main_menu() {
             PROTOCOL_TEXT="| 未配置协议"
         fi
         echo -e "$XRAY_STATUS_TEXT $PROTOCOL_TEXT\n"
-        echo -e "1. 全新安装\n2. 用户管理\n3. 协议管理\n4. 流量统计\n5. 备份恢复\n6. 查看证书\n7. 卸载脚本\n8. 退出脚本"
-        read -p "请选择操作 [1-8]（回车退出）: " CHOICE
+        echo -e "1. 全新安装\n2. 用户管理\n3. 协议管理\n4. 流量统计\n5. 备份恢复\n6. 查看证书\n7. 卸载脚本\n8. Speedtest测速面板\n9. 退出脚本"
+        read -p "请选择操作 [1-9]（回车退出）: " CHOICE
         [ -z "$CHOICE" ] && exit 0
         case "$CHOICE" in
             1) install_xray ;;
@@ -66,7 +66,8 @@ main_menu() {
             5) backup_restore ;;
             6) view_certificates ;;
             7) uninstall_script ;;
-            8) exit 0 ;;
+            8) speedtest_panel ;;
+            9) exit 0 ;;
             *) echo -e "${RED}无效选择!${NC}" ;;
         esac
     done
@@ -82,12 +83,6 @@ detect_system() {
         *) echo -e "${RED}不支持的系统: $OS_NAME${NC}"; exit 1;;
     esac
     ps -p 1 -o comm= | grep -q systemd || { echo -e "${RED}需要 systemd!${NC}"; exit 1; }
-    for i in {1..30}; do
-        STATE=$(systemctl is-system-running 2>/dev/null)
-        [ "$STATE" = "running" ] || [ "$STATE" = "degraded" ] && break
-        sleep 1
-    done
-    [ "$STATE" != "running" ] && [ "$STATE" != "degraded" ] && exit 1
     SERVER_IP=$(curl -s ifconfig.me)
 }
 
@@ -103,7 +98,12 @@ init_environment() {
     touch "$LOG_DIR/access.log" "$LOG_DIR/error.log"
     chmod 660 "$LOG_DIR/access.log" "$LOG_DIR/error.log"
     chown root:root "$LOG_DIR/access.log" "$LOG_DIR/error.log"
-    [ ! -s "$USER_DATA" ] || ! jq -e . "$USER_DATA" >/dev/null 2>&1 && { echo '{"users": []}' > "$USER_DATA"; chmod 600 "$USER_DATA"; chown root:root "$USER_DATA"; }
+    if [ ! -s "$USER_DATA" ] || ! jq -e '.users' "$USER_DATA" >/dev/null 2>&1; then
+        echo '{"users": []}' > "$USER_DATA"
+        chmod 600 "$USER_DATA"
+        chown root:root "$USER_DATA"
+        echo "警告: users.json 为空或格式错误，已重置"
+    fi
     [ ! -f "$XRAY_CONFIG" ] && { echo '{"log": {"loglevel": "debug", "access": "'"$LOG_DIR/access.log"'", "error": "'"$LOG_DIR/error.log"'"}, "inbounds": [], "outbounds": [{"protocol": "freedom"}]}' > "$XRAY_CONFIG"; chmod 600 "$XRAY_CONFIG"; chown root:root "$XRAY_CONFIG"; }
     detect_system
     detect_xray_service
@@ -111,7 +111,7 @@ init_environment() {
     [ -f "$SETTINGS_CONF" ] && DELETE_THRESHOLD_DAYS=$(grep "DELETE_THRESHOLD_DAYS" "$SETTINGS_CONF" | cut -d'=' -f2)
     exec 200>$LOCK_FILE
     trap 'rm -f tmp.json; flock -u 200; rm -f $LOCK_FILE' EXIT
-    sync_user_status  # 启动时同步状态
+    sync_user_status
 }
 
 load_config() {
@@ -144,7 +144,7 @@ configure_domain() {
     echo -e "${GREEN}[配置域名...]${NC}"
     local retries=3
     while [ $retries -gt 0 ]; do
-        read -p "请输入当前 VPS 对应的域名（示例：1.changkaiyuan.xyz）: " DOMAIN
+        read -p "请输入当前 VPS 对应的域名（示例：tk.changkaiyuan.xyz）: " DOMAIN
         DOMAIN_IP=$(dig +short "$DOMAIN" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -n 1)
         [ "$DOMAIN_IP" = "$SERVER_IP" ] && { echo "域名验证通过! 当前服务器 IP: $SERVER_IP"; break; }
         retries=$((retries - 1))
@@ -196,7 +196,7 @@ check_xray_version() {
     CURRENT_VERSION=$(xray --version 2>/dev/null | grep -oP 'Xray \K[0-9]+\.[0-9]+\.[0-9]+' || echo "未安装")
     if [ "$CURRENT_VERSION" = "未安装" ] || ! command -v xray >/dev/null || [[ "$(printf '%s\n' "1.8.0" "$CURRENT_VERSION" | sort -V | head -n1)" != "1.8.0" ]]; then
         LATEST_VERSION=$(curl -s https://api.github.com/repos/XTLS/Xray-core/releases/latest | jq -r '.tag_name' | sed 's/v//' || echo "unknown")
-        echo "当前版本: $CURRENT_VERSION，需 v1.8.0+ 以支持内置过期时间管理，最新版本: $LATEST_VERSION"
+        echo "当前版本: $CURRENT_VERSION，需 v1.8.0+ 支持内置过期时间管理，最新版本: $LATEST_VERSION"
         read -p "是否安装最新版本? [y/N]: " UPDATE
         if [[ "$UPDATE" =~ ^[Yy] ]]; then
             bash <(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh) || exit 1
@@ -204,9 +204,7 @@ check_xray_version() {
             cat > /etc/systemd/system/$XRAY_SERVICE_NAME.service <<EOF
 [Unit]
 Description=Xray Service
-Documentation=https://github.com/xtls
 After=network.target nss-lookup.target
-
 [Service]
 Type=simple
 ExecStartPre=/bin/mkdir -p $LOG_DIR
@@ -226,7 +224,6 @@ LimitNPROC=10000
 LimitNOFILE=1000000
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
-
 [Install]
 WantedBy=multi-user.target
 EOF
@@ -290,10 +287,16 @@ server {
     location /subscribe/ {
         root /var/www;
         autoindex off;
+        if (\$arg_token != "$TOKEN") {
+            return 403;
+        }
     }
     location /clash/ {
         root /var/www;
         autoindex off;
+        if (\$arg_token != "$TOKEN") {
+            return 403;
+        }
     }
 EOF
     for i in "${!PROTOCOLS[@]}"; do
@@ -314,57 +317,41 @@ EOF
 
 check_subscription() {
     echo -e "${GREEN}[检查订阅配置...]${NC}"
-    local SUBSCRIPTION_URL="https://$DOMAIN/subscribe/$USERNAME.yml"
-    local CLASH_URL="https://$DOMAIN/clash/$USERNAME.yml"
-    local sub_status=$(curl -s -o /dev/null -w "%{http_code}" --insecure "$SUBSCRIPTION_URL")
+    local SUBSCRIPTION_URL="https://$DOMAIN/subscribe/$USERNAME.yml?token=$TOKEN"
+    local CLASH_URL="https://$DOMAIN/clash/$USERNAME.yml?token=$TOKEN"
+    local sub_status=$(curl -s -o /dev/null -w "%{http_code}" --insecure -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36" "$SUBSCRIPTION_URL")
     if [ "$sub_status" -eq 200 ]; then
         echo -e "${GREEN}订阅链接 $SUBSCRIPTION_URL 可正常访问${NC}"
     else
         echo -e "${YELLOW}订阅链接 $SUBSCRIPTION_URL 不可访问（状态码: $sub_status），尝试修复...${NC}"
-        if [ ! -f "$SUBSCRIPTION_DIR/$USERNAME.yml" ]; then
-            echo -e "${RED}订阅文件 $SUBSCRIPTION_DIR/$USERNAME.yml 不存在${NC}"
-            ls -l "$SUBSCRIPTION_DIR"
-            return 1
-        fi
         nginx -t || { echo -e "${RED}Nginx 配置错误${NC}"; cat /var/log/nginx/xray_error.log | tail -n 20; return 1; }
-        if [ ! -f "$CERTS_DIR/$DOMAIN/fullchain.pem" ] || [ ! -f "$CERTS_DIR/$DOMAIN/privkey.pem" ]; then
-            echo -e "${YELLOW}SSL 证书缺失，重新生成...${NC}"
-            apply_ssl
-        fi
-        if ! curl -s -o /dev/null -w "%{http_code}" "http://$DOMAIN/subscribe/$USERNAME.yml" | grep -q "301"; then
-            echo -e "${YELLOW}HTTP 重定向未生效，修复默认站点...${NC}"
-            rm -f /etc/nginx/sites-enabled/default
-        fi
         systemctl restart nginx
         echo -e "${YELLOW}检查端口和 Xray 服务${NC}"
         ss -tuln | grep -E '443|49152'
         systemctl status "$XRAY_SERVICE_NAME" | tail -n 10
-        sub_status=$(curl -s -o /dev/null -w "%{http_code}" --insecure "$SUBSCRIPTION_URL")
+        sub_status=$(curl -s -o /dev/null -w "%{http_code}" --insecure -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36" "$SUBSCRIPTION_URL")
         if [ "$sub_status" -eq 200 ]; then
             echo -e "${GREEN}订阅链接修复成功${NC}"
         else
-            echo -e "${RED}订阅链接仍不可访问（状态码: $sub_status），请检查以下信息:${NC}"
-            curl -v "$SUBSCRIPTION_URL" 2>&1 | tail -n 20
+            echo -e "${RED}订阅链接仍不可访问（状态码: $sub_status），可能原因:${NC}"
+            echo "1. 检查文件权限: ls -l $SUBSCRIPTION_DIR/$USERNAME.yml"
+            echo "2. Cloudflare 橙云拦截（确保使用带 Token 的链接）"
+            curl -v -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36" "$SUBSCRIPTION_URL" 2>&1 | tail -n 20
             return 1
         fi
     fi
-    local clash_status=$(curl -s -o /dev/null -w "%{http_code}" --insecure "$CLASH_URL")
+    local clash_status=$(curl -s -o /dev/null -w "%{http_code}" --insecure -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36" "$CLASH_URL")
     if [ "$clash_status" -eq 200 ]; then
         echo -e "${GREEN}Clash 配置链接 $CLASH_URL 可正常访问${NC}"
     else
         echo -e "${YELLOW}Clash 配置链接 $CLASH_URL 不可访问（状态码: $clash_status），尝试修复...${NC}"
-        if [ ! -f "$CLASH_DIR/$USERNAME.yml" ]; then
-            echo -e "${RED}Clash 文件 $CLASH_DIR/$USERNAME.yml 不存在${NC}"
-            ls -l "$CLASH_DIR"
-            return 1
-        fi
         systemctl restart nginx
-        clash_status=$(curl -s -o /dev/null -w "%{http_code}" --insecure "$CLASH_URL")
+        clash_status=$(curl -s -o /dev/null -w "%{http_code}" --insecure -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36" "$CLASH_URL")
         if [ "$clash_status" -eq 200 ]; then
             echo -e "${GREEN}Clash 配置链接修复成功${NC}"
         else
-            echo -e "${RED}Clash 配置链接仍不可访问（状态码: $clash_status），请检查以下信息:${NC}"
-            curl -v "$CLASH_URL" 2>&1 | tail -n 20
+            echo -e "${RED}Clash 配置链接仍不可访问（状态码: $clash_status），请检查:${NC}"
+            curl -v -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36" "$CLASH_URL" 2>&1 | tail -n 20
             return 1
         fi
     fi
@@ -553,11 +540,11 @@ show_user_link() {
                echo -e "\n链接地址 (VLESS+TCP+TLS):\n$VLESS_TCP_LINK" ;;
         esac
     done
-    echo -e "\n订阅链接（使用主域名）:\nhttps://$DOMAIN/subscribe/$USERNAME.yml"
-    echo -e "Clash 配置链接:\nhttps://$DOMAIN/clash/$USERNAME.yml"
+    echo -e "\n订阅链接（需携带 Token）:\nhttps://$DOMAIN/subscribe/$USERNAME.yml?token=$TOKEN"
+    echo -e "Clash 配置链接:\nhttps://$DOMAIN/clash/$USERNAME.yml?token=$TOKEN"
     echo -e "${GREEN}账号创建时间: $CREATION_DATE${NC}"
     echo -e "${GREEN}账号到期时间: $EXPIRE_DATE${NC}"
-    echo -e "${GREEN}请使用主域名订阅链接以确保兼容性和证书有效性${NC}"
+    echo -e "${GREEN}请在客户端中使用带 Token 的订阅链接以绕过 Cloudflare 限制${NC}"
 }
 
 sync_user_status() {
@@ -615,25 +602,26 @@ add_user() {
     read -p "请选择 [默认1]: " EXPIRE_TYPE
     EXPIRE_TYPE=${EXPIRE_TYPE:-1}
     CREATION_DATE=$(date "+%Y-%m-%d %H:%M:%S")
+    NOW=$(date +%s)
     case "$EXPIRE_TYPE" in
-        1) EXPIRE_DATE=$(date -d "$CREATION_DATE +1 month" "+%Y-%m-%d %H:%M:%S"); EXPIRE_TS=$(date -d "$EXPIRE_DATE" +%s) ;;
-        2) EXPIRE_DATE=$(date -d "$CREATION_DATE +1 year" "+%Y-%m-%d %H:%M:%S"); EXPIRE_TS=$(date -d "$EXPIRE_DATE" +%s) ;;
+        1) EXPIRE_TS=$((NOW + 30*24*60*60)); EXPIRE_DATE=$(date -d "@$EXPIRE_TS" "+%Y-%m-%d %H:%M:%S") ;;
+        2) EXPIRE_TS=$((NOW + 365*24*60*60)); EXPIRE_DATE=$(date -d "@$EXPIRE_TS" "+%Y-%m-%d %H:%M:%S") ;;
         3) EXPIRE_DATE="永久"; EXPIRE_TS=0 ;;
         4) read -p "请输入自定义时间 (如 1h/10m/200d): " CUSTOM_TIME
            if [[ "$CUSTOM_TIME" =~ ^([0-9]+)([hmd])$ ]]; then
                NUM=${BASH_REMATCH[1]}
                UNIT=${BASH_REMATCH[2]}
                case "$UNIT" in
-                   h) EXPIRE_DATE=$(date -d "$CREATION_DATE +${NUM} hours" "+%Y-%m-%d %H:%M:%S"); EXPIRE_TS=$(date -d "$EXPIRE_DATE" +%s) ;;
-                   m) EXPIRE_DATE=$(date -d "$CREATION_DATE +${NUM} minutes" "+%Y-%m-%d %H:%M:%S"); EXPIRE_TS=$(date -d "$EXPIRE_DATE" +%s) ;;
-                   d) EXPIRE_DATE=$(date -d "$CREATION_DATE +${NUM} days" "+%Y-%m-%d %H:%M:%S"); EXPIRE_TS=$(date -d "$EXPIRE_DATE" +%s) ;;
+                   h) EXPIRE_TS=$((NOW + NUM*60*60)); EXPIRE_DATE=$(date -d "@$EXPIRE_TS" "+%Y-%m-%d %H:%M:%S") ;;
+                   m) EXPIRE_TS=$((NOW + NUM*60)); EXPIRE_DATE=$(date -d "@$EXPIRE_TS" "+%Y-%m-%d %H:%M:%S") ;;
+                   d) EXPIRE_TS=$((NOW + NUM*24*60*60)); EXPIRE_DATE=$(date -d "@$EXPIRE_TS" "+%Y-%m-%d %H:%M:%S") ;;
                esac
            else
                echo -e "${RED}无效格式! 请使用如 1h、10m、200d${NC}"
                exit 1
            fi
            ;;
-        *) EXPIRE_DATE=$(date -d "$CREATION_DATE +1 month" "+%Y-%m-%d %H:%M:%S"); EXPIRE_TS=$(date -d "$EXPIRE_DATE" +%s) ;;
+        *) EXPIRE_TS=$((NOW + 30*24*60*60)); EXPIRE_DATE=$(date -d "@$EXPIRE_TS" "+%Y-%m-%d %H:%M:%S") ;;
     esac
     jq --arg name "$USERNAME" --arg uuid "$UUID" --arg expire "$EXPIRE_DATE" --arg creation "$CREATION_DATE" \
        '.users += [{"id": (.users | length + 1), "name": $name, "uuid": $uuid, "expire": $expire, "creation": $creation, "used_traffic": 0, "status": "启用"}]' \
@@ -769,18 +757,19 @@ renew_user() {
     read -p "请选择 [默认1]: " RENEW_TYPE
     RENEW_TYPE=${RENEW_TYPE:-1}
     RENEW_DATE=$(date "+%Y-%m-%d %H:%M:%S")
+    NOW=$(date +%s)
     case "$RENEW_TYPE" in
-        1) NEW_EXPIRE=$(date -d "$RENEW_DATE +1 month" "+%Y-%m-%d %H:%M:%S"); NEW_EXPIRE_TS=$(date -d "$NEW_EXPIRE" +%s) ;;
-        2) NEW_EXPIRE=$(date -d "$RENEW_DATE +1 year" "+%Y-%m-%d %H:%M:%S"); NEW_EXPIRE_TS=$(date -d "$NEW_EXPIRE" +%s) ;;
+        1) NEW_EXPIRE_TS=$((NOW + 30*24*60*60)); NEW_EXPIRE=$(date -d "@$NEW_EXPIRE_TS" "+%Y-%m-%d %H:%M:%S") ;;
+        2) NEW_EXPIRE_TS=$((NOW + 365*24*60*60)); NEW_EXPIRE=$(date -d "@$NEW_EXPIRE_TS" "+%Y-%m-%d %H:%M:%S") ;;
         3) NEW_EXPIRE="永久"; NEW_EXPIRE_TS=0 ;;
         4) read -p "请输入自定义时间 (如 1h/10m/200d): " CUSTOM_TIME
            if [[ "$CUSTOM_TIME" =~ ^([0-9]+)([hmd])$ ]]; then
                NUM=${BASH_REMATCH[1]}
                UNIT=${BASH_REMATCH[2]}
                case "$UNIT" in
-                   h) NEW_EXPIRE=$(date -d "$RENEW_DATE +${NUM} hours" "+%Y-%m-%d %H:%M:%S"); NEW_EXPIRE_TS=$(date -d "$NEW_EXPIRE" +%s) ;;
-                   m) NEW_EXPIRE=$(date -d "$RENEW_DATE +${NUM} minutes" "+%Y-%m-%d %H:%M:%S"); NEW_EXPIRE_TS=$(date -d "$NEW_EXPIRE" +%s) ;;
-                   d) NEW_EXPIRE=$(date -d "$RENEW_DATE +${NUM} days" "+%Y-%m-%d %H:%M:%S"); NEW_EXPIRE_TS=$(date -d "$NEW_EXPIRE" +%s) ;;
+                   h) NEW_EXPIRE_TS=$((NOW + NUM*60*60)); NEW_EXPIRE=$(date -d "@$NEW_EXPIRE_TS" "+%Y-%m-%d %H:%M:%S") ;;
+                   m) NEW_EXPIRE_TS=$((NOW + NUM*60)); NEW_EXPIRE=$(date -d "@$NEW_EXPIRE_TS" "+%Y-%m-%d %H:%M:%S") ;;
+                   d) NEW_EXPIRE_TS=$((NOW + NUM*24*60*60)); NEW_EXPIRE=$(date -d "@$NEW_EXPIRE_TS" "+%Y-%m-%d %H:%M:%S") ;;
                esac
            else
                echo -e "${RED}无效格式! 请使用如 1h、10m、200d${NC}"
@@ -788,7 +777,7 @@ renew_user() {
                return
            fi
            ;;
-        *) NEW_EXPIRE=$(date -d "$RENEW_DATE +1 month" "+%Y-%m-%d %H:%M:%S"); NEW_EXPIRE_TS=$(date -d "$NEW_EXPIRE" +%s) ;;
+        *) NEW_EXPIRE_TS=$((NOW + 30*24*60*60)); NEW_EXPIRE=$(date -d "@$NEW_EXPIRE_TS" "+%Y-%m-%d %H:%M:%S") ;;
     esac
     jq --arg name "$USERNAME" --arg expire "$NEW_EXPIRE" '(.users[] | select(.name == $name)).expire = $expire' "$USER_DATA" > tmp.json && mv tmp.json "$USER_DATA"
     for i in $(seq 0 $((${#PROTOCOLS[@]} - 1))); do
@@ -1014,6 +1003,155 @@ uninstall_script() {
     crontab -l 2>/dev/null | grep -v "access.log" | crontab -
     echo -e "${YELLOW}卸载完成！SSL 证书未删除，可手动运行 'certbot delete'${NC}"
     exit 0
+}
+
+speedtest_panel() {
+    echo -e "${GREEN}=== Speedtest测速面板 ===${NC}"
+    echo -e "${GREEN}正在准备处理 Speedtest 测速面板...${NC}"
+    detect_system
+    if [ "$OS_NAME" == "" ]; then
+        echo -e "${RED}无法识别系统，无法继续操作！${NC}"
+        read -p "按回车键返回主菜单..."
+        return
+    else
+        echo -e "${YELLOW}正在检测运行中的 Docker 服务...${NC}"
+        DOCKER_RUNNING=false
+        if command -v docker > /dev/null 2>&1 && systemctl is-active docker > /dev/null 2>&1; then
+            DOCKER_RUNNING=true
+            echo -e "${YELLOW}检测到 Docker 服务正在运行${NC}"
+            if docker ps -q | grep -q "."; then
+                echo -e "${YELLOW}检测到运行中的 Docker 容器${NC}"
+            fi
+        fi
+        if [ "$DOCKER_RUNNING" = true ] && docker ps -q | grep -q "."; then
+            read -p "是否停止并移除运行中的 Docker 容器以继续安装？（y/n，默认 n）： " stop_containers
+            if [ "$stop_containers" == "y" ] || [ "$stop_containers" == "Y" ]; then
+                echo -e "${YELLOW}正在停止并移除运行中的 Docker 容器...${NC}"
+                docker stop $(docker ps -q) || true
+                docker rm $(docker ps -aq) || true
+            else
+                echo -e "${RED}保留运行中的容器，可能导致安装冲突，建议手动清理后再试！${NC}"
+            fi
+        fi
+        echo -e "${YELLOW}请选择操作：${NC}"
+        echo "1) 安装 Speedtest 测速面板"
+        echo "2) 卸载 Speedtest 测速面板"
+        read -p "请输入选项（1 或 2）： " operation_choice
+        case $operation_choice in
+            1)
+                echo -e "${GREEN}正在安装 Speedtest 测速面板...${NC}"
+                DEFAULT_PORT=80
+                check_port() {
+                    local port=$1
+                    if netstat -tuln | grep ":$port" > /dev/null; then
+                        return 1
+                    else
+                        return 0
+                    fi
+                }
+                check_port "$DEFAULT_PORT"
+                if [ $? -eq 1 ]; then
+                    echo -e "${RED}端口 $DEFAULT_PORT 已被占用！${NC}"
+                    read -p "是否更换端口？（y/n，默认 y）： " change_port
+                    if [ "$change_port" != "n" ] && [ "$change_port" != "N" ]; then
+                        while true; do
+                            read -p "请输入新的端口号（例如 8080）： " new_port
+                            while ! [[ "$new_port" =~ ^[0-9]+$ ]] || [ "$new_port" -lt 1 ] || [ "$new_port" -gt 65535 ]; do
+                                echo -e "${RED}无效端口，请输入 1-65535 之间的数字！${NC}"
+                                read -p "请输入新的端口号（例如 8080）： " new_port
+                            done
+                            check_port "$new_port"
+                            if [ $? -eq 0 ]; then
+                                DEFAULT_PORT=$new_port
+                                break
+                            else
+                                echo -e "${RED}端口 $new_port 已被占用，请选择其他端口！${NC}"
+                            fi
+                        done
+                    else
+                        echo -e "${RED}端口 $DEFAULT_PORT 被占用，无法继续安装！${NC}"
+                        read -p "按回车键返回主菜单..."
+                        return
+                    fi
+                fi
+                if command -v ufw > /dev/null 2>&1; then
+                    ufw status | grep -q "Status: active"
+                    if [ $? -eq 0 ]; then
+                        echo -e "${YELLOW}检测到 UFW 防火墙正在运行...${NC}"
+                        ufw status | grep -q "$DEFAULT_PORT"
+                        if [ $? -ne 0 ]; then
+                            echo -e "${YELLOW}正在放行端口 $DEFAULT_PORT...${NC}"
+                            sudo ufw allow "$DEFAULT_PORT/tcp"
+                            sudo ufw reload
+                        fi
+                    fi
+                elif command -v iptables > /dev/null 2>&1; then
+                    echo -e "${YELLOW}检测到 iptables 防火墙...${NC}"
+                    iptables -C INPUT -p tcp --dport "$DEFAULT_PORT" -j ACCEPT 2>/dev/null
+                    if [ $? -ne 0 ]; then
+                        echo -e "${YELLOW}正在放行端口 $DEFAULT_PORT...${NC}"
+                        sudo iptables -A INPUT -p tcp --dport "$DEFAULT_PORT" -j ACCEPT
+                        sudo iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
+                    fi
+                fi
+                if ! command -v docker > /dev/null 2>&1; then
+                    echo -e "${YELLOW}安装 Docker...${NC}"
+                    curl -fsSL https://get.docker.com | sh
+                fi
+                if ! command -v docker-compose > /dev/null 2>&1; then
+                    echo -e "${YELLOW}安装 Docker Compose...${NC}"
+                    curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+                    chmod +x /usr/local/bin/docker-compose
+                fi
+                cd /home && mkdir -p web && touch web/docker-compose.yml
+                sudo bash -c "cat > /home/web/docker-compose.yml <<EOF
+version: '3'
+services:
+  als:
+    image: wikihostinc/looking-glass-server:latest
+    container_name: speedtest_panel
+    ports:
+      - \"$DEFAULT_PORT:80\"
+    environment:
+      - HTTP_PORT=$DEFAULT_PORT
+    restart: always
+    network_mode: host
+EOF"
+                cd /home/web && docker-compose up -d
+                server_ip=$(curl -s4 ifconfig.me)
+                echo -e "${GREEN}Speedtest 测速面板安装完成！${NC}"
+                echo -e "${YELLOW}访问 http://$server_ip:$DEFAULT_PORT 查看 Speedtest 测速面板${NC}"
+                echo -e "${YELLOW}功能包括：HTML5 速度测试、Ping、iPerf3、Speedtest、下载测速、网卡流量监控、在线 Shell${NC}"
+                ;;
+            2)
+                echo -e "${GREEN}正在卸载 Speedtest 测速面板...${NC}"
+                cd /home/web || true
+                if [ -f docker-compose.yml ]; then
+                    docker-compose down -v || true
+                    echo -e "${YELLOW}已停止并移除 Speedtest 测速面板容器和卷${NC}"
+                fi
+                if docker ps -a | grep -q "speedtest_panel"; then
+                    docker stop speedtest_panel || true
+                    docker rm speedtest_panel || true
+                    echo -e "${YELLOW}已移除独立的 speedtest_panel 容器${NC}"
+                fi
+                sudo rm -rf /home/web
+                echo -e "${YELLOW}已删除 /home/web 目录${NC}"
+                if docker images | grep -q "wikihostinc/looking-glass-server"; then
+                    read -p "是否移除 Speedtest 测速面板的 Docker 镜像（wikihostinc/looking-glass-server）？（y/n，默认 n）： " remove_image
+                    if [ "$remove_image" == "y" ] || [ "$remove_image" == "Y" ]; then
+                        docker rmi wikihostinc/looking-glass-server:latest || true
+                        echo -e "${YELLOW}已移除 Speedtest 测速面板的 Docker 镜像${NC}"
+                    fi
+                fi
+                echo -e "${GREEN}Speedtest 测速面板卸载完成！${NC}"
+                ;;
+            *)
+                echo -e "${RED}无效选项，请输入 1 或 2！${NC}"
+                ;;
+        esac
+    fi
+    read -p "按回车键返回主菜单..."
 }
 
 install_script() {
