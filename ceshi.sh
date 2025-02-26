@@ -1,6 +1,6 @@
 #!/bin/bash
 # Xray 高级管理脚本
-# 版本: v1.0.4-fix22
+# 版本: v1.0.4-fix23
 # 支持系统: Ubuntu 20.04/22.04, CentOS 7/8, Debian 10/11 (systemd)
 
 # 配置常量
@@ -122,21 +122,21 @@ detect_xray_service() {
 # 初始化环境
 init_environment() {
     [ "$EUID" -ne 0 ] && echo -e "${RED}请使用 root 权限运行脚本!${NC}" && exit 1
-    mkdir -p "$LOG_DIR" "$SUBSCRIPTION_DIR" "$BACKUP_DIR" "/usr/local/etc/xray"
+    mkdir -p "$LOG_DIR" "$SUBSCRIPTION_DIR" "$BACKUP_DIR" "/usr/local/etc/xray" || { echo -e "${RED}创建目录失败!${NC}"; exit 1; }
     chmod 770 "$LOG_DIR" "$SUBSCRIPTION_DIR" "$BACKUP_DIR" "/usr/local/etc/xray"
-    chown nobody:nogroup "$LOG_DIR" "$SUBSCRIPTION_DIR" "$BACKUP_DIR" "/usr/local/etc/xray"
+    chown root:root "$LOG_DIR" "$SUBSCRIPTION_DIR" "$BACKUP_DIR" "/usr/local/etc/xray"
     touch "$LOG_DIR/access.log" "$LOG_DIR/error.log"
     chmod 660 "$LOG_DIR/access.log" "$LOG_DIR/error.log"
-    chown nobody:nogroup "$LOG_DIR/access.log" "$LOG_DIR/error.log"
+    chown root:root "$LOG_DIR/access.log" "$LOG_DIR/error.log"
     if [ ! -s "$USER_DATA" ] || ! jq -e . "$USER_DATA" >/dev/null 2>&1; then
         echo '{"users": []}' > "$USER_DATA"
-        chmod 660 "$USER_DATA"
-        chown nobody:nogroup "$USER_DATA"
+        chmod 600 "$USER_DATA"
+        chown root:root "$USER_DATA"
     fi
     if [ ! -f "$XRAY_CONFIG" ]; then
         echo '{"log": {"loglevel": "debug", "access": "'"$LOG_DIR/access.log"'", "error": "'"$LOG_DIR/error.log"'"}, "inbounds": [], "outbounds": [{"protocol": "freedom"}]}' > "$XRAY_CONFIG"
         chmod 600 "$XRAY_CONFIG"
-        chown nobody:nogroup "$XRAY_CONFIG"
+        chown root:root "$XRAY_CONFIG"
     fi
     detect_system
     detect_xray_service
@@ -210,18 +210,18 @@ After=network.target nss-lookup.target
 [Service]
 Type=simple
 ExecStartPre=/bin/mkdir -p $LOG_DIR
-ExecStartPre=/bin/chown -R nobody:nogroup $LOG_DIR
+ExecStartPre=/bin/chown -R root:root $LOG_DIR
 ExecStartPre=/bin/chmod -R 770 $LOG_DIR
 ExecStartPre=/bin/touch $LOG_DIR/access.log $LOG_DIR/error.log
-ExecStartPre=/bin/chown nobody:nogroup $LOG_DIR/access.log $LOG_DIR/error.log
+ExecStartPre=/bin/chown root:root $LOG_DIR/access.log $LOG_DIR/error.log
 ExecStartPre=/bin/chmod 660 $LOG_DIR/access.log $LOG_DIR/error.log
-ExecStartPre=/bin/chown nobody:nogroup $XRAY_CONFIG
+ExecStartPre=/bin/chown root:root $XRAY_CONFIG
 ExecStartPre=/bin/chmod 600 $XRAY_CONFIG
 ExecStart=$XRAY_BIN -config $XRAY_CONFIG
 Restart=always
 RestartSec=5
-User=nobody
-Group=nogroup
+User=root
+Group=root
 LimitNOFILE=51200
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
@@ -246,7 +246,6 @@ check_firewall() {
     echo -e "${GREEN}[检测防火墙状态并尝试开放端口...]${NC}"
     BASE_PORT=49152  # 默认优先使用高端口范围
 
-    # 尝试开放 49152-49159
     if command -v ufw >/dev/null; then
         if ufw status | grep -q "Status: active"; then
             echo "防火墙 UFW 已启用，尝试开放端口..."
@@ -547,6 +546,8 @@ create_default_user() {
     echo "- 用户名: $USERNAME"
     echo "- UUID: $UUID"
     echo "- 过期时间: $EXPIRE_DATE"
+    chmod 600 "$USER_DATA"
+    chown root:root "$USER_DATA"
     flock -u 200
 }
 
@@ -571,7 +572,7 @@ EOF
         esac
     done
     chmod 600 "$XRAY_CONFIG"
-    chown nobody:nogroup "$XRAY_CONFIG"
+    chown root:root "$XRAY_CONFIG"
     echo "- 协议: $(for p in "${PROTOCOLS[@]}"; do case $p in 1) echo -n "VLESS+WS+TLS "; ;; 2) echo -n "VMess+WS+TLS "; ;; 3) echo -n "VLESS+gRPC+TLS "; ;; 4) echo -n "VLESS+TCP+TLS (HTTP/2) "; ;; esac; done)"
     echo "- 路径: $WS_PATH (VLESS+WS), $VMESS_PATH (VMess+WS), $GRPC_SERVICE (gRPC), $TCP_PATH (TCP with HTTP/2)"
     echo "- 内部端口: ${PORTS[*]}"
@@ -767,18 +768,33 @@ disable_expired_users() {
         echo -e "${RED}未检测到有效的 Xray 配置，无法禁用用户${NC}"
         return
     fi
+    if [ ! -s "$USER_DATA" ] || ! jq -e . "$USER_DATA" >/dev/null 2>&1; then
+        echo -e "${RED}用户数据文件损坏或为空，尝试恢复备份...${NC}"
+        LATEST_BACKUP=$(ls -t "$USER_DATA.bak."* 2>/dev/null | head -n 1)
+        if [ -n "$LATEST_BACKUP" ] && jq -e . "$LATEST_BACKUP" >/dev/null 2>&1; then
+            cp "$LATEST_BACKUP" "$USER_DATA"
+            echo "已恢复备份: $LATEST_BACKUP"
+        else
+            echo -e "${RED}无有效备份，初始化用户数据${NC}"
+            echo '{"users": []}' > "$USER_DATA"
+            chmod 600 "$USER_DATA"
+            chown root:root "$USER_DATA"
+            return
+        fi
+    fi
     flock -x 200
-    TODAY=$(date +%s)  # 使用时间戳比较，以支持小时、分钟等精度
-    EXPIRED_USERS=$(jq -r ".users[] | select(.expire != \"永久\" and (.expire | strptime(\"%Y-%m-%d %H:%M:%S\") | mktime) < $TODAY and .status == \"启用\") | .uuid" "$USER_DATA")
+    TODAY=$(date +%s)
+    EXPIRED_USERS=$(jq -r ".users[] | select(.expire != \"永久\" and (.expire | strptime(\"%Y-%m-%d %H:%M:%S\") | mktime) < $TODAY and .status == \"启用\") | .uuid" "$USER_DATA" 2>/dev/null)
     if [ -n "$EXPIRED_USERS" ]; then
         cp "$XRAY_CONFIG" "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)"
         cp "$USER_DATA" "$USER_DATA.bak.$(date +%F_%H%M%S)"
         for UUID in $EXPIRED_USERS; do
+            EXPIRE_TIME=$(jq -r ".users[] | select(.uuid == \"$UUID\") | .expire" "$USER_DATA")
             jq --arg uuid "$UUID" '.users[] | select(.uuid == $uuid) | .status = "禁用"' "$USER_DATA" > tmp.json && mv tmp.json "$USER_DATA" || { echo -e "${RED}用户数据更新失败!${NC}"; cp "$USER_DATA.bak.$(date +%F_%H%M%S)" "$USER_DATA"; exit 1; }
             for i in "${!PROTOCOLS[@]}"; do
                 jq --arg uuid "$UUID" ".inbounds[$i].settings.clients -= [{\"id\": \$uuid}]" "$XRAY_CONFIG" > tmp.json && mv tmp.json "$XRAY_CONFIG" || { echo -e "${RED}Xray 配置更新失败!${NC}"; cp "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)" "$XRAY_CONFIG"; exit 1; }
             done
-            echo "用户 UUID $UUID 已禁用（过期时间: $(jq -r ".users[] | select(.uuid == \"$UUID\") | .expire" "$USER_DATA")）"
+            echo "用户 UUID $UUID 已禁用（过期时间: $EXPIRE_TIME）"
         done
         if ! jq -e . "$USER_DATA" >/dev/null 2>&1 || ! jq -e . "$XRAY_CONFIG" >/dev/null 2>&1; then
             echo -e "${RED}配置文件损坏，恢复备份!${NC}"
@@ -786,6 +802,8 @@ disable_expired_users() {
             cp "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)" "$XRAY_CONFIG"
             exit 1
         fi
+        chmod 600 "$USER_DATA" "$XRAY_CONFIG"
+        chown root:root "$USER_DATA" "$XRAY_CONFIG"
         echo -e "${YELLOW}正在重启 Xray 以应用禁用用户配置...${NC}"
         systemctl restart "$XRAY_SERVICE_NAME" || { 
             echo -e "${RED}Xray 重启失败!${NC}"
@@ -832,7 +850,7 @@ user_management() {
     exec 200>&-
 }
 
-# 新建用户（仅添加用户到现有配置）
+# 新建用户
 add_user() {
     echo -e "${GREEN}=== 新建用户流程 ===${NC}"
     check_and_set_domain
@@ -860,10 +878,10 @@ add_user() {
         2) EXPIRE_DATE=$(date -d "$(date +%F %H:%M:%S) +1 year" "+%Y-%m-%d %H:%M:%S") ;;
         3) EXPIRE_DATE="永久" ;;
         4) 
-            read -p "请输入自定义时间 (如 '1 hour', '10 minutes', '200 days'): " CUSTOM_TIME
+            read -p "请输入自定义时间 (如 1h代表1小时 10m代表10分钟 200d代表200天): " CUSTOM_TIME
             EXPIRE_DATE=$(date -d "$(date +%F %H:%M:%S) +$CUSTOM_TIME" "+%Y-%m-%d %H:%M:%S" 2>/dev/null)
             if [ $? -ne 0 ]; then
-                echo -e "${RED}无效时间格式，请使用如 '1 hour', '10 minutes', '200 days'${NC}"
+                echo -e "${RED}无效时间格式，请使用如 '1h', '10m', '200d'${NC}"
                 exit 1
             fi
             ;;
@@ -894,8 +912,8 @@ add_user() {
         cp "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)" "$XRAY_CONFIG"
         exit 1
     fi
-    chmod 600 "$XRAY_CONFIG"
-    chown nobody:nogroup "$XRAY_CONFIG" || { echo -e "${RED}设置 config.json 权限失败!${NC}"; exit 1; }
+    chmod 600 "$XRAY_CONFIG" "$USER_DATA"
+    chown root:root "$XRAY_CONFIG" "$USER_DATA"
     echo -e "${YELLOW}正在重启 Xray 以应用新用户配置...${NC}"
     systemctl restart "$XRAY_SERVICE_NAME" || { 
         echo -e "${RED}Xray 重启失败!${NC}"
@@ -913,13 +931,11 @@ add_user() {
 # 用户列表
 list_users() {
     echo -e "${BLUE}用户列表:${NC}"
-    # 固定列宽，使用 | 分隔
     printf "| %-4s | %-16s | %-36s | %-20s | %-12s | %-6s |\n" "ID" "用户名" "UUID" "过期时间" "已用流量" "状态"
     printf "|------|------------------|--------------------------------------|----------------------|--------------|--------|\n"
     jq -r '.users[] | [.id, .name, .uuid, .expire, .used_traffic, .status] | join("\t")' "$USER_DATA" | \
     while IFS=$'\t' read -r id name uuid expire used status; do
         used_fmt=$(awk "BEGIN {printf \"%.2fG\", $used/1073741824}")
-        # 截断或填充，确保固定宽度
         name=$(printf "%-16.16s" "$name")
         uuid=$(printf "%-36.36s" "$uuid")
         expire=$(printf "%-20.20s" "$expire")
@@ -948,10 +964,10 @@ renew_user() {
         2) NEW_EXPIRE=$(date -d "$CURRENT_EXPIRE +1 year" "+%Y-%m-%d %H:%M:%S") ;;
         3) NEW_EXPIRE="永久" ;;
         4) 
-            read -p "请输入自定义时间 (如 '1 hour', '10 minutes', '200 days'): " CUSTOM_TIME
+            read -p "请输入自定义时间 (如 1h代表1小时 10m代表10分钟 200d代表200天): " CUSTOM_TIME
             NEW_EXPIRE=$(date -d "$CURRENT_EXPIRE +$CUSTOM_TIME" "+%Y-%m-%d %H:%M:%S" 2>/dev/null)
             if [ $? -ne 0 ]; then
-                echo -e "${RED}无效时间格式，请使用如 '1 hour', '10 minutes', '200 days'${NC}"
+                echo -e "${RED}无效时间格式，请使用如 '1h', '10m', '200d'${NC}"
                 exit 1
             fi
             ;;
@@ -959,11 +975,13 @@ renew_user() {
     esac
     jq --arg name "$USERNAME" --arg expire "$NEW_EXPIRE" \
        '(.users[] | select(.name == $name)).expire = $expire' "$USER_DATA" > tmp.json && mv tmp.json "$USER_DATA"
+    chmod 600 "$USER_DATA"
+    chown root:root "$USER_DATA"
     echo "用户 $USERNAME 已续期至: $NEW_EXPIRE"
     flock -u 200
 }
 
-# 删除用户（仅从现有配置中移除）
+# 删除用户
 delete_user() {
     echo -e "${GREEN}=== 删除用户流程 ===${NC}"
     check_and_set_domain
@@ -998,6 +1016,8 @@ delete_user() {
             cp "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)" "$XRAY_CONFIG"
             exit 1
         fi
+        chmod 600 "$XRAY_CONFIG" "$USER_DATA"
+        chown root:root "$XRAY_CONFIG" "$USER_DATA"
         echo -e "${YELLOW}正在重启 Xray 以应用删除用户配置...${NC}"
         systemctl restart "$XRAY_SERVICE_NAME" || { 
             echo -e "${RED}Xray 重启失败!${NC}"
@@ -1012,7 +1032,7 @@ delete_user() {
     flock -u 200
 }
 
-# 协议管理（多协议支持）
+# 协议管理
 protocol_management() {
     check_and_set_domain
     echo -e "${GREEN}协议管理:${NC}"
@@ -1037,7 +1057,7 @@ protocol_management() {
     done
 }
 
-# 流量统计（8小时更新）
+# 流量统计
 traffic_stats() {
     echo -e "${BLUE}=== 流量统计 ===${NC}"
     printf "| %-16s | %-12s | %-8s | %-8s |\n" "用户名" "已用流量" "总流量" "状态"
@@ -1074,6 +1094,8 @@ backup_restore() {
         1)
             BACKUP_FILE="$BACKUP_DIR/xray_backup_$(date +%F).tar.gz"
             tar -czf "$BACKUP_FILE" "$XRAY_CONFIG" "$USER_DATA" "$CERTS_DIR" >/dev/null 2>&1
+            chmod 600 "$BACKUP_FILE"
+            chown root:root "$BACKUP_FILE"
             echo -e "\n备份已创建至: $BACKUP_FILE"
             echo "包含: 用户数据/配置/证书"
             ;;
@@ -1083,6 +1105,8 @@ backup_restore() {
             read -p "输入要恢复的备份文件名: " BACKUP_FILE
             if [ -f "$BACKUP_DIR/$BACKUP_FILE" ]; then
                 tar -xzf "$BACKUP_DIR/$BACKUP_FILE" -C / >/dev/null 2>&1
+                chmod 600 "$XRAY_CONFIG" "$USER_DATA"
+                chown root:root "$XRAY_CONFIG" "$USER_DATA"
                 read -p "是否更换域名? [y/N]: " CHANGE_DOMAIN
                 if [[ "$CHANGE_DOMAIN" =~ ^[Yy] ]]; then
                     read -p "输入新域名: " NEW_DOMAIN
@@ -1105,11 +1129,16 @@ backup_restore() {
 
 # 安装脚本到指定目录并设置快捷命令
 install_script() {
+    if [ "$EUID" -ne 0 ]; then
+        echo -e "${RED}请以 root 身份运行此脚本以完成安装!${NC}"
+        exit 1
+    fi
     if [ ! -f "$SCRIPT_PATH" ]; then
         echo -e "${GREEN}首次运行，安装脚本到 $INSTALL_DIR...${NC}"
         mkdir -p "$INSTALL_DIR" || { echo -e "${RED}创建目录 $INSTALL_DIR 失败!${NC}"; exit 1; }
         cp "$0" "$SCRIPT_PATH" || { echo -e "${RED}复制脚本到 $SCRIPT_PATH 失败!${NC}"; exit 1; }
-        chmod +x "$SCRIPT_PATH" || { echo -e "${RED}设置 $SCRIPT_PATH 可执行权限失败!${NC}"; exit 1; }
+        chmod 700 "$SCRIPT_PATH" || { echo -e "${RED}设置 $SCRIPT_PATH 可执行权限失败!${NC}"; exit 1; }
+        chown root:root "$SCRIPT_PATH"
         ln -sf "$SCRIPT_PATH" /usr/local/bin/v || { echo -e "${RED}创建快捷命令 'v' 失败!${NC}"; exit 1; }
         if [ -x "$SCRIPT_PATH" ] && [ -L "/usr/local/bin/v" ]; then
             echo -e "${GREEN}脚本已安装到 $SCRIPT_PATH 并设置快捷命令 'v'${NC}"
