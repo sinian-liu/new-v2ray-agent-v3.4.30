@@ -1,6 +1,6 @@
 #!/bin/bash
 # Xray 高级管理脚本
-# 版本: v1.0.4-fix28
+# 版本: v1.0.4-fix29
 # 支持系统: Ubuntu 20.04/22.04, CentOS 7/8, Debian 10/11 (systemd)
 
 XRAY_CONFIG="/usr/local/etc/xray/config.json"
@@ -50,7 +50,7 @@ main_menu() {
             PROTOCOL_TEXT="未配置协议"
         fi
         echo -e "Xray状态: $XRAY_STATUS_TEXT | $PROTOCOL_TEXT\n"
-        echo -e "1. 全新安装\n2. 用户管理\n3. 协议管理\n4. 流量统计\n5. 备份恢复\n6. 卸载脚本及相关服务\n7. 查看证书\n8. 退出脚本"
+        echo -e "1. 全新安装\n2. 用户管理\n3. 协议管理\n4. 流量统计\n5. 备份恢复\n6. 查看证书\n7. 卸载脚本\n8. 退出脚本"
         read -p "请选择操作 [1-8]（回车退出）: " CHOICE
         [ -z "$CHOICE" ] && exit 0
         case "$CHOICE" in
@@ -59,8 +59,8 @@ main_menu() {
             3) protocol_management ;;
             4) traffic_stats ;;
             5) backup_restore ;;
-            6) uninstall_script ;;
-            7) view_certificates ;;
+            6) view_certificates ;;
+            7) uninstall_script ;;
             8) exit 0 ;;
             *) echo -e "${RED}无效选择!${NC}" ;;
         esac
@@ -626,7 +626,7 @@ view_certificates() {
 }
 
 uninstall_script() {
-    echo -e "${GREEN}=== 卸载脚本及相关服务 ===${NC}"
+    echo -e "${GREEN}=== 卸载脚本 ===${NC}"
     read -p "确定要卸载? (y/N): " CONFIRM
     [[ ! "$CONFIRM" =~ ^[Yy] ]] && { echo "取消卸载"; return; }
     systemctl stop "$XRAY_SERVICE_NAME" "$SCRIPT_NAME" >/dev/null 2>&1
