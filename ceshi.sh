@@ -1,6 +1,6 @@
 #!/bin/bash
 # Xray 高级管理脚本
-# 版本: v1.0.4-fix23
+# 版本: v1.0.4-fix24
 # 支持系统: Ubuntu 20.04/22.04, CentOS 7/8, Debian 10/11 (systemd)
 
 # 配置常量
@@ -19,7 +19,7 @@ INSTALL_DIR="/root/v2ray"
 SCRIPT_PATH="$INSTALL_DIR/xray-install.sh"
 
 # 全局变量
-declare DOMAIN WS_PATH VMESS_PATH GRPC_SERVICE TCP_PATH PROTOCOLS PORTS BASE_PORT
+declare DOMAIN WS_PATH VMESS_PATH GRPC_SERVICE TCP_PATH PROTOCOLS PORTS BASE_PORT UUID
 
 # 颜色定义
 RED='\033[31m'
@@ -554,6 +554,7 @@ create_default_user() {
 # 配置 Xray 核心（多协议支持）
 configure_xray() {
     echo -e "${GREEN}[配置Xray核心...]${NC}"
+    # 初始化基础配置文件
     cat > "$XRAY_CONFIG" <<EOF
 {
     "log": {"loglevel": "debug", "access": "$LOG_DIR/access.log", "error": "$LOG_DIR/error.log"},
@@ -561,23 +562,67 @@ configure_xray() {
     "outbounds": [{"protocol": "freedom"}]
 }
 EOF
+    chmod 600 "$XRAY_CONFIG"
+    chown root:root "$XRAY_CONFIG"
+
+    # 检查 UUID 是否已定义
+    if [ -z "$UUID" ]; then
+        echo -e "${RED}错误: 未定义 UUID，无法配置 inbounds${NC}"
+        exit 1
+    fi
+
+    # 为每个协议添加 inbound 配置
     for i in "${!PROTOCOLS[@]}"; do
         PROTOCOL=${PROTOCOLS[$i]}
         PORT=${PORTS[$i]}
+        echo "添加协议 $PROTOCOL 到端口 $PORT..."
         case "$PROTOCOL" in
-            1) jq ".inbounds += [{\"port\": $PORT, \"protocol\": \"vless\", \"settings\": {\"clients\": [{\"id\": \"$UUID\"}], \"decryption\": \"none\"}, \"streamSettings\": {\"network\": \"ws\", \"wsSettings\": {\"path\": \"$WS_PATH\"}}}]" "$XRAY_CONFIG" > tmp.json && mv tmp.json "$XRAY_CONFIG" ;;
-            2) jq ".inbounds += [{\"port\": $PORT, \"protocol\": \"vmess\", \"settings\": {\"clients\": [{\"id\": \"$UUID\", \"alterId\": 0}]}, \"streamSettings\": {\"network\": \"ws\", \"wsSettings\": {\"path\": \"$VMESS_PATH\"}}}]" "$XRAY_CONFIG" > tmp.json && mv tmp.json "$XRAY_CONFIG" ;;
-            3) jq ".inbounds += [{\"port\": $PORT, \"protocol\": \"vless\", \"settings\": {\"clients\": [{\"id\": \"$UUID\"}], \"decryption\": \"none\"}, \"streamSettings\": {\"network\": \"grpc\", \"grpcSettings\": {\"serviceName\": \"$GRPC_SERVICE\"}}}]" "$XRAY_CONFIG" > tmp.json && mv tmp.json "$XRAY_CONFIG" ;;
-            4) jq ".inbounds += [{\"port\": $PORT, \"protocol\": \"vless\", \"settings\": {\"clients\": [{\"id\": \"$UUID\"}], \"decryption\": \"none\"}, \"streamSettings\": {\"network\": \"http\", \"httpSettings\": {\"path\": \"$TCP_PATH\", \"host\": [\"$DOMAIN\"]}}}]" "$XRAY_CONFIG" > tmp.json && mv tmp.json "$XRAY_CONFIG" ;;
+            1) 
+                jq ".inbounds += [{\"port\": $PORT, \"protocol\": \"vless\", \"settings\": {\"clients\": [{\"id\": \"$UUID\"}], \"decryption\": \"none\"}, \"streamSettings\": {\"network\": \"ws\", \"wsSettings\": {\"path\": \"$WS_PATH\"}}}]" "$XRAY_CONFIG" > tmp.json
+                ;;
+            2) 
+                jq ".inbounds += [{\"port\": $PORT, \"protocol\": \"vmess\", \"settings\": {\"clients\": [{\"id\": \"$UUID\", \"alterId\": 0}]}, \"streamSettings\": {\"network\": \"ws\", \"wsSettings\": {\"path\": \"$VMESS_PATH\"}}}]" "$XRAY_CONFIG" > tmp.json
+                ;;
+            3) 
+                jq ".inbounds += [{\"port\": $PORT, \"protocol\": \"vless\", \"settings\": {\"clients\": [{\"id\": \"$UUID\"}], \"decryption\": \"none\"}, \"streamSettings\": {\"network\": \"grpc\", \"grpcSettings\": {\"serviceName\": \"$GRPC_SERVICE\"}}}]" "$XRAY_CONFIG" > tmp.json
+                ;;
+            4) 
+                jq ".inbounds += [{\"port\": $PORT, \"protocol\": \"vless\", \"settings\": {\"clients\": [{\"id\": \"$UUID\"}], \"decryption\": \"none\"}, \"streamSettings\": {\"network\": \"http\", \"httpSettings\": {\"path\": \"$TCP_PATH\", \"host\": [\"$DOMAIN\"]}}}]" "$XRAY_CONFIG" > tmp.json
+                ;;
+            *) 
+                echo -e "${RED}无效协议: $PROTOCOL，跳过${NC}"
+                continue
+                ;;
         esac
+
+        # 验证并移动临时文件
+        if [ $? -ne 0 ] || ! jq -e . tmp.json >/dev/null 2>&1; then
+            echo -e "${RED}生成 inbound 配置失败! PROTOCOL=$PROTOCOL${NC}"
+            cat tmp.json 2>/dev/null || echo "临时文件为空"
+            rm -f tmp.json
+            exit 1
+        fi
+        mv tmp.json "$XRAY_CONFIG" || { echo -e "${RED}移动临时配置文件失败!${NC}"; exit 1; }
     done
+
+    # 设置权限
     chmod 600 "$XRAY_CONFIG"
     chown root:root "$XRAY_CONFIG"
+
+    # 输出配置信息
     echo "- 协议: $(for p in "${PROTOCOLS[@]}"; do case $p in 1) echo -n "VLESS+WS+TLS "; ;; 2) echo -n "VMess+WS+TLS "; ;; 3) echo -n "VLESS+gRPC+TLS "; ;; 4) echo -n "VLESS+TCP+TLS (HTTP/2) "; ;; esac; done)"
     echo "- 路径: $WS_PATH (VLESS+WS), $VMESS_PATH (VMess+WS), $GRPC_SERVICE (gRPC), $TCP_PATH (TCP with HTTP/2)"
     echo "- 内部端口: ${PORTS[*]}"
     echo "Xray 配置文件内容:"
     cat "$XRAY_CONFIG"
+
+    # 测试配置有效性
+    if ! $XRAY_BIN -test -config "$XRAY_CONFIG" >/dev/null 2>&1; then
+        echo -e "${RED}Xray 配置测试失败!${NC}"
+        $XRAY_BIN -test -config "$XRAY_CONFIG"
+        exit 1
+    fi
+    echo "Xray 配置测试通过!"
 }
 
 # 启动服务并检查状态
@@ -751,7 +796,7 @@ install_xray() {
     install_dependencies
     configure_domain
     apply_ssl
-    create_default_user
+    create_default_user  # 确保 UUID 在此定义
     configure_nginx
     check_xray_version
     configure_xray
