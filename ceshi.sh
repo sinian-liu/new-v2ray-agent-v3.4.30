@@ -1,6 +1,6 @@
 #!/bin/bash
 # Xray 高级管理脚本
-# 版本: v1.0.4-fix24
+# 版本: v1.0.4-fix25
 # 支持系统: Ubuntu 20.04/22.04, CentOS 7/8, Debian 10/11 (systemd)
 
 # 配置常量
@@ -59,15 +59,17 @@ main_menu() {
         echo "3. 协议管理"
         echo "4. 流量统计"
         echo "5. 备份恢复"
-        echo "6. 退出脚本"
-        read -p "请选择操作 [1-6]: " CHOICE
+        echo "6. 卸载脚本及相关服务"
+        echo "7. 退出脚本"
+        read -p "请选择操作 [1-7]: " CHOICE
         case "$CHOICE" in
             1) install_xray ;;
             2) user_management ;;
             3) protocol_management ;;
             4) traffic_stats ;;
             5) backup_restore ;;
-            6) exit 0 ;;
+            6) uninstall_script ;;
+            7) exit 0 ;;
             *) echo -e "${RED}无效选择!${NC}" ;;
         esac
     done
@@ -554,7 +556,6 @@ create_default_user() {
 # 配置 Xray 核心（多协议支持）
 configure_xray() {
     echo -e "${GREEN}[配置Xray核心...]${NC}"
-    # 初始化基础配置文件
     cat > "$XRAY_CONFIG" <<EOF
 {
     "log": {"loglevel": "debug", "access": "$LOG_DIR/access.log", "error": "$LOG_DIR/error.log"},
@@ -565,13 +566,11 @@ EOF
     chmod 600 "$XRAY_CONFIG"
     chown root:root "$XRAY_CONFIG"
 
-    # 检查 UUID 是否已定义
     if [ -z "$UUID" ]; then
         echo -e "${RED}错误: 未定义 UUID，无法配置 inbounds${NC}"
         exit 1
     fi
 
-    # 为每个协议添加 inbound 配置
     for i in "${!PROTOCOLS[@]}"; do
         PROTOCOL=${PROTOCOLS[$i]}
         PORT=${PORTS[$i]}
@@ -595,7 +594,6 @@ EOF
                 ;;
         esac
 
-        # 验证并移动临时文件
         if [ $? -ne 0 ] || ! jq -e . tmp.json >/dev/null 2>&1; then
             echo -e "${RED}生成 inbound 配置失败! PROTOCOL=$PROTOCOL${NC}"
             cat tmp.json 2>/dev/null || echo "临时文件为空"
@@ -605,18 +603,15 @@ EOF
         mv tmp.json "$XRAY_CONFIG" || { echo -e "${RED}移动临时配置文件失败!${NC}"; exit 1; }
     done
 
-    # 设置权限
     chmod 600 "$XRAY_CONFIG"
     chown root:root "$XRAY_CONFIG"
 
-    # 输出配置信息
     echo "- 协议: $(for p in "${PROTOCOLS[@]}"; do case $p in 1) echo -n "VLESS+WS+TLS "; ;; 2) echo -n "VMess+WS+TLS "; ;; 3) echo -n "VLESS+gRPC+TLS "; ;; 4) echo -n "VLESS+TCP+TLS (HTTP/2) "; ;; esac; done)"
     echo "- 路径: $WS_PATH (VLESS+WS), $VMESS_PATH (VMess+WS), $GRPC_SERVICE (gRPC), $TCP_PATH (TCP with HTTP/2)"
     echo "- 内部端口: ${PORTS[*]}"
     echo "Xray 配置文件内容:"
     cat "$XRAY_CONFIG"
 
-    # 测试配置有效性
     if ! $XRAY_BIN -test -config "$XRAY_CONFIG" >/dev/null 2>&1; then
         echo -e "${RED}Xray 配置测试失败!${NC}"
         $XRAY_BIN -test -config "$XRAY_CONFIG"
@@ -796,7 +791,7 @@ install_xray() {
     install_dependencies
     configure_domain
     apply_ssl
-    create_default_user  # 确保 UUID 在此定义
+    create_default_user
     configure_nginx
     check_xray_version
     configure_xray
@@ -919,18 +914,18 @@ add_user() {
     read -p "请选择 [默认1]: " EXPIRE_TYPE
     EXPIRE_TYPE=${EXPIRE_TYPE:-1}
     case "$EXPIRE_TYPE" in
-        1) EXPIRE_DATE=$(date -d "$(date +%F %H:%M:%S) +1 month" "+%Y-%m-%d %H:%M:%S") ;;
-        2) EXPIRE_DATE=$(date -d "$(date +%F %H:%M:%S) +1 year" "+%Y-%m-%d %H:%M:%S") ;;
+        1) EXPIRE_DATE=$(date -d "+1 month" "+%Y-%m-%d %H:%M:%S") ;;
+        2) EXPIRE_DATE=$(date -d "+1 year" "+%Y-%m-%d %H:%M:%S") ;;
         3) EXPIRE_DATE="永久" ;;
         4) 
             read -p "请输入自定义时间 (如 1h代表1小时 10m代表10分钟 200d代表200天): " CUSTOM_TIME
-            EXPIRE_DATE=$(date -d "$(date +%F %H:%M:%S) +$CUSTOM_TIME" "+%Y-%m-%d %H:%M:%S" 2>/dev/null)
+            EXPIRE_DATE=$(date -d "+$CUSTOM_TIME" "+%Y-%m-%d %H:%M:%S" 2>/dev/null)
             if [ $? -ne 0 ]; then
                 echo -e "${RED}无效时间格式，请使用如 '1h', '10m', '200d'${NC}"
                 exit 1
             fi
             ;;
-        *) echo -e "${RED}无效选择，使用默认月费${NC}"; EXPIRE_DATE=$(date -d "$(date +%F %H:%M:%S) +1 month" "+%Y-%m-%d %H:%M:%S") ;;
+        *) echo -e "${RED}无效选择，使用默认月费${NC}"; EXPIRE_DATE=$(date -d "+1 month" "+%Y-%m-%d %H:%M:%S") ;;
     esac
     jq --arg name "$USERNAME" --arg uuid "$UUID" --arg expire "$EXPIRE_DATE" \
        '.users += [{"id": (.users | length + 1), "name": $name, "uuid": $uuid, "expire": $expire, "used_traffic": 0, "status": "启用"}]' \
@@ -1005,18 +1000,18 @@ renew_user() {
     read -p "请选择 [默认1]: " RENEW_TYPE
     RENEW_TYPE=${RENEW_TYPE:-1}
     case "$RENEW_TYPE" in
-        1) NEW_EXPIRE=$(date -d "$CURRENT_EXPIRE +1 month" "+%Y-%m-%d %H:%M:%S") ;;
-        2) NEW_EXPIRE=$(date -d "$CURRENT_EXPIRE +1 year" "+%Y-%m-%d %H:%M:%S") ;;
+        1) NEW_EXPIRE=$(date -d "+1 month" "+%Y-%m-%d %H:%M:%S") ;;
+        2) NEW_EXPIRE=$(date -d "+1 year" "+%Y-%m-%d %H:%M:%S") ;;
         3) NEW_EXPIRE="永久" ;;
         4) 
             read -p "请输入自定义时间 (如 1h代表1小时 10m代表10分钟 200d代表200天): " CUSTOM_TIME
-            NEW_EXPIRE=$(date -d "$CURRENT_EXPIRE +$CUSTOM_TIME" "+%Y-%m-%d %H:%M:%S" 2>/dev/null)
+            NEW_EXPIRE=$(date -d "+$CUSTOM_TIME" "+%Y-%m-%d %H:%M:%S" 2>/dev/null)
             if [ $? -ne 0 ]; then
                 echo -e "${RED}无效时间格式，请使用如 '1h', '10m', '200d'${NC}"
                 exit 1
             fi
             ;;
-        *) echo -e "${RED}无效选择，使用默认月费${NC}"; NEW_EXPIRE=$(date -d "$CURRENT_EXPIRE +1 month" "+%Y-%m-%d %H:%M:%S") ;;
+        *) echo -e "${RED}无效选择，使用默认月费${NC}"; NEW_EXPIRE=$(date -d "+1 month" "+%Y-%m-%d %H:%M:%S") ;;
     esac
     jq --arg name "$USERNAME" --arg expire "$NEW_EXPIRE" \
        '(.users[] | select(.name == $name)).expire = $expire' "$USER_DATA" > tmp.json && mv tmp.json "$USER_DATA"
@@ -1170,6 +1165,58 @@ backup_restore() {
         3) return ;;
         *) echo -e "${RED}无效选择!${NC}" ;;
     esac
+}
+
+# 卸载脚本及相关服务
+uninstall_script() {
+    echo -e "${GREEN}=== 卸载脚本及相关服务 ===${NC}"
+    read -p "确定要卸载脚本及其所有相关配置和服务吗？(y/N): " CONFIRM
+    if [[ ! "$CONFIRM" =~ ^[Yy] ]]; then
+        echo "取消卸载操作。"
+        return
+    fi
+
+    echo "停止服务..."
+    systemctl stop "$XRAY_SERVICE_NAME" "$SCRIPT_NAME" >/dev/null 2>&1
+
+    echo "禁用服务..."
+    systemctl disable "$XRAY_SERVICE_NAME" "$SCRIPT_NAME" >/dev/null 2>&1
+
+    echo "删除服务文件..."
+    rm -f "/etc/systemd/system/$XRAY_SERVICE_NAME.service" "/etc/systemd/system/$SCRIPT_NAME.service"
+    systemctl daemon-reload
+    systemctl reset-failed
+
+    echo "删除脚本和快捷命令..."
+    rm -rf "$INSTALL_DIR"
+    rm -f /usr/local/bin/v
+
+    echo "删除 Xray 二进制文件..."
+    rm -f "$XRAY_BIN"
+
+    echo "删除配置文件和日志..."
+    rm -rf /usr/local/etc/xray
+    rm -rf "$LOG_DIR"
+
+    echo "删除 Nginx 配置..."
+    rm -f "$NGINX_CONF"
+    systemctl restart nginx >/dev/null 2>&1
+
+    echo "删除订阅和备份目录..."
+    rm -rf "$SUBSCRIPTION_DIR"
+    rm -rf "$BACKUP_DIR"
+
+    echo "删除锁文件..."
+    rm -f "$LOCK_FILE"
+
+    echo "删除 Cron 任务..."
+    crontab -l 2>/dev/null | grep -v "xray-install.sh" | crontab -
+    crontab -l 2>/dev/null | grep -v "access.log" | crontab -
+
+    echo -e "${YELLOW}卸载完成！${NC}"
+    echo "注意：SSL 证书未删除，如需删除请手动运行 'certbot delete'。"
+    echo "脚本依赖（如 curl、nginx 等）未移除，可手动卸载。"
+    exit 0
 }
 
 # 安装脚本到指定目录并设置快捷命令
