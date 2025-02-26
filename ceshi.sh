@@ -1,6 +1,6 @@
 #!/bin/bash
 # Xray 高级管理脚本
-# 版本: v1.0.4-fix31
+# 版本: v1.0.4-fix32
 # 支持系统: Ubuntu 20.04/22.04, CentOS 7/8, Debian 10/11 (systemd)
 
 XRAY_CONFIG="/usr/local/etc/xray/config.json"
@@ -308,17 +308,17 @@ EOF
     done
     chmod 600 "$XRAY_CONFIG"
     chown root:root "$XRAY_CONFIG"
-    $XRAY_BIN -test -config "$XRAY_CONFIG" >/dev/null 2>&1 || { $XRAY_BIN -test -config "$XRAY_CONFIG"; exit 1; }
+    $XRAY_BIN -test -config "$XRAY_CONFIG" >/dev/null 2>&1 || { echo -e "${RED}Xray 配置测试失败!${NC}"; $XRAY_BIN -test -config "$XRAY_CONFIG"; cat "$XRAY_CONFIG"; exit 1; }
 }
 
 start_services() {
     systemctl stop "$XRAY_SERVICE_NAME" nginx >/dev/null 2>&1
-    $XRAY_BIN -test -config "$XRAY_CONFIG" >/dev/null 2>&1 || { $XRAY_BIN -test -config "$XRAY_CONFIG"; cat "$XRAY_CONFIG"; exit 1; }
+    $XRAY_BIN -test -config "$XRAY_CONFIG" >/dev/null 2>&1 || { echo -e "${RED}Xray 配置无效!${NC}"; $XRAY_BIN -test -config "$XRAY_CONFIG"; cat "$XRAY_CONFIG"; exit 1; }
     systemctl daemon-reload
     systemctl enable "$XRAY_SERVICE_NAME" >/dev/null 2>&1
-    systemctl restart "$XRAY_SERVICE_NAME" || { systemctl status "$XRAY_SERVICE_NAME"; cat "$LOG_DIR/error.log"; exit 1; }
+    systemctl restart "$XRAY_SERVICE_NAME" || { echo -e "${RED}Xray 服务启动失败!${NC}"; systemctl status "$XRAY_SERVICE_NAME"; cat "$LOG_DIR/error.log"; exit 1; }
     sleep 3
-    systemctl is-active "$XRAY_SERVICE_NAME" >/dev/null || { systemctl status "$XRAY_SERVICE_NAME"; cat "$LOG_DIR/error.log"; exit 1; }
+    systemctl is-active "$XRAY_SERVICE_NAME" >/dev/null || { echo -e "${RED}Xray 服务未运行!${NC}"; systemctl status "$XRAY_SERVICE_NAME"; cat "$LOG_DIR/error.log"; exit 1; }
     systemctl restart nginx || { nginx -t; cat /var/log/nginx/xray_error.log | tail -n 20; exit 1; }
     sleep 3
     systemctl is-active nginx >/dev/null && systemctl is-active "$XRAY_SERVICE_NAME" >/dev/null || { echo "Nginx: $(systemctl is-active nginx)"; echo "Xray: $(systemctl is-active "$XRAY_SERVICE_NAME")"; cat "$LOG_DIR/error.log"; exit 1; }
@@ -339,7 +339,39 @@ install_xray() {
     create_default_user
     configure_nginx
     check_xray_version
-    configure_xray
+    configure_xray  # 在安装 Xray 后立即生成配置文件
+    # 覆盖服务文件，确保用户为 root
+    cat > /etc/systemd/system/$XRAY_SERVICE_NAME.service <<EOF
+[Unit]
+Description=Xray Service
+Documentation=https://github.com/xtls
+After=network.target nss-lookup.target
+
+[Service]
+Type=simple
+ExecStartPre=/bin/mkdir -p $LOG_DIR
+ExecStartPre=/bin/chown -R root:root $LOG_DIR
+ExecStartPre=/bin/chmod -R 770 $LOG_DIR
+ExecStartPre=/bin/touch $LOG_DIR/access.log $LOG_DIR/error.log
+ExecStartPre=/bin/chown root:root $LOG_DIR/access.log $LOG_DIR/error.log
+ExecStartPre=/bin/chmod 660 $LOG_DIR/access.log $LOG_DIR/error.log
+ExecStartPre=/bin/chown root:root $XRAY_CONFIG
+ExecStartPre=/bin/chmod 600 $XRAY_CONFIG
+ExecStart=$XRAY_BIN run -config $XRAY_CONFIG
+Restart=on-failure
+RestartSec=5
+User=root
+Group=root
+LimitNPROC=10000
+LimitNOFILE=1000000
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    chmod 644 /etc/systemd/system/$XRAY_SERVICE_NAME.service
+    systemctl daemon-reload
     start_services
     show_user_link
     echo -e "\n安装完成! 输入 'v' 打开管理菜单"
@@ -669,37 +701,6 @@ EOF
         chmod 644 /etc/systemd/system/$SCRIPT_NAME.service
         systemctl daemon-reload
         systemctl enable "$SCRIPT_NAME.service" || exit 1
-        # 只在必要时覆盖 xray.service
-        if [ ! -f "/etc/systemd/system/$XRAY_SERVICE_NAME.service" ] || ! grep -q "$XRAY_CONFIG" "/etc/systemd/system/$XRAY_SERVICE_NAME.service"; then
-            cat > /etc/systemd/system/$XRAY_SERVICE_NAME.service <<EOF
-[Unit]
-Description=Xray Service
-After=network.target nss-lookup.target
-[Service]
-Type=simple
-ExecStartPre=/bin/mkdir -p $LOG_DIR
-ExecStartPre=/bin/chown -R root:root $LOG_DIR
-ExecStartPre=/bin/chmod -R 770 $LOG_DIR
-ExecStartPre=/bin/touch $LOG_DIR/access.log $LOG_DIR/error.log
-ExecStartPre=/bin/chown root:root $LOG_DIR/access.log $LOG_DIR/error.log
-ExecStartPre=/bin/chmod 660 $LOG_DIR/access.log $LOG_DIR/error.log
-ExecStartPre=/bin/chown root:root $XRAY_CONFIG
-ExecStartPre=/bin/chmod 600 $XRAY_CONFIG
-ExecStart=$XRAY_BIN run -config $XRAY_CONFIG
-Restart=always
-RestartSec=5
-User=root
-Group=root
-LimitNOFILE=51200
-AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
-CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
-[Install]
-WantedBy=multi-user.target
-EOF
-            chmod 644 /etc/systemd/system/$XRAY_SERVICE_NAME.service
-            systemctl daemon-reload
-            systemctl enable "$XRAY_SERVICE_NAME" || exit 1
-        fi
     fi
     main_menu
 }
