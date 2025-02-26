@@ -1,9 +1,8 @@
 #!/bin/bash
 # Xray 高级管理脚本
-# 版本: v1.0.4-fix27
+# 版本: v1.0.4-fix28
 # 支持系统: Ubuntu 20.04/22.04, CentOS 7/8, Debian 10/11 (systemd)
 
-# 配置常量
 XRAY_CONFIG="/usr/local/etc/xray/config.json"
 USER_DATA="/usr/local/etc/xray/users.json"
 NGINX_CONF="/etc/nginx/conf.d/xray.conf"
@@ -19,10 +18,8 @@ INSTALL_DIR="/root/v2ray"
 SCRIPT_PATH="$INSTALL_DIR/xray-install.sh"
 SETTINGS_CONF="/usr/local/etc/xray/settings.conf"
 
-# 全局变量
 declare DOMAIN WS_PATH VMESS_PATH GRPC_SERVICE TCP_PATH PROTOCOLS PORTS BASE_PORT UUID DELETE_THRESHOLD_DAYS
 
-# 颜色定义
 RED='\033[31m'
 GREEN='\033[32m'
 YELLOW='\033[33m'
@@ -33,9 +30,9 @@ main_menu() {
     init_environment
     while true; do
         echo -e "${GREEN}==== Xray高级管理脚本 ====${NC}"
-        echo -e "${GREEN}服务器推荐：https://my.frantech.ca/aff.php?aff=4337${NC}"
-        echo -e "${GREEN}VPS评测官方网站：https://www.1373737.xyz/${NC}"
-        echo -e "${GREEN}YouTube频道：https://www.youtube.com/@cyndiboy7881${NC}"
+        echo "服务器推荐：https://my.frantech.ca/aff.php?aff=4337"
+        echo "VPS评测官方网站：https://www.1373737.xyz/"
+        echo "YouTube频道：https://www.youtube.com/@cyndiboy7881"
         XRAY_STATUS=$(systemctl is-active "$XRAY_SERVICE_NAME" 2>/dev/null || echo "未安装")
         [ "$XRAY_STATUS" = "active" ] && XRAY_STATUS_TEXT="运行中" || XRAY_STATUS_TEXT="未运行"
         PROTOCOL_TEXT=""
@@ -52,15 +49,8 @@ main_menu() {
         else
             PROTOCOL_TEXT="未配置协议"
         fi
-        echo -e "${YELLOW}Xray状态: $XRAY_STATUS_TEXT | $PROTOCOL_TEXT${NC}"
-        echo "1. 全新安装"
-        echo "2. 用户管理"
-        echo "3. 协议管理"
-        echo "4. 流量统计"
-        echo "5. 备份恢复"
-        echo "6. 卸载脚本及相关服务"
-        echo "7. 查看证书"
-        echo "8. 退出脚本"
+        echo -e "Xray状态: $XRAY_STATUS_TEXT | $PROTOCOL_TEXT\n"
+        echo -e "1. 全新安装\n2. 用户管理\n3. 协议管理\n4. 流量统计\n5. 备份恢复\n6. 卸载脚本及相关服务\n7. 查看证书\n8. 退出脚本"
         read -p "请选择操作 [1-8]（回车退出）: " CHOICE
         [ -z "$CHOICE" ] && exit 0
         case "$CHOICE" in
@@ -337,8 +327,9 @@ start_services() {
 install_xray() {
     detect_system
     check_firewall
-    echo "1. VLESS+WS+TLS (推荐)\n2. VMess+WS+TLS\n3. VLESS+gRPC+TLS\n4. VLESS+TCP+TLS (HTTP/2)"
-    read -p "请选择协议 (多选用空格分隔, 默认1): " -a PROTOCOLS
+    echo -e "${GREEN}[选择安装的协议]${NC}"
+    echo -e "1. VLESS+WS+TLS (推荐)\n2. VMess+WS+TLS\n3. VLESS+gRPC+TLS\n4. VLESS+TCP+TLS (HTTP/2)"
+    read -p "请选择 (多选用空格分隔, 默认1): " -a PROTOCOLS
     [ ${#PROTOCOLS[@]} -eq 0 ] && PROTOCOLS=(1)
     check_ports
     install_dependencies
@@ -420,7 +411,7 @@ user_management() {
     [ ${#PROTOCOLS[@]} -eq 0 ] || [ ! -f "$XRAY_CONFIG" ] && { echo -e "${YELLOW}未检测到 Xray 配置${NC}"; return; }
     while true; do
         echo -e "${BLUE}用户管理菜单${NC}"
-        echo "1. 新建用户\n2. 用户续期\n3. 查看链接\n4. 用户列表\n5. 删除用户\n6. 检查并禁用过期用户\n7. 返回主菜单"
+        echo -e "1. 新建用户\n2. 用户续期\n3. 查看链接\n4. 用户列表\n5. 删除用户\n6. 检查并禁用过期用户\n7. 返回主菜单"
         read -p "请选择操作（回车返回主菜单）: " CHOICE
         [ -z "$CHOICE" ] && break
         case "$CHOICE" in
@@ -446,7 +437,7 @@ add_user() {
     read -p "输入用户名: " USERNAME
     UUID=$(uuidgen)
     while jq -r ".users[] | .uuid" "$USER_DATA" | grep -q "$UUID"; do UUID=$(uuidgen); done
-    echo "1. 月费 (默认)\n2. 年费\n3. 永久\n4. 自定义时间"
+    echo -e "1. 月费 (默认)\n2. 年费\n3. 永久\n4. 自定义时间"
     read -p "请选择 [默认1]: " EXPIRE_TYPE
     EXPIRE_TYPE=${EXPIRE_TYPE:-1}
     case "$EXPIRE_TYPE" in
@@ -501,7 +492,7 @@ renew_user() {
     read -p "输入要续期的用户名: " USERNAME
     CURRENT_EXPIRE=$(jq -r ".users[] | select(.name == \"$USERNAME\") | .expire" "$USER_DATA")
     echo "当前有效期: $CURRENT_EXPIRE"
-    echo "1. 月费 (+1个月)\n2. 年费 (+1年)\n3. 永久\n4. 自定义时间"
+    echo -e "1. 月费 (+1个月)\n2. 年费 (+1年)\n3. 永久\n4. 自定义时间"
     read -p "请选择 [默认1]: " RENEW_TYPE
     RENEW_TYPE=${RENEW_TYPE:-1}
     case "$RENEW_TYPE" in
@@ -575,8 +566,8 @@ delete_user() {
 
 protocol_management() {
     check_and_set_domain
-    echo -e "${GREEN}协议管理:${NC}"
-    echo "1. VLESS+WS+TLS (推荐)\n2. VMess+WS+TLS\n3. VLESS+gRPC+TLS\n4. VLESS+TCP+TLS (HTTP/2)"
+    echo -e "${GREEN}=== 协议管理 ===${NC}"
+    echo -e "1. VLESS+WS+TLS (推荐)\n2. VMess+WS+TLS\n3. VLESS+gRPC+TLS\n4. VLESS+TCP+TLS (HTTP/2)"
     read -p "请选择 (多选用空格分隔, 默认1，回车返回): " -a PROTOCOLS
     [ ${#PROTOCOLS[@]} -eq 0 ] && return
     check_ports
@@ -602,7 +593,7 @@ traffic_stats() {
 
 backup_restore() {
     echo -e "${GREEN}=== 备份管理 ===${NC}"
-    echo "1. 创建备份\n2. 恢复备份\n3. 返回主菜单"
+    echo -e "1. 创建备份\n2. 恢复备份\n3. 返回主菜单"
     read -p "请选择（回车返回主菜单）: " CHOICE
     [ -z "$CHOICE" ] && return
     case "$CHOICE" in
@@ -631,7 +622,7 @@ view_certificates() {
     EXPIRY_DATE=$(echo "$CERT_INFO" | grep -oP "Expiry Date: \K.*?(?= \(VALID:)" | head -n 1)
     VALID_DAYS=$(echo "$CERT_INFO" | grep -oP "VALID: \K\d+" | head -n 1)
     ISSUE_DATE=$(date -d "$EXPIRY_DATE - $VALID_DAYS days" "+%Y-%m-%d %H:%M:%S")
-    echo "- 证书域名: $DOMAIN\n- 申请时间: $ISSUE_DATE\n- 到期时间: $EXPIRY_DATE\n- 剩余有效期: $VALID_DAYS 天"
+    echo -e "- 证书域名: $DOMAIN\n- 申请时间: $ISSUE_DATE\n- 到期时间: $EXPIRY_DATE\n- 剩余有效期: $VALID_DAYS 天"
 }
 
 uninstall_script() {
@@ -706,5 +697,4 @@ EOF
     main_menu
 }
 
-# 脚本入口
 install_script "$@"
