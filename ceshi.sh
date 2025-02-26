@@ -1,6 +1,6 @@
 #!/bin/bash
 # Xray 高级管理脚本
-# 版本: v1.0.4-fix29
+# 版本: v1.0.4-fix31
 # 支持系统: Ubuntu 20.04/22.04, CentOS 7/8, Debian 10/11 (systemd)
 
 XRAY_CONFIG="/usr/local/etc/xray/config.json"
@@ -30,9 +30,9 @@ main_menu() {
     init_environment
     while true; do
         echo -e "${GREEN}==== Xray高级管理脚本 ====${NC}"
-        echo "服务器推荐：https://my.frantech.ca/aff.php?aff=4337"
-        echo "VPS评测官方网站：https://www.1373737.xyz/"
-        echo "YouTube频道：https://www.youtube.com/@cyndiboy7881"
+        echo -e "${GREEN}服务器推荐：https://my.frantech.ca/aff.php?aff=4337${NC}"
+        echo -e "${GREEN}VPS评测官方网站：https://www.1373737.xyz/${NC}"
+        echo -e "${GREEN}YouTube频道：https://www.youtube.com/@cyndiboy7881${NC}"
         XRAY_STATUS=$(systemctl is-active "$XRAY_SERVICE_NAME" 2>/dev/null || echo "未安装")
         [ "$XRAY_STATUS" = "active" ] && XRAY_STATUS_TEXT="运行中" || XRAY_STATUS_TEXT="未运行"
         PROTOCOL_TEXT=""
@@ -303,7 +303,7 @@ EOF
             3) jq ".inbounds += [{\"port\": $PORT, \"protocol\": \"vless\", \"settings\": {\"clients\": [{\"id\": \"$UUID\"}], \"decryption\": \"none\"}, \"streamSettings\": {\"network\": \"grpc\", \"grpcSettings\": {\"serviceName\": \"$GRPC_SERVICE\"}}}]" "$XRAY_CONFIG" > tmp.json ;;
             4) jq ".inbounds += [{\"port\": $PORT, \"protocol\": \"vless\", \"settings\": {\"clients\": [{\"id\": \"$UUID\"}], \"decryption\": \"none\"}, \"streamSettings\": {\"network\": \"http\", \"httpSettings\": {\"path\": \"$TCP_PATH\", \"host\": [\"$DOMAIN\"]}}}]" "$XRAY_CONFIG" > tmp.json ;;
         esac
-        [ $? -ne 0 ] || ! jq -e . tmp.json >/dev/null 2>&1 && { echo -e "${RED}生成 inbound 失败!${NC}"; rm -f tmp.json; exit 1; }
+        [ $? -ne 0 ] || ! jq -e . tmp.json >/dev/null 2>&1 && { echo -e "${RED}生成 inbound 失败!${NC}"; cat tmp.json; rm -f tmp.json; exit 1; }
         mv tmp.json "$XRAY_CONFIG"
     done
     chmod 600 "$XRAY_CONFIG"
@@ -315,6 +315,7 @@ start_services() {
     systemctl stop "$XRAY_SERVICE_NAME" nginx >/dev/null 2>&1
     $XRAY_BIN -test -config "$XRAY_CONFIG" >/dev/null 2>&1 || { $XRAY_BIN -test -config "$XRAY_CONFIG"; cat "$XRAY_CONFIG"; exit 1; }
     systemctl daemon-reload
+    systemctl enable "$XRAY_SERVICE_NAME" >/dev/null 2>&1
     systemctl restart "$XRAY_SERVICE_NAME" || { systemctl status "$XRAY_SERVICE_NAME"; cat "$LOG_DIR/error.log"; exit 1; }
     sleep 3
     systemctl is-active "$XRAY_SERVICE_NAME" >/dev/null || { systemctl status "$XRAY_SERVICE_NAME"; cat "$LOG_DIR/error.log"; exit 1; }
@@ -665,7 +666,12 @@ User=root
 [Install]
 WantedBy=multi-user.target
 EOF
-        cat > /etc/systemd/system/$XRAY_SERVICE_NAME.service <<EOF
+        chmod 644 /etc/systemd/system/$SCRIPT_NAME.service
+        systemctl daemon-reload
+        systemctl enable "$SCRIPT_NAME.service" || exit 1
+        # 只在必要时覆盖 xray.service
+        if [ ! -f "/etc/systemd/system/$XRAY_SERVICE_NAME.service" ] || ! grep -q "$XRAY_CONFIG" "/etc/systemd/system/$XRAY_SERVICE_NAME.service"; then
+            cat > /etc/systemd/system/$XRAY_SERVICE_NAME.service <<EOF
 [Unit]
 Description=Xray Service
 After=network.target nss-lookup.target
@@ -679,7 +685,7 @@ ExecStartPre=/bin/chown root:root $LOG_DIR/access.log $LOG_DIR/error.log
 ExecStartPre=/bin/chmod 660 $LOG_DIR/access.log $LOG_DIR/error.log
 ExecStartPre=/bin/chown root:root $XRAY_CONFIG
 ExecStartPre=/bin/chmod 600 $XRAY_CONFIG
-ExecStart=$XRAY_BIN -config $XRAY_CONFIG
+ExecStart=$XRAY_BIN run -config $XRAY_CONFIG
 Restart=always
 RestartSec=5
 User=root
@@ -690,9 +696,10 @@ CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
 [Install]
 WantedBy=multi-user.target
 EOF
-        chmod 644 /etc/systemd/system/$SCRIPT_NAME.service /etc/systemd/system/$XRAY_SERVICE_NAME.service
-        systemctl daemon-reload
-        systemctl enable "$SCRIPT_NAME.service" "$XRAY_SERVICE_NAME" || exit 1
+            chmod 644 /etc/systemd/system/$XRAY_SERVICE_NAME.service
+            systemctl daemon-reload
+            systemctl enable "$XRAY_SERVICE_NAME" || exit 1
+        fi
     fi
     main_menu
 }
