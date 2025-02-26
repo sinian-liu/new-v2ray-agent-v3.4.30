@@ -1,6 +1,6 @@
 #!/bin/bash
 # Xray 高级管理脚本
-# 版本: v1.0.4-fix33
+# 版本: v1.0.4-fix37
 # 支持系统: Ubuntu 20.04/22.04, CentOS 7/8, Debian 10/11 (systemd)
 
 XRAY_CONFIG="/usr/local/etc/xray/config.json"
@@ -18,7 +18,7 @@ INSTALL_DIR="/root/v2ray"
 SCRIPT_PATH="$INSTALL_DIR/xray-install.sh"
 SETTINGS_CONF="/usr/local/etc/xray/settings.conf"
 
-declare DOMAIN WS_PATH VMESS_PATH GRPC_SERVICE TCP_PATH PROTOCOLS PORTS BASE_PORT UUID DELETE_THRESHOLD_DAYS
+declare DOMAIN WS_PATH VMESS_PATH GRPC_SERVICE TCP_PATH PROTOCOLS PORTS BASE_PORT UUID DELETE_THRESHOLD_DAYS SERVER_IP
 
 RED='\033[31m'
 GREEN='\033[32m'
@@ -34,7 +34,11 @@ main_menu() {
         echo -e "${GREEN}VPS评测官方网站：https://www.1373737.xyz/${NC}"
         echo -e "${GREEN}YouTube频道：https://www.youtube.com/@cyndiboy7881${NC}"
         XRAY_STATUS=$(systemctl is-active "$XRAY_SERVICE_NAME" 2>/dev/null || echo "未安装")
-        [ "$XRAY_STATUS" = "active" ] && XRAY_STATUS_TEXT="运行中" || XRAY_STATUS_TEXT="未运行"
+        if [ "$XRAY_STATUS" = "active" ]; then
+            XRAY_STATUS_TEXT="${YELLOW}Xray状态: 运行中${NC}"
+        else
+            XRAY_STATUS_TEXT="${RED}Xray状态: 已停止${NC}"
+        fi
         PROTOCOL_TEXT=""
         if [ ${#PROTOCOLS[@]} -gt 0 ]; then
             for PROTOCOL in "${PROTOCOLS[@]}"; do
@@ -45,11 +49,11 @@ main_menu() {
                     4) PROTOCOL_TEXT="$PROTOCOL_TEXT VLESS+TCP+TLS (HTTP/2)" ;;
                 esac
             done
-            PROTOCOL_TEXT="使用协议:${PROTOCOL_TEXT}"
+            PROTOCOL_TEXT="| 使用协议:${PROTOCOL_TEXT}"
         else
-            PROTOCOL_TEXT="未配置协议"
+            PROTOCOL_TEXT="| 未配置协议"
         fi
-        echo -e "Xray状态: $XRAY_STATUS_TEXT | $PROTOCOL_TEXT\n"
+        echo -e "$XRAY_STATUS_TEXT $PROTOCOL_TEXT\n"
         echo -e "1. 全新安装\n2. 用户管理\n3. 协议管理\n4. 流量统计\n5. 备份恢复\n6. 查看证书\n7. 卸载脚本\n8. 退出脚本"
         read -p "请选择操作 [1-8]（回车退出）: " CHOICE
         [ -z "$CHOICE" ] && exit 0
@@ -83,6 +87,7 @@ detect_system() {
         sleep 1
     done
     [ "$STATE" != "running" ] && [ "$STATE" != "degraded" ] && exit 1
+    SERVER_IP=$(curl -s ifconfig.me)
 }
 
 detect_xray_service() {
@@ -137,16 +142,15 @@ configure_domain() {
     echo -e "${GREEN}[配置域名...]${NC}"
     local retries=3
     while [ $retries -gt 0 ]; do
-        read -p "请输入域名: " DOMAIN
-        SERVER_IP=$(curl -s ifconfig.me)
+        read -p "请输入当前 VPS 对应的域名（示例：1.changkaiyuan.xyz）: " DOMAIN
         DOMAIN_IP=$(dig +short "$DOMAIN" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -n 1)
-        [ "$DOMAIN_IP" = "$SERVER_IP" ] && { echo "域名验证通过!"; break; }
+        [ "$DOMAIN_IP" = "$SERVER_IP" ] && { echo "域名验证通过! 当前服务器 IP: $SERVER_IP"; break; }
         retries=$((retries - 1))
-        echo -e "${RED}域名验证失败! 剩余重试次数: $retries${NC}"
+        echo -e "${RED}域名 $DOMAIN 解析到的 IP ($DOMAIN_IP) 与当前服务器 IP ($SERVER_IP) 不匹配! 剩余重试次数: $retries${NC}"
         read -p "是否重试? [y/N]: " RETRY
         [[ ! "$RETRY" =~ ^[Yy] ]] && exit 1
     done
-    [ $retries -eq 0 ] && { echo -e "${RED}域名验证多次失败!${NC}"; exit 1; }
+    [ $retries -eq 0 ] && { echo -e "${RED}域名验证多次失败! 请确保输入的域名正确解析到当前服务器 IP${NC}"; exit 1; }
 }
 
 check_and_set_domain() {
@@ -223,6 +227,8 @@ configure_nginx() {
     VMESS_PATH="/vmess_ws_$(openssl rand -hex 4)"
     TCP_PATH="/tcp_$(openssl rand -hex 4)"
     [ -f "$NGINX_CONF" ] && ! grep -q "Xray 配置" "$NGINX_CONF" && mv "$NGINX_CONF" "$NGINX_CONF.bak.$(date +%F_%H%M%S)"
+    # 移除默认站点以避免冲突
+    rm -f /etc/nginx/sites-enabled/default
     cat > "$NGINX_CONF" <<EOF
 server {
     listen 80;
@@ -237,7 +243,7 @@ server {
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_ciphers HIGH:!aNULL:!MD5;
     access_log /var/log/nginx/xray_access.log;
-    error_log /var/log/nginx/xray_error.log debug;
+    error_log /var/log/nginx/xray_error.log info;
     location /subscribe/ {
         root /var/www;
         autoindex off;
@@ -255,6 +261,46 @@ EOF
     done
     echo "}" >> "$NGINX_CONF"
     nginx -t && systemctl restart nginx || { nginx -t; cat /var/log/nginx/xray_error.log | tail -n 20; exit 1; }
+    # 确保订阅目录权限正确
+    chown -R www-data:www-data "$SUBSCRIPTION_DIR"
+    chmod -R 755 "$SUBSCRIPTION_DIR"
+}
+
+check_subscription() {
+    echo -e "${GREEN}[检查订阅配置...]${NC}"
+    local SUBSCRIPTION_URL="https://$DOMAIN/subscribe/$USERNAME.yml"
+    # 测试 HTTPS 访问
+    if curl -s --head --insecure "$SUBSCRIPTION_URL" | grep -q "200 OK"; then
+        echo -e "${GREEN}订阅链接 $SUBSCRIPTION_URL 可正常访问${NC}"
+    else
+        echo -e "${YELLOW}订阅链接 $SUBSCRIPTION_URL 不可访问，尝试修复...${NC}"
+        # 检查文件是否存在
+        if [ ! -f "$SUBSCRIPTION_DIR/$USERNAME.yml" ]; then
+            echo -e "${RED}订阅文件 $SUBSCRIPTION_DIR/$USERNAME.yml 不存在${NC}"
+            exit 1
+        fi
+        # 检查 Nginx 配置
+        nginx -t || { echo -e "${RED}Nginx 配置错误${NC}"; cat /var/log/nginx/xray_error.log | tail -n 20; exit 1; }
+        # 检查证书
+        if [ ! -f "$CERTS_DIR/$DOMAIN/fullchain.pem" ] || [ ! -f "$CERTS_DIR/$DOMAIN/privkey.pem" ]; then
+            echo -e "${YELLOW}SSL 证书缺失，重新生成...${NC}"
+            apply_ssl
+        fi
+        # 检查 HTTP 重定向
+        if ! curl -s --head "http://$DOMAIN/subscribe/$USERNAME.yml" | grep -q "301 Moved Permanently"; then
+            echo -e "${YELLOW}HTTP 重定向未生效，修复默认站点...${NC}"
+            rm -f /etc/nginx/sites-enabled/default
+        fi
+        # 重启 Nginx
+        systemctl restart nginx
+        # 再次测试
+        if curl -s --head --insecure "$SUBSCRIPTION_URL" | grep -q "200 OK"; then
+            echo -e "${GREEN}订阅链接修复成功${NC}"
+        else
+            echo -e "${RED}订阅链接仍不可访问，请检查网络或防火墙设置${NC}"
+            exit 1
+        fi
+    fi
 }
 
 create_default_user() {
@@ -372,6 +418,7 @@ EOF
     chmod 644 /etc/systemd/system/$XRAY_SERVICE_NAME.service
     systemctl daemon-reload
     start_services
+    check_subscription
     show_user_link
     echo -e "\n安装完成! 输入 'v' 打开管理菜单"
 }
@@ -379,6 +426,7 @@ EOF
 show_user_link() {
     echo -e "${GREEN}[显示用户链接...]${NC}"
     check_and_set_domain
+    EXPIRE_DATE=$(jq -r ".users[] | select(.name == \"$USERNAME\") | .expire" "$USER_DATA")
     for PROTOCOL in "${PROTOCOLS[@]}"; do
         case "$PROTOCOL" in
             1) VLESS_WS_LINK="vless://$UUID@$DOMAIN:443?encryption=none&security=tls&type=ws&path=$WS_PATH&sni=$DOMAIN&host=$DOMAIN#$USERNAME"
@@ -395,8 +443,9 @@ show_user_link() {
                echo -e "\n链接地址 (VLESS+TCP+TLS):\n$VLESS_TCP_LINK" ;;
         esac
     done
-    echo -e "\n订阅链接:\nhttps://subscribe.$DOMAIN/subscribe/$USERNAME.yml"
-    echo -e "\nClash 配置链接:\nhttps://subscribe.$DOMAIN/clash/$USERNAME.yml"
+    echo -e "\n订阅链接（使用主域名）:\nhttps://$DOMAIN/subscribe/$USERNAME.yml"
+    echo -e "${GREEN}账号到期时间: $EXPIRE_DATE${NC}"
+    echo -e "${GREEN}请使用主域名订阅链接以确保兼容性和证书有效性${NC}"
 }
 
 disable_expired_users() {
@@ -477,7 +526,6 @@ add_user() {
         2) EXPIRE_DATE=$(date -d "+1 year" "+%Y-%m-%d %H:%M:%S") ;;
         3) EXPIRE_DATE="永久" ;;
         4) read -p "请输入自定义时间 (如 1h/10m/200d): " CUSTOM_TIME
-           # 解析自定义时间格式
            if [[ "$CUSTOM_TIME" =~ ^([0-9]+)([hmd])$ ]]; then
                NUM=${BASH_REMATCH[1]}
                UNIT=${BASH_REMATCH[2]}
@@ -517,6 +565,7 @@ add_user() {
     chmod 644 "$SUBSCRIPTION_FILE"
     chown www-data:www-data "$SUBSCRIPTION_FILE"
     systemctl restart "$XRAY_SERVICE_NAME" || { systemctl status "$XRAY_SERVICE_NAME"; cat "$LOG_DIR/error.log"; exit 1; }
+    check_subscription
     show_user_link
     flock -u 200
 }
@@ -535,10 +584,11 @@ list_users() {
 renew_user() {
     echo -e "${GREEN}=== 用户续期流程 ===${NC}"
     flock -x 200
-    read -p "输入要续期的用户名: " USERNAME
-    CURRENT_EXPIRE=$(jq -r ".users[] | select(.name == \"$USERNAME\") | .expire" "$USER_DATA")
+    read -p "输入要续期的用户名或 UUID: " INPUT
+    CURRENT_EXPIRE=$(jq -r ".users[] | select(.name == \"$INPUT\" or .uuid == \"$INPUT\") | .expire" "$USER_DATA")
+    USERNAME=$(jq -r ".users[] | select(.name == \"$INPUT\" or .uuid == \"$INPUT\") | .name" "$USER_DATA")
     if [ -z "$CURRENT_EXPIRE" ]; then
-        echo -e "${RED}用户 $USERNAME 不存在!${NC}"
+        echo -e "${RED}用户 $INPUT 不存在!${NC}"
         flock -u 200
         return
     fi
@@ -612,11 +662,10 @@ delete_user() {
     echo -e "${GREEN}=== 删除用户流程 ===${NC}"
     [ ${#PROTOCOLS[@]} -eq 0 ] || [ ! -f "$XRAY_CONFIG" ] && { echo -e "${RED}未检测到 Xray 配置${NC}"; return; }
     flock -x 200
-    cp "$XRAY_CONFIG" "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)"
-    cp "$USER_DATA" "$USER_DATA.bak.$(date +%F_%H%M%S)"
-    read -p "输入要删除的用户名: " USERNAME
-    UUID=$(jq -r ".users[] | select(.name == \"$USERNAME\") | .uuid" "$USER_DATA")
-    [ -n "$UUID" ] && {
+    read -p "输入要删除的用户名或 UUID: " INPUT
+    UUID=$(jq -r ".users[] | select(.name == \"$INPUT\" or .uuid == \"$INPUT\") | .uuid" "$USER_DATA")
+    USERNAME=$(jq -r ".users[] | select(.name == \"$INPUT\" or .uuid == \"$INPUT\") | .name" "$USER_DATA")
+    if [ -n "$UUID" ]; then
         jq "del(.users[] | select(.name == \"$USERNAME\"))" "$USER_DATA" > tmp.json && mv tmp.json "$USER_DATA" || { cp "$USER_DATA.bak.$(date +%F_%H%M%S)" "$USER_DATA"; exit 1; }
         for i in $(seq 0 $((${#PROTOCOLS[@]} - 1))); do jq --arg uuid "$UUID" ".inbounds[$i].settings.clients -= [{\"id\": \$uuid}]" "$XRAY_CONFIG" > tmp.json && mv tmp.json "$XRAY_CONFIG"; done
         [ ! -e "$XRAY_CONFIG" ] || ! jq -e . "$XRAY_CONFIG" >/dev/null 2>&1 && { cp "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)" "$XRAY_CONFIG"; exit 1; }
@@ -625,7 +674,9 @@ delete_user() {
         chown root:root "$XRAY_CONFIG" "$USER_DATA"
         systemctl restart "$XRAY_SERVICE_NAME" || { systemctl status "$XRAY_SERVICE_NAME"; cat "$LOG_DIR/error.log"; exit 1; }
         echo "用户 $USERNAME 已删除并重启 Xray。"
-    } || echo -e "${RED}用户 $USERNAME 不存在!${NC}"
+    else
+        echo -e "${RED}用户 $INPUT 不存在!${NC}"
+    fi
     flock -u 200
 }
 
