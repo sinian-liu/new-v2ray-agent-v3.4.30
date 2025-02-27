@@ -1,54 +1,307 @@
-start_services() {
-    systemctl stop "$XRAY_SERVICE_NAME" nginx >/dev/null 2>&1
-    $XRAY_BIN -test -config "$XRAY_CONFIG" >/dev/null 2>&1 || { echo -e "${RED}Xray 配置无效!${NC}"; $XRAY_BIN -test -config "$XRAY_CONFIG"; cat "$XRAY_CONFIG"; exit 1; }
-    systemctl daemon-reload
-    systemctl enable "$XRAY_SERVICE_NAME" >/dev/null 2>&1
-    systemctl enable nginx >/dev/null 2>&1
-    systemctl restart "$XRAY_SERVICE_NAME" || { echo -e "${RED}Xray 服务启动失败!${NC}"; systemctl status "$XRAY_SERVICE_NAME"; cat "$LOG_DIR/error.log"; exit 1; }
-    sleep 3
-    systemctl is-active "$XRAY_SERVICE_NAME" >/dev/null || { echo -e "${RED}Xray 服务未运行!${NC}"; systemctl status "$XRAY_SERVICE_NAME"; cat "$LOG_DIR/error.log"; exit 1; }
-    systemctl restart nginx || { nginx -t; cat /var/log/nginx/xray_error.log | tail -n 20; exit 1; }
-    sleep 3
-    systemctl is-active nginx >/dev/null && systemctl is-active "$XRAY_SERVICE_NAME" >/dev/null || { echo "Nginx: $(systemctl is-active nginx)"; echo "Xray: $(systemctl is-active "$XRAY_SERVICE_NAME")"; cat "$LOG_DIR/error.log"; exit 1; }
-    for PORT in "${PORTS[@]}"; do nc -z 127.0.0.1 "$PORT" >/dev/null 2>&1 || { netstat -tuln | grep xray; cat "$LOG_DIR/error.log"; exit 1; }; done
+#!/bin/bash
+
+XRAY_CONFIG="/usr/local/etc/xray/config.json"
+USER_DATA="/usr/local/etc/xray/users.json"
+NGINX_CONF="/etc/nginx/conf.d/xray.conf"
+SUBSCRIPTION_DIR="/var/www/subscribe"
+CLASH_DIR="/var/www/clash"
+BACKUP_DIR="/var/backups/xray"
+CERTS_DIR="/etc/letsencrypt/live"
+LOG_DIR="/usr/local/var/log/xray"
+SCRIPT_NAME="xray-menu"
+LOCK_FILE="/tmp/xray_users.lock"
+XRAY_SERVICE_NAME="xray"
+XRAY_BIN="/usr/local/bin/xray"
+INSTALL_DIR="/root/v2ray"
+SCRIPT_PATH="$INSTALL_DIR/xray-install.sh"
+SETTINGS_CONF="/usr/local/etc/xray/settings.conf"
+
+declare DOMAIN SUBSCRIPTION_DOMAIN WS_PATH VMESS_PATH GRPC_SERVICE TCP_PATH PROTOCOLS PORTS BASE_PORT UUID DELETE_THRESHOLD_DAYS SERVER_IP
+
+RED='\033[31m'
+GREEN='\033[32m'
+YELLOW='\033[33m'
+BLUE='\033[36m'
+NC='\033[0m'
+
+main_menu() {
+    init_environment
+    while true; do
+        echo -e "${GREEN}==== Xray高级管理脚本 ====${NC}"
+        echo -e "${GREEN}服务器推荐：https://my.frantech.ca/aff.php?aff=4337${NC}"
+        echo -e "${GREEN}VPS评测官方网站：https://www.1373737.xyz/${NC}"
+        echo -e "${GREEN}YouTube频道：https://www.youtube.com/@cyndiboy7881${NC}"
+        XRAY_STATUS=$(systemctl is-active "$XRAY_SERVICE_NAME" 2>/dev/null || echo "未安装")
+        if [ "$XRAY_STATUS" = "active" ]; then
+            XRAY_STATUS_TEXT="${GREEN}Xray状态: 运行中${NC}"
+        else
+            XRAY_STATUS_TEXT="${RED}Xray状态: 已停止${NC}"
+        fi
+        PROTOCOL_TEXT=""
+        if [ ${#PROTOCOLS[@]} -gt 0 ]; then
+            for PROTOCOL in "${PROTOCOLS[@]}"; do
+                case "$PROTOCOL" in
+                    1) PROTOCOL_TEXT="$PROTOCOL_TEXT VLESS+WS+TLS" ;;
+                    2) PROTOCOL_TEXT="$PROTOCOL_TEXT VMess+WS+TLS" ;;
+                    3) PROTOCOL_TEXT="$PROTOCOL_TEXT VLESS+gRPC+TLS" ;;
+                    4) PROTOCOL_TEXT="$PROTOCOL_TEXT VLESS+TCP+TLS (HTTP/2)" ;;
+                esac
+            done
+            PROTOCOL_TEXT="| ${GREEN}使用协议:${PROTOCOL_TEXT}${NC}"
+        else
+            PROTOCOL_TEXT="| ${RED}未配置协议${NC}"
+        fi
+        echo -e "$XRAY_STATUS_TEXT $PROTOCOL_TEXT\n"
+        echo -e "1. 全新安装\n2. 用户管理\n3. 协议管理\n4. 流量统计\n5. 备份恢复\n6. 查看证书\n7. 卸载脚本\n8. 退出脚本"
+        read -p "请选择操作 [1-8]（回车退出）: " CHOICE
+        [ -z "$CHOICE" ] && exit 0
+        case "$CHOICE" in
+            1) install_xray ;;
+            2) user_management ;;
+            3) protocol_management ;;
+            4) traffic_stats ;;
+            5) backup_restore ;;
+            6) view_certificates ;;
+            7) uninstall_script ;;
+            8) exit 0 ;;
+            *) echo -e "${RED}无效选择!${NC}" ;;
+        esac
+    done
 }
 
-install_xray() {
-    detect_system
-    timedatectl set-timezone Asia/Shanghai || { echo -e "${YELLOW}设置上海时区失败，尝试 NTP 同步${NC}"; $PKG_MANAGER install -y ntpdate && ntpdate pool.ntp.org; }
-    check_firewall
-    echo -e "${GREEN}[配置域名设置]${NC}"
-    echo -e "需要两个子域名："
-    echo -e "1. 主域名（如 tk.changkaiyuan.xyz）：用于 Xray 上网流量，走 Cloudflare 橙云，端口 443"
-    echo -e "2. 订阅域名（如 direct.tk.changkaiyuan.xyz）：用于订阅文件分发，走灰云，端口 8443"
-    read -p "请输入主域名（示例：tk.changkaiyuan.xyz）: " DOMAIN
-    read -p "请输入订阅域名（示例：direct.tk.changkaiyuan.xyz）: " SUBSCRIPTION_DOMAIN
-    DOMAIN_IP=$(dig +short "$DOMAIN" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -n 1)
-    SUBDOMAIN_IP=$(dig +short "$SUBSCRIPTION_DOMAIN" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -n 1)
-    if [ "$DOMAIN_IP" != "$SERVER_IP" ] || [ "$SUBDOMAIN_IP" != "$SERVER_IP" ]; then
-        echo -e "${RED}域名验证失败！${NC}"
-        echo -e "主域名 $DOMAIN 解析为 $DOMAIN_IP，订阅域名 $SUBSCRIPTION_DOMAIN 解析为 $SUBDOMAIN_IP，服务器 IP 为 $SERVER_IP"
-        echo -e "请确保："
-        echo -e "1. $DOMAIN 设置为橙云（A 记录指向 $SERVER_IP）"
-        echo -e "2. $SUBSCRIPTION_DOMAIN 设置为灰云（A 记录指向 $SERVER_IP）"
-        read -p "已正确设置域名？[y/N]: " CONFIRM
-        [[ ! "$CONFIRM" =~ ^[Yy] ]] && { echo -e "${RED}请设置域名后重试${NC}"; exit 1; }
+detect_system() {
+    . /etc/os-release
+    OS_NAME="$ID"
+    OS_VERSION="$VERSION_ID"
+    case "$OS_NAME" in
+        ubuntu|debian) PKG_MANAGER="apt";;
+        centos) [ "$OS_VERSION" -ge 8 ] && PKG_MANAGER="dnf" || PKG_MANAGER="yum";;
+        *) echo -e "${RED}不支持的系统: $OS_NAME${NC}"; exit 1;;
+    esac
+    ps -p 1 -o comm= | grep -q systemd || { echo -e "${RED}需要 systemd!${NC}"; exit 1; }
+    SERVER_IP=$(curl -s ifconfig.me)
+}
+
+detect_xray_service() {
+    XRAY_SERVICE_NAME="xray"
+}
+
+install_dependencies() {
+    echo -e "${GREEN}[安装依赖...]${NC}"
+    local deps
+    case "$PKG_MANAGER" in
+        apt) deps="curl jq nginx uuid-runtime qrencode snapd netcat-openbsd unzip dnsutils ntpdate";;
+        yum|dnf) deps="curl jq nginx uuid-runtime qrencode nc unzip bind-utils ntpdate";;
+    esac
+    local missing_deps=""
+    for dep in $deps; do
+        if ! command -v "$dep" >/dev/null 2>&1 && ! dpkg -l "$dep" >/dev/null 2>&1 2>/dev/null && ! rpm -q "$dep" >/dev/null 2>&1; then
+            missing_deps="$missing_deps $dep"
+        fi
+    done
+    if [ -n "$missing_deps" ]; then
+        echo -e "${YELLOW}以下依赖缺失，正在安装:${missing_deps}${NC}"
+        case "$PKG_MANAGER" in
+            apt) $PKG_MANAGER update -y && $PKG_MANAGER install -y $missing_deps || { echo -e "${RED}依赖安装失败${NC}"; exit 1; };;
+            yum|dnf) $PKG_MANAGER update -y && $PKG_MANAGER install -y $missing_deps || { echo -e "${RED}依赖安装失败${NC}"; exit 1; };;
+        esac
+    else
+        echo -e "${GREEN}所有依赖已安装${NC}"
     fi
-    echo -e "${GREEN}[选择安装的协议]${NC}"
-    echo -e "1. VLESS+WS+TLS (推荐)\n2. VMess+WS+TLS\n3. VLESS+gRPC+TLS\n4. VLESS+TCP+TLS (HTTP/2)"
-    read -p "请选择 (多选用空格分隔, 默认1): " -a PROTOCOLS
-    [ ${#PROTOCOLS[@]} -eq 0 ] && PROTOCOLS=(1)
-    check_ports
+    if ! command -v certbot >/dev/null 2>&1; then
+        case "$PKG_MANAGER" in
+            apt) systemctl enable snapd; systemctl start snapd; snap install --classic certbot; ln -sf /snap/bin/certbot /usr/bin/certbot;;
+            yum|dnf) $PKG_MANAGER install -y certbot python3-certbot-nginx;;
+        esac
+    fi
+    systemctl enable nginx
+    systemctl start nginx || { echo -e "${RED}Nginx 启动失败${NC}"; systemctl status nginx; exit 1; }
+}
+
+init_environment() {
+    [ "$EUID" -ne 0 ] && { echo -e "${RED}请使用 root 权限运行!${NC}"; exit 1; }
+    detect_system
     install_dependencies
-    apply_ssl
-    configure_nginx
-    create_default_user
-    check_xray_version
-    configure_xray
-    start_services
-    check_subscription || echo -e "${YELLOW}订阅检查失败，但安装将继续${NC}"
-    show_user_link
-    echo -e "\n安装完成! 输入 'v' 打开管理菜单"
+    mkdir -p "$LOG_DIR" "$SUBSCRIPTION_DIR" "$CLASH_DIR" "$BACKUP_DIR" "/usr/local/etc/xray" || { echo -e "${RED}目录创建失败${NC}"; exit 1; }
+    chmod 770 "$LOG_DIR" "$SUBSCRIPTION_DIR" "$CLASH_DIR" "$BACKUP_DIR" "/usr/local/etc/xray"
+    chown root:root "$LOG_DIR" "$SUBSCRIPTION_DIR" "$CLASH_DIR" "$BACKUP_DIR" "/usr/local/etc/xray"
+    touch "$LOG_DIR/access.log" "$LOG_DIR/error.log" "$LOG_DIR/sync.log"
+    chmod 660 "$LOG_DIR/access.log" "$LOG_DIR/error.log" "$LOG_DIR/sync.log"
+    chown root:root "$LOG_DIR/access.log" "$LOG_DIR/error.log" "$LOG_DIR/sync.log"
+    if [ ! -s "$USER_DATA" ] || ! jq -e '.users' "$USER_DATA" >/dev/null 2>&1; then
+        echo '{"users": []}' > "$USER_DATA"
+        chmod 600 "$USER_DATA"
+        chown root:root "$USER_DATA"
+        echo "警告: users.json 为空或格式错误，已重置" | tee -a "$LOG_DIR/sync.log"
+    fi
+    [ ! -f "$XRAY_CONFIG" ] && { echo '{"log": {"loglevel": "debug", "access": "'"$LOG_DIR/access.log"'", "error": "'"$LOG_DIR/error.log"'"}, "inbounds": [], "outbounds": [{"protocol": "freedom"}]}' > "$XRAY_CONFIG"; chmod 600 "$XRAY_CONFIG"; chown root:root "$XRAY_CONFIG"; }
+    detect_xray_service
+    load_config
+    [ -f "$SETTINGS_CONF" ] && DELETE_THRESHOLD_DAYS=$(grep "DELETE_THRESHOLD_DAYS" "$SETTINGS_CONF" | cut -d'=' -f2)
+    exec 200>$LOCK_FILE
+    trap 'rm -f tmp.json; flock -u 200; rm -f $LOCK_FILE' EXIT
+    sync_user_status
+}
+
+load_config() {
+    [ -f "$NGINX_CONF" ] && grep -q "server_name" "$NGINX_CONF" && {
+        DOMAIN=$(grep "server_name" "$NGINX_CONF" | awk '{print $2}' | sed 's/;//' | head -n 1)
+        SUBSCRIPTION_DOMAIN=$(grep "server_name" "$NGINX_CONF" | awk '{print $2}' | sed 's/;//' | tail -n 1)
+        WS_PATH=$(grep "location /xray_ws_" "$NGINX_CONF" | awk -F' ' '{print $2}' | head -n 1)
+        VMESS_PATH=$(grep "location /vmess_ws_" "$NGINX_CONF" | awk -F' ' '{print $2}' | head -n 1)
+        GRPC_SERVICE=$(grep "location /grpc_" "$NGINX_CONF" | awk -F' ' '{print $2}' | sed 's#/##g' | head -n 1)
+        TCP_PATH=$(grep "location /tcp_" "$NGINX_CONF" | awk -F' ' '{print $2}' | head -n 1)
+    }
+    [ -f "$XRAY_CONFIG" ] && jq -e . "$XRAY_CONFIG" >/dev/null 2>&1 && {
+        PROTOCOLS=()
+        PORTS=()
+        while read -r port protocol; do
+            PORTS+=("$port")
+            case "$protocol" in
+                "vless"|"vmess") 
+                    network=$(jq -r ".inbounds[] | select(.port == $port) | .streamSettings.network" "$XRAY_CONFIG")
+                    case "$network" in
+                        "ws") [[ "$protocol" == "vless" ]] && PROTOCOLS+=(1) || PROTOCOLS+=(2) ;;
+                        "grpc") PROTOCOLS+=(3) ;;
+                        "http") PROTOCOLS+=(4) ;;
+                    esac ;;
+            esac
+        done < <(jq -r '.inbounds[] | [.port, .protocol] | join(" ")' "$XRAY_CONFIG")
+    }
+}
+
+check_and_set_domain() {
+    [ -z "$DOMAIN" ] || [ -z "$SUBSCRIPTION_DOMAIN" ] && { echo -e "${RED}域名未配置，请先运行全新安装${NC}"; exit 1; }
+}
+
+check_xray_version() {
+    echo -e "${GREEN}[检查Xray版本...]${NC}"
+    CURRENT_VERSION=$(xray --version 2>/dev/null | grep -oP 'Xray \K[0-9]+\.[0-9]+\.[0-9]+' || echo "未安装")
+    if [ "$CURRENT_VERSION" = "未安装" ] || ! command -v xray >/dev/null || [[ "$(printf '%s\n' "1.8.0" "$CURRENT_VERSION" | sort -V | head -n1)" != "1.8.0" ]]; then
+        LATEST_VERSION=$(curl -s https://api.github.com/repos/XTLS/Xray-core/releases/latest | jq -r '.tag_name' | sed 's/v//' || echo "unknown")
+        echo "当前版本: $CURRENT_VERSION，需 v1.8.0+ 支持内置过期时间管理，最新版本: $LATEST_VERSION"
+        read -p "是否安装最新版本? [y/N]: " UPDATE
+        if [[ "$UPDATE" =~ ^[Yy] ]]; then
+            bash <(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh) || exit 1
+            systemctl stop "$XRAY_SERVICE_NAME" >/dev/null 2>&1
+            cat > /etc/systemd/system/$XRAY_SERVICE_NAME.service <<EOF
+[Unit]
+Description=Xray Service
+After=network.target nss-lookup.target
+[Service]
+Type=simple
+ExecStartPre=/bin/mkdir -p $LOG_DIR
+ExecStartPre=/bin/chown -R root:root $LOG_DIR
+ExecStartPre=/bin/chmod -R 770 $LOG_DIR
+ExecStartPre=/bin/touch $LOG_DIR/access.log $LOG_DIR/error.log $LOG_DIR/sync.log
+ExecStartPre=/bin/chown root:root $LOG_DIR/access.log $LOG_DIR/error.log $LOG_DIR/sync.log
+ExecStartPre=/bin/chmod 660 $LOG_DIR/access.log $LOG_DIR/error.log $LOG_DIR/sync.log
+ExecStartPre=/bin/chown root:root $XRAY_CONFIG
+ExecStartPre=/bin/chmod 600 $XRAY_CONFIG
+ExecStart=$XRAY_BIN run -config $XRAY_CONFIG
+Restart=on-failure
+RestartSec=5
+User=root
+Group=root
+LimitNPROC=10000
+LimitNOFILE=1000000
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+[Install]
+WantedBy=multi-user.target
+EOF
+            chmod 644 /etc/systemd/system/$XRAY_SERVICE_NAME.service
+            systemctl daemon-reload
+            systemctl enable "$XRAY_SERVICE_NAME"
+        else
+            echo -e "${RED}需要 Xray v1.8.0+，请手动升级${NC}"
+            exit 1
+        fi
+    fi
+}
+
+check_firewall() {
+    BASE_PORT=49152
+    command -v ufw >/dev/null && ufw status | grep -q "Status: active" && { ufw allow 80; ufw allow 443; ufw allow 8443; ufw allow 49152:49159/tcp; }
+    command -v firewall-cmd >/dev/null && firewall-cmd --state | grep -q "running" && { firewall-cmd --permanent --add-port=80/tcp; firewall-cmd --permanent --add-port=443/tcp; firewall-cmd --permanent --add-port=8443/tcp; firewall-cmd --permanent --add-port=49152-49159/tcp; firewall-cmd --reload; }
+}
+
+check_ports() {
+    PORTS=()
+    for i in "${!PROTOCOLS[@]}"; do
+        PORT=$((BASE_PORT + i))
+        while lsof -i :$PORT >/dev/null 2>&1; do PORT=$((PORT + 1)); done
+        PORTS[$i]=$PORT
+    done
+}
+
+apply_ssl() {
+    local retries=3
+    while [ $retries -gt 0 ]; do
+        certbot certonly --nginx -d "$DOMAIN" -d "$SUBSCRIPTION_DOMAIN" --non-interactive --agree-tos -m "admin@$DOMAIN" && break
+        retries=$((retries - 1))
+        sleep 5
+    done
+    [ $retries -eq 0 ] && { echo -e "${RED}SSL 证书申请失败，请检查域名解析或网络${NC}"; exit 1; }
+}
+
+configure_nginx() {
+    WS_PATH="/xray_ws_$(openssl rand -hex 4)"
+    GRPC_SERVICE="grpc_$(openssl rand -hex 4)"
+    VMESS_PATH="/vmess_ws_$(openssl rand -hex 4)"
+    TCP_PATH="/tcp_$(openssl rand -hex 4)"
+    [ -f "$NGINX_CONF" ] && ! grep -q "Xray 配置" "$NGINX_CONF" && mv "$NGINX_CONF" "$NGINX_CONF.bak.$(date +%F_%H%M%S)"
+    rm -f /etc/nginx/sites-enabled/default
+    cat > "$NGINX_CONF" <<EOF
+server {
+    listen 80;
+    server_name $DOMAIN;
+    return 301 https://\$host\$request_uri;
+}
+server {
+    listen 443 ssl http2;
+    server_name $DOMAIN;
+    ssl_certificate $CERTS_DIR/$DOMAIN/fullchain.pem;
+    ssl_certificate_key $CERTS_DIR/$DOMAIN/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+    access_log /var/log/nginx/xray_access.log;
+    error_log /var/log/nginx/xray_error.log info;
+EOF
+    for i in "${!PROTOCOLS[@]}"; do
+        PROTOCOL=${PROTOCOLS[$i]}
+        PORT=${PORTS[$i]}
+        case "$PROTOCOL" in
+            1) echo "    location $WS_PATH { proxy_pass http://127.0.0.1:$PORT; proxy_http_version 1.1; proxy_set_header Upgrade \$http_upgrade; proxy_set_header Connection \"Upgrade\"; proxy_set_header Host \$host; }" >> "$NGINX_CONF" ;;
+            2) echo "    location $VMESS_PATH { proxy_pass http://127.0.0.1:$PORT; proxy_http_version 1.1; proxy_set_header Upgrade \$http_upgrade; proxy_set_header Connection \"Upgrade\"; proxy_set_header Host \$host; }" >> "$NGINX_CONF" ;;
+            3) echo "    location /$GRPC_SERVICE { grpc_pass grpc://127.0.0.1:$PORT; }" >> "$NGINX_CONF" ;;
+            4) echo "    location $TCP_PATH { proxy_pass http://127.0.0.1:$PORT; proxy_http_version 2.0; proxy_set_header Host \$host; proxy_set_header X-Real-IP \$remote_addr; proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for; }" >> "$NGINX_CONF" ;;
+        esac
+    done
+    cat >> "$NGINX_CONF" <<EOF
+}
+server {
+    listen 8443 ssl;
+    server_name $SUBSCRIPTION_DOMAIN;
+    ssl_certificate $CERTS_DIR/$DOMAIN/fullchain.pem;
+    ssl_certificate_key $CERTS_DIR/$DOMAIN/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+    access_log /var/log/nginx/xray_access.log;
+    error_log /var/log/nginx/xray_error.log info;
+    location /subscribe/ {
+        root /var/www;
+        autoindex off;
+    }
+    location /clash/ {
+        root /var/www;
+        autoindex off;
+    }
+}
+EOF
+    nginx -t && systemctl restart nginx || { nginx -t; cat /var/log/nginx/xray_error.log | tail -n 20; exit 1; }
+    chown -R www-data:www-data "$SUBSCRIPTION_DIR" "$CLASH_DIR"
+    chmod -R 755 "$SUBSCRIPTION_DIR" "$CLASH_DIR"
 }
 
 check_subscription() {
@@ -232,6 +485,87 @@ EOF
     chmod 644 "$SUBSCRIPTION_FILE" "$CLASH_FILE"
     chown www-data:www-data "$SUBSCRIPTION_FILE" "$CLASH_FILE"
     flock -u 200
+}
+
+configure_xray() {
+    cat > "$XRAY_CONFIG" <<EOF
+{
+    "log": {"loglevel": "debug", "access": "$LOG_DIR/access.log", "error": "$LOG_DIR/error.log"},
+    "inbounds": [],
+    "outbounds": [{"protocol": "freedom"}]
+}
+EOF
+    chmod 600 "$XRAY_CONFIG"
+    chown root:root "$XRAY_CONFIG"
+    [ -z "$UUID" ] && { echo -e "${RED}错误: 未定义 UUID${NC}"; exit 1; }
+    for i in "${!PROTOCOLS[@]}"; do
+        PROTOCOL=${PROTOCOLS[$i]}
+        PORT=${PORTS[$i]}
+        case "$PROTOCOL" in
+            1) jq ".inbounds += [{\"port\": $PORT, \"protocol\": \"vless\", \"settings\": {\"clients\": [{\"id\": \"$UUID\"}], \"decryption\": \"none\"}, \"streamSettings\": {\"network\": \"ws\", \"wsSettings\": {\"path\": \"$WS_PATH\"}}}]" "$XRAY_CONFIG" > tmp.json ;;
+            2) jq ".inbounds += [{\"port\": $PORT, \"protocol\": \"vmess\", \"settings\": {\"clients\": [{\"id\": \"$UUID\", \"alterId\": 0}]}, \"streamSettings\": {\"network\": \"ws\", \"wsSettings\": {\"path\": \"$VMESS_PATH\"}}}]" "$XRAY_CONFIG" > tmp.json ;;
+            3) jq ".inbounds += [{\"port\": $PORT, \"protocol\": \"vless\", \"settings\": {\"clients\": [{\"id\": \"$UUID\"}], \"decryption\": \"none\"}, \"streamSettings\": {\"network\": \"grpc\", \"grpcSettings\": {\"serviceName\": \"$GRPC_SERVICE\"}}}]" "$XRAY_CONFIG" > tmp.json ;;
+            4) jq ".inbounds += [{\"port\": $PORT, \"protocol\": \"vless\", \"settings\": {\"clients\": [{\"id\": \"$UUID\"}], \"decryption\": \"none\"}, \"streamSettings\": {\"network\": \"http\", \"httpSettings\": {\"path\": \"$TCP_PATH\", \"host\": [\"$DOMAIN\"]}}}]" "$XRAY_CONFIG" > tmp.json ;;
+        esac
+        [ $? -ne 0 ] || ! jq -e . tmp.json >/dev/null 2>&1 && { echo -e "${RED}生成 inbound 失败!${NC}"; cat tmp.json; rm -f tmp.json; exit 1; }
+        mv tmp.json "$XRAY_CONFIG"
+    done
+    chmod 600 "$XRAY_CONFIG"
+    chown root:root "$XRAY_CONFIG"
+    $XRAY_BIN -test -config "$XRAY_CONFIG" >/dev/null 2>&1 || { echo -e "${RED}Xray 配置测试失败!${NC}"; $XRAY_BIN -test -config "$XRAY_CONFIG"; cat "$XRAY_CONFIG"; exit 1; }
+}
+
+start_services() {
+    systemctl stop "$XRAY_SERVICE_NAME" nginx >/dev/null 2>&1
+    $XRAY_BIN -test -config "$XRAY_CONFIG" >/dev/null 2>&1 || { echo -e "${RED}Xray 配置无效!${NC}"; $XRAY_BIN -test -config "$XRAY_CONFIG"; cat "$XRAY_CONFIG"; exit 1; }
+    systemctl daemon-reload
+    systemctl enable "$XRAY_SERVICE_NAME" >/dev/null 2>&1
+    systemctl enable nginx >/dev/null 2>&1
+    systemctl restart "$XRAY_SERVICE_NAME" || { echo -e "${RED}Xray 服务启动失败!${NC}"; systemctl status "$XRAY_SERVICE_NAME"; cat "$LOG_DIR/error.log"; exit 1; }
+    sleep 3
+    systemctl is-active "$XRAY_SERVICE_NAME" >/dev/null || { echo -e "${RED}Xray 服务未运行!${NC}"; systemctl status "$XRAY_SERVICE_NAME"; cat "$LOG_DIR/error.log"; exit 1; }
+    systemctl restart nginx || { nginx -t; cat /var/log/nginx/xray_error.log | tail -n 20; exit 1; }
+    sleep 3
+    systemctl is-active nginx >/dev/null && systemctl is-active "$XRAY_SERVICE_NAME" >/dev/null || { echo "Nginx: $(systemctl is-active nginx)"; echo "Xray: $(systemctl is-active "$XRAY_SERVICE_NAME")"; cat "$LOG_DIR/error.log"; exit 1; }
+    for PORT in "${PORTS[@]}"; do nc -z 127.0.0.1 "$PORT" >/dev/null 2>&1 || { netstat -tuln | grep xray; cat "$LOG_DIR/error.log"; exit 1; }; done
+}
+
+install_xray() {
+    detect_system
+    timedatectl set-timezone Asia/Shanghai || { echo -e "${YELLOW}设置上海时区失败，尝试 NTP 同步${NC}"; $PKG_MANAGER install -y ntpdate && ntpdate pool.ntp.org; }
+    check_firewall
+    echo -e "${GREEN}[配置域名设置]${NC}"
+    echo -e "需要两个子域名："
+    echo -e "1. 主域名（如 tk.changkaiyuan.xyz）：用于 Xray 上网流量，走 Cloudflare 橙云，端口 443"
+    echo -e "2. 订阅域名（如 direct.tk.changkaiyuan.xyz）：用于订阅文件分发，走灰云，端口 8443"
+    read -p "请输入主域名（示例：tk.changkaiyuan.xyz）: " DOMAIN
+    read -p "请输入订阅域名（示例：direct.tk.changkaiyuan.xyz）: " SUBSCRIPTION_DOMAIN
+    DOMAIN_IP=$(dig +short "$DOMAIN" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -n 1)
+    SUBDOMAIN_IP=$(dig +short "$SUBSCRIPTION_DOMAIN" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -n 1)
+    if [ "$DOMAIN_IP" != "$SERVER_IP" ] || [ "$SUBDOMAIN_IP" != "$SERVER_IP" ]; then
+        echo -e "${RED}域名验证失败！${NC}"
+        echo -e "主域名 $DOMAIN 解析为 $DOMAIN_IP，订阅域名 $SUBSCRIPTION_DOMAIN 解析为 $SUBDOMAIN_IP，服务器 IP 为 $SERVER_IP"
+        echo -e "请确保："
+        echo -e "1. $DOMAIN 设置为橙云（A 记录指向 $SERVER_IP）"
+        echo -e "2. $SUBSCRIPTION_DOMAIN 设置为灰云（A 记录指向 $SERVER_IP）"
+        read -p "已正确设置域名？[y/N]: " CONFIRM
+        [[ ! "$CONFIRM" =~ ^[Yy] ]] && { echo -e "${RED}请设置域名后重试${NC}"; exit 1; }
+    fi
+    echo -e "${GREEN}[选择安装的协议]${NC}"
+    echo -e "1. VLESS+WS+TLS (推荐)\n2. VMess+WS+TLS\n3. VLESS+gRPC+TLS\n4. VLESS+TCP+TLS (HTTP/2)"
+    read -p "请选择 (多选用空格分隔, 默认1): " -a PROTOCOLS
+    [ ${#PROTOCOLS[@]} -eq 0 ] && PROTOCOLS=(1)
+    check_ports
+    install_dependencies
+    apply_ssl
+    configure_nginx
+    create_default_user
+    check_xray_version
+    configure_xray
+    start_services
+    check_subscription || echo -e "${YELLOW}订阅检查失败，但安装将继续${NC}"
+    show_user_link
+    echo -e "\n安装完成! 输入 'v' 打开管理菜单"
 }
 
 show_user_link() {
@@ -749,8 +1083,6 @@ uninstall_script() {
     systemctl reset-failed
     rm -rf "$INSTALL_DIR" /usr/local/bin/v "$XRAY_BIN" /usr/local/etc/xray "$LOG_DIR" "$NGINX_CONF" "$SUBSCRIPTION_DIR" "$CLASH_DIR" "$BACKUP_DIR" "$LOCK_FILE"
     systemctl restart nginx >/dev/null 2>&1
-    crontab -l 2>/dev/null | grep -v "xray-install.sh" | crontab -
-    crontab -l 2>/dev/null | grep -v "access.log" | crontab -
     echo -e "${YELLOW}卸载完成！SSL 证书未删除，可手动运行 'certbot delete'${NC}"
     exit 0
 }
