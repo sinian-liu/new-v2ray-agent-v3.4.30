@@ -88,22 +88,55 @@ detect_xray_service() {
     XRAY_SERVICE_NAME="xray"
 }
 
+install_dependencies() {
+    echo -e "${GREEN}[安装依赖...]${NC}"
+    local deps
+    case "$PKG_MANAGER" in
+        apt) deps="curl jq nginx uuid-runtime qrencode snapd netcat-openbsd unzip dnsutils ntpdate";;
+        yum|dnf) deps="curl jq nginx uuid-runtime qrencode nc unzip bind-utils ntpdate";;
+    esac
+    local missing_deps=""
+    for dep in $deps; do
+        if ! command -v "$dep" >/dev/null 2>&1 && ! dpkg -l "$dep" >/dev/null 2>&1 2>/dev/null && ! rpm -q "$dep" >/dev/null 2>&1; then
+            missing_deps="$missing_deps $dep"
+        fi
+    done
+    if [ -n "$missing_deps" ]; then
+        echo -e "${YELLOW}以下依赖缺失，正在安装:${missing_deps}${NC}"
+        case "$PKG_MANAGER" in
+            apt) $PKG_MANAGER update -y && $PKG_MANAGER install -y $missing_deps || { echo -e "${RED}依赖安装失败${NC}"; exit 1; };;
+            yum|dnf) $PKG_MANAGER update -y && $PKG_MANAGER install -y $missing_deps || { echo -e "${RED}依赖安装失败${NC}"; exit 1; };;
+        esac
+    else
+        echo -e "${GREEN}所有依赖已安装${NC}"
+    fi
+    if ! command -v certbot >/dev/null 2>&1; then
+        case "$PKG_MANAGER" in
+            apt) systemctl enable snapd; systemctl start snapd; snap install --classic certbot; ln -sf /snap/bin/certbot /usr/bin/certbot;;
+            yum|dnf) $PKG_MANAGER install -y certbot python3-certbot-nginx;;
+        esac
+    fi
+    systemctl enable nginx
+    systemctl start nginx || { echo -e "${RED}Nginx 启动失败${NC}"; systemctl status nginx; exit 1; }
+}
+
 init_environment() {
     [ "$EUID" -ne 0 ] && { echo -e "${RED}请使用 root 权限运行!${NC}"; exit 1; }
-    mkdir -p "$LOG_DIR" "$SUBSCRIPTION_DIR" "$CLASH_DIR" "$BACKUP_DIR" "/usr/local/etc/xray" || exit 1
+    detect_system
+    install_dependencies
+    mkdir -p "$LOG_DIR" "$SUBSCRIPTION_DIR" "$CLASH_DIR" "$BACKUP_DIR" "/usr/local/etc/xray" || { echo -e "${RED}目录创建失败${NC}"; exit 1; }
     chmod 770 "$LOG_DIR" "$SUBSCRIPTION_DIR" "$CLASH_DIR" "$BACKUP_DIR" "/usr/local/etc/xray"
     chown root:root "$LOG_DIR" "$SUBSCRIPTION_DIR" "$CLASH_DIR" "$BACKUP_DIR" "/usr/local/etc/xray"
-    touch "$LOG_DIR/access.log" "$LOG_DIR/error.log"
-    chmod 660 "$LOG_DIR/access.log" "$LOG_DIR/error.log"
-    chown root:root "$LOG_DIR/access.log" "$LOG_DIR/error.log"
+    touch "$LOG_DIR/access.log" "$LOG_DIR/error.log" "$LOG_DIR/sync.log"
+    chmod 660 "$LOG_DIR/access.log" "$LOG_DIR/error.log" "$LOG_DIR/sync.log"
+    chown root:root "$LOG_DIR/access.log" "$LOG_DIR/error.log" "$LOG_DIR/sync.log"
     if [ ! -s "$USER_DATA" ] || ! jq -e '.users' "$USER_DATA" >/dev/null 2>&1; then
         echo '{"users": []}' > "$USER_DATA"
         chmod 600 "$USER_DATA"
         chown root:root "$USER_DATA"
-        echo "警告: users.json 为空或格式错误，已重置"
+        echo "警告: users.json 为空或格式错误，已重置" | tee -a "$LOG_DIR/sync.log"
     fi
     [ ! -f "$XRAY_CONFIG" ] && { echo '{"log": {"loglevel": "debug", "access": "'"$LOG_DIR/access.log"'", "error": "'"$LOG_DIR/error.log"'"}, "inbounds": [], "outbounds": [{"protocol": "freedom"}]}' > "$XRAY_CONFIG"; chmod 600 "$XRAY_CONFIG"; chown root:root "$XRAY_CONFIG"; }
-    detect_system
     detect_xray_service
     load_config
     [ -f "$SETTINGS_CONF" ] && DELETE_THRESHOLD_DAYS=$(grep "DELETE_THRESHOLD_DAYS" "$SETTINGS_CONF" | cut -d'=' -f2)
@@ -157,38 +190,6 @@ check_and_set_domain() {
     [ -z "$DOMAIN" ] && configure_domain
 }
 
-install_dependencies() {
-    echo -e "${GREEN}[安装依赖...]${NC}"
-    local deps
-    case "$PKG_MANAGER" in
-        apt) deps="curl jq nginx uuid-runtime qrencode snapd netcat-openbsd unzip dnsutils";;
-        yum|dnf) deps="curl jq nginx uuid-runtime qrencode nc unzip bind-utils";;
-    esac
-    local missing_deps=""
-    for dep in $deps; do
-        if ! command -v "$dep" >/dev/null 2>&1 && ! dpkg -l "$dep" >/dev/null 2>&1 && ! rpm -q "$dep" >/dev/null 2>&1; then
-            missing_deps="$missing_deps $dep"
-        fi
-    done
-    if [ -n "$missing_deps" ]; then
-        echo -e "${YELLOW}以下依赖缺失，正在安装:${missing_deps}${NC}"
-        case "$PKG_MANAGER" in
-            apt) apt update && apt install -y $missing_deps || exit 1;;
-            yum|dnf) $PKG_MANAGER update -y && $PKG_MANAGER install -y $missing_deps || exit 1;;
-        esac
-    else
-        echo -e "${GREEN}所有依赖已安装${NC}"
-    fi
-    if ! command -v certbot >/dev/null 2>&1; then
-        case "$PKG_MANAGER" in
-            apt) systemctl enable snapd; systemctl start snapd; snap install --classic certbot; ln -sf /snap/bin/certbot /usr/bin/certbot;;
-            yum|dnf) $PKG_MANAGER install -y certbot python3-certbot-nginx;;
-        esac
-    fi
-    systemctl enable nginx
-    systemctl start nginx || { echo -e "${RED}Nginx 启动失败${NC}"; systemctl status nginx; exit 1; }
-}
-
 check_xray_version() {
     echo -e "${GREEN}[检查Xray版本...]${NC}"
     CURRENT_VERSION=$(xray --version 2>/dev/null | grep -oP 'Xray \K[0-9]+\.[0-9]+\.[0-9]+' || echo "未安装")
@@ -208,9 +209,9 @@ Type=simple
 ExecStartPre=/bin/mkdir -p $LOG_DIR
 ExecStartPre=/bin/chown -R root:root $LOG_DIR
 ExecStartPre=/bin/chmod -R 770 $LOG_DIR
-ExecStartPre=/bin/touch $LOG_DIR/access.log $LOG_DIR/error.log
-ExecStartPre=/bin/chown root:root $LOG_DIR/access.log $LOG_DIR/error.log
-ExecStartPre=/bin/chmod 660 $LOG_DIR/access.log $LOG_DIR/error.log
+ExecStartPre=/bin/touch $LOG_DIR/access.log $LOG_DIR/error.log $LOG_DIR/sync.log
+ExecStartPre=/bin/chown root:root $LOG_DIR/access.log $LOG_DIR/error.log $LOG_DIR/sync.log
+ExecStartPre=/bin/chmod 660 $LOG_DIR/access.log $LOG_DIR/error.log $LOG_DIR/sync.log
 ExecStartPre=/bin/chown root:root $XRAY_CONFIG
 ExecStartPre=/bin/chmod 600 $XRAY_CONFIG
 ExecStart=$XRAY_BIN run -config $XRAY_CONFIG
@@ -312,7 +313,14 @@ check_subscription() {
     USER_TOKEN=$(jq -r ".users[] | select(.name == \"$USERNAME\") | .token" "$USER_DATA")
     local SUBSCRIPTION_URL="https://$DOMAIN/subscribe/$USERNAME.yml?token=$USER_TOKEN"
     local CLASH_URL="https://$DOMAIN/clash/$USERNAME.yml?token=$USER_TOKEN"
-    local sub_status=$(curl -s -o /dev/null -w "%{http_code}" --insecure -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36" "$SUBSCRIPTION_URL")
+    local sub_status=$(curl -s -o /dev/null -w "%{http_code}" --insecure \
+        -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36" \
+        -H "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8" \
+        -H "Referer: https://$DOMAIN/" \
+        -H "Accept-Language: en-US,en;q=0.5" \
+        -H "Connection: keep-alive" \
+        -H "Accept-Encoding: gzip, deflate, br" \
+        "$SUBSCRIPTION_URL")
     if [ "$sub_status" -eq 200 ]; then
         echo -e "${GREEN}订阅链接 $SUBSCRIPTION_URL 可正常访问${NC}"
     else
@@ -322,29 +330,63 @@ check_subscription() {
         echo -e "${YELLOW}检查端口和 Xray 服务${NC}"
         ss -tuln | grep -E '443|49152'
         systemctl status "$XRAY_SERVICE_NAME" | tail -n 10
-        sub_status=$(curl -s -o /dev/null -w "%{http_code}" --insecure -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36" "$SUBSCRIPTION_URL")
+        sub_status=$(curl -s -o /dev/null -w "%{http_code}" --insecure \
+            -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36" \
+            -H "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8" \
+            -H "Referer: https://$DOMAIN/" \
+            -H "Accept-Language: en-US,en;q=0.5" \
+            -H "Connection: keep-alive" \
+            -H "Accept-Encoding: gzip, deflate, br" \
+            "$SUBSCRIPTION_URL")
         if [ "$sub_status" -eq 200 ]; then
             echo -e "${GREEN}订阅链接修复成功${NC}"
         else
             echo -e "${RED}订阅链接仍不可访问（状态码: $sub_status），可能原因:${NC}"
-            echo "1. 检查文件权限: ls -l $SUBSCRIPTION_DIR/$USERNAME.yml"
+            echo "1. 检查文件权限:"
+            ls -l "$SUBSCRIPTION_DIR/$USERNAME.yml"
             echo "2. Cloudflare 橙云拦截（确保使用正确的 Token 和伪装头）"
-            curl -v -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36" "$SUBSCRIPTION_URL" 2>&1 | tail -n 20
+            curl -v -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36" \
+                -H "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8" \
+                -H "Referer: https://$DOMAIN/" \
+                -H "Accept-Language: en-US,en;q=0.5" \
+                -H "Connection: keep-alive" \
+                -H "Accept-Encoding: gzip, deflate, br" \
+                "$SUBSCRIPTION_URL" 2>&1 | tail -n 20
             return 1
         fi
     fi
-    local clash_status=$(curl -s -o /dev/null -w "%{http_code}" --insecure -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36" "$CLASH_URL")
+    local clash_status=$(curl -s -o /dev/null -w "%{http_code}" --insecure \
+        -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36" \
+        -H "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8" \
+        -H "Referer: https://$DOMAIN/" \
+        -H "Accept-Language: en-US,en;q=0.5" \
+        -H "Connection: keep-alive" \
+        -H "Accept-Encoding: gzip, deflate, br" \
+        "$CLASH_URL")
     if [ "$clash_status" -eq 200 ]; then
         echo -e "${GREEN}Clash 配置链接 $CLASH_URL 可正常访问${NC}"
     else
         echo -e "${YELLOW}Clash 配置链接 $CLASH_URL 不可访问（状态码: $clash_status），尝试修复...${NC}"
         systemctl restart nginx
-        clash_status=$(curl -s -o /dev/null -w "%{http_code}" --insecure -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36" "$CLASH_URL")
+        clash_status=$(curl -s -o /dev/null -w "%{http_code}" --insecure \
+            -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36" \
+            -H "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8" \
+            -H "Referer: https://$DOMAIN/" \
+            -H "Accept-Language: en-US,en;q=0.5" \
+            -H "Connection: keep-alive" \
+            -H "Accept-Encoding: gzip, deflate, br" \
+            "$CLASH_URL")
         if [ "$clash_status" -eq 200 ]; then
             echo -e "${GREEN}Clash 配置链接修复成功${NC}"
         else
             echo -e "${RED}Clash 配置链接仍不可访问（状态码: $clash_status），请检查:${NC}"
-            curl -v -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36" "$CLASH_URL" 2>&1 | tail -n 20
+            curl -v -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36" \
+                -H "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8" \
+                -H "Referer: https://$DOMAIN/" \
+                -H "Accept-Language: en-US,en;q=0.5" \
+                -H "Connection: keep-alive" \
+                -H "Accept-Encoding: gzip, deflate, br" \
+                "$CLASH_URL" 2>&1 | tail -n 20
             return 1
         fi
     fi
@@ -494,6 +536,7 @@ start_services() {
 
 install_xray() {
     detect_system
+    timedatectl set-timezone Asia/Shanghai || { echo -e "${YELLOW}设置上海时区失败，尝试 NTP 同步${NC}"; $PKG_MANAGER install -y ntpdate && ntpdate pool.ntp.org; }
     check_firewall
     echo -e "${GREEN}[选择安装的协议]${NC}"
     echo -e "1. VLESS+WS+TLS (推荐)\n2. VMess+WS+TLS\n3. VLESS+gRPC+TLS\n4. VLESS+TCP+TLS (HTTP/2)"
@@ -550,14 +593,14 @@ sync_user_status() {
     if [ -n "$EXPIRED_USERS" ]; then
         while IFS=$'\t' read -r uuid name expire; do
             jq --arg uuid "$uuid" '.users[] | select(.uuid == $uuid) | .status = "禁用"' "$USER_DATA" > tmp.json && mv tmp.json "$USER_DATA"
-            echo "同步状态: 用户 $name (UUID: $uuid) 已过期（到期时间: $expire），状态更新为禁用"
+            echo "同步状态: 用户 $name (UUID: $uuid) 已过期（到期时间: $expire），状态更新为禁用" | tee -a "$LOG_DIR/sync.log"
             for i in $(seq 0 $((${#PROTOCOLS[@]} - 1))); do
                 jq --arg uuid "$uuid" ".inbounds[$i].settings.clients -= [{\"id\": \$uuid}]" "$XRAY_CONFIG" > tmp.json && mv tmp.json "$XRAY_CONFIG"
             done
-            systemctl restart "$XRAY_SERVICE_NAME"
+            systemctl restart "$XRAY_SERVICE_NAME" || echo "Xray 重启失败" | tee -a "$LOG_DIR/sync.log"
         done <<< "$EXPIRED_USERS"
     else
-        echo "无需要同步的过期用户。"
+        echo "无需要同步的过期用户。" | tee -a "$LOG_DIR/sync.log"
     fi
     chmod 600 "$USER_DATA"
     chown root:root "$USER_DATA"
@@ -591,6 +634,7 @@ user_management() {
 add_user() {
     echo -e "${GREEN}=== 新建用户流程 ===${NC}"
     [ ${#PROTOCOLS[@]} -eq 0 ] || [ ! -f "$XRAY_CONFIG" ] || ! jq -e '.inbounds | length > 0' "$XRAY_CONFIG" >/dev/null 2>&1 && { echo -e "${RED}未检测到 Xray 配置${NC}"; return; }
+    timedatectl set-timezone Asia/Shanghai || { echo -e "${YELLOW}设置上海时区失败，尝试 NTP 同步${NC}"; $PKG_MANAGER install -y ntpdate && ntpdate pool.ntp.org; }
     flock -x 200
     cp "$XRAY_CONFIG" "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)"
     cp "$USER_DATA" "$USER_DATA.bak.$(date +%F_%H%M%S)"
