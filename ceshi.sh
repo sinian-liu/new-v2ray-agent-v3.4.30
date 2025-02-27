@@ -250,7 +250,7 @@ configure_nginx() {
     GRPC_SERVICE="grpc_$(openssl rand -hex 4)"
     VMESS_PATH="/vmess_ws_$(openssl rand -hex 4)"
     TCP_PATH="/tcp_$(openssl rand -hex 4)"
-    [ -f "$NGINX_CONF" ] && ! grep -q "Xray 配置" "$NGINX_CONF" && mv "$NGINX_CONF" "$NGINX_CONF.bak.$(date +%F_%H%M%S)"
+    [ -f "$NGINX_CONF" ] && mv "$NGINX_CONF" "$NGINX_CONF.bak.$(date +%F_%H%M%S)"
     rm -f /etc/nginx/sites-enabled/default
     cat > "$NGINX_CONF" <<EOF
 server {
@@ -282,7 +282,7 @@ EOF
 }
 server {
     listen 8443 ssl;
-    server_name $SUBSCRIPTION_DOMAIN;
+    server_name $SUBSCRIPTION_DOMAIN localhost;
     ssl_certificate $CERTS_DIR/$DOMAIN/fullchain.pem;
     ssl_certificate_key $CERTS_DIR/$DOMAIN/privkey.pem;
     ssl_protocols TLSv1.2 TLSv1.3;
@@ -292,10 +292,12 @@ server {
     location /subscribe/ {
         root /var/www;
         autoindex off;
+        allow all;
     }
     location /clash/ {
         root /var/www;
         autoindex off;
+        allow all;
     }
 }
 EOF
@@ -537,9 +539,9 @@ install_xray() {
     echo -e "${GREEN}[配置域名设置]${NC}"
     echo -e "需要两个子域名："
     echo -e "1. 主域名（如 tk.changkaiyuan.xyz）：用于 Xray 上网流量，走 Cloudflare 橙云，端口 443"
-    echo -e "2. 订阅域名（如 direct.tk.changkaiyuan.xyz）：用于订阅文件分发，走灰云，端口 8443"
+    echo -e "2. 订阅域名（如 sub.changkaiyuan.xyz）：用于订阅文件分发，走灰云，端口 8443"
     read -p "请输入主域名（示例：tk.changkaiyuan.xyz）: " DOMAIN
-    read -p "请输入订阅域名（示例：direct.tk.changkaiyuan.xyz）: " SUBSCRIPTION_DOMAIN
+    read -p "请输入订阅域名（示例：sub.changkaiyuan.xyz）: " SUBSCRIPTION_DOMAIN
     DOMAIN_IP=$(dig +short "$DOMAIN" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -n 1)
     SUBDOMAIN_IP=$(dig +short "$SUBSCRIPTION_DOMAIN" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -n 1)
     if [ "$DOMAIN_IP" != "$SERVER_IP" ] || [ "$SUBDOMAIN_IP" != "$SERVER_IP" ]; then
@@ -574,6 +576,7 @@ show_user_link() {
     EXPIRE_DATE=$(jq -r ".users[] | select(.name == \"$USERNAME\") | .expire" "$USER_DATA")
     CREATION_DATE=$(jq -r ".users[] | select(.name == \"$USERNAME\") | .creation" "$USER_DATA")
     USER_TOKEN=$(jq -r ".users[] | select(.name == \"$USERNAME\") | .token" "$USER_DATA")
+    STATUS=$(jq -r ".users[] | select(.name == \"$USERNAME\") | .status" "$USER_DATA")
     for PROTOCOL in "${PROTOCOLS[@]}"; do
         case "$PROTOCOL" in
             1) VLESS_WS_LINK="vless://$UUID@$DOMAIN:443?encryption=none&security=tls&type=ws&path=$WS_PATH&sni=$DOMAIN&host=$DOMAIN#$USERNAME"
@@ -594,6 +597,7 @@ show_user_link() {
     echo -e "Clash 配置链接:\nhttps://$SUBSCRIPTION_DOMAIN:8443/clash/$USERNAME.yml?token=$USER_TOKEN"
     echo -e "${GREEN}账号创建时间: $CREATION_DATE${NC}"
     echo -e "${GREEN}账号到期时间: $EXPIRE_DATE${NC}"
+    echo -e "${GREEN}账号状态: $STATUS${NC}"
     echo -e "${GREEN}请在客户端中使用带 Token 的订阅链接（通过 $SUBSCRIPTION_DOMAIN:8443 获取订阅，上网流量走 $DOMAIN:443）${NC}"
 }
 
@@ -623,6 +627,7 @@ user_management() {
     exec 200>$LOCK_FILE
     check_and_set_domain
     [ ${#PROTOCOLS[@]} -eq 0 ] || [ ! -f "$XRAY_CONFIG" ] && { echo -e "${YELLOW}未检测到 Xray 配置${NC}"; return; }
+    sync_user_status  # 每次进入用户管理时检查过期状态
     while true; do
         echo -e "${BLUE}用户管理菜单${NC}"
         echo -e "1. 新建用户\n2. 用户续期\n3. 查看链接\n4. 用户列表\n5. 删除用户\n6. 检查并同步用户状态\n7. 返回主菜单"
@@ -678,15 +683,19 @@ add_user() {
            ;;
         *) EXPIRE_TS=$((NOW + 30*24*60*60)); EXPIRE_DATE=$(date -d "@$EXPIRE_TS" "+%Y-%m-%d %H:%M:%S") ;;
     esac
-    jq --arg name "$USERNAME" --arg uuid "$UUID" --arg expire "$EXPIRE_DATE" --arg creation "$CREATION_DATE" --arg token "$TOKEN" \
-       '.users += [{"id": (.users | length + 1), "name": $name, "uuid": $uuid, "expire": $expire, "creation": $creation, "token": $token, "used_traffic": 0, "status": "启用"}]' \
+    STATUS="启用"
+    if [ "$EXPIRE_DATE" != "永久" ] && [ "$EXPIRE_TS" -lt "$NOW" ]; then
+        STATUS="禁用"
+    fi
+    jq --arg name "$USERNAME" --arg uuid "$UUID" --arg expire "$EXPIRE_DATE" --arg creation "$CREATION_DATE" --arg token "$TOKEN" --arg status "$STATUS" \
+       '.users += [{"id": (.users | length + 1), "name": $name, "uuid": $uuid, "expire": $expire, "creation": $creation, "token": $token, "used_traffic": 0, "status": $status}]' \
        "$USER_DATA" > tmp.json && mv tmp.json "$USER_DATA" || { cp "$USER_DATA.bak.$(date +%F_%H%M%S)" "$USER_DATA"; exit 1; }
     [ ! -e "$USER_DATA" ] || ! jq -e . "$USER_DATA" >/dev/null 2>&1 && { cp "$USER_DATA.bak.$(date +%F_%H%M%S)" "$USER_DATA"; exit 1; }
     for i in $(seq 0 $((${#PROTOCOLS[@]} - 1))); do
-        if [ "$EXPIRE_DATE" = "永久" ]; then
+        if [ "$EXPIRE_DATE" = "永久" ] || [ "$EXPIRE_TS" -ge "$NOW" ]; then
             jq --arg uuid "$UUID" ".inbounds[$i].settings.clients += [{\"id\": \$uuid$(if [ \"${PROTOCOLS[$i]}\" = \"2\" ]; then echo \", \\\"alterId\\\": 0\"; fi)}]" "$XRAY_CONFIG" > tmp.json
         else
-            jq --arg uuid "$UUID" --argjson expire_ts "$EXPIRE_TS" ".inbounds[$i].settings.clients += [{\"id\": \$uuid, \"expiration\": \$expire_ts$(if [ \"${PROTOCOLS[$i]}\" = \"2\" ]; then echo \", \\\"alterId\\\": 0\"; fi)}]" "$XRAY_CONFIG" > tmp.json
+            jq --arg uuid "$UUID" ".inbounds[$i].settings.clients -= [{\"id\": \$uuid}]" "$XRAY_CONFIG" > tmp.json || true
         fi
         [ $? -ne 0 ] || ! jq -e . tmp.json >/dev/null 2>&1 && { echo -e "${RED}添加用户到 Xray 配置失败!${NC}"; cat tmp.json; rm -f tmp.json; exit 1; }
         mv tmp.json "$XRAY_CONFIG"
@@ -777,17 +786,6 @@ EOF
     done
     chmod 644 "$SUBSCRIPTION_FILE" "$CLASH_FILE"
     chown www-data:www-data "$SUBSCRIPTION_FILE" "$CLASH_FILE"
-    if [ "$EXPIRE_DATE" != "永久" ]; then
-        CURRENT_TS=$(date +%s)
-        if [ "$EXPIRE_TS" -lt "$CURRENT_TS" ]; then
-            jq --arg uuid "$UUID" '.users[] | select(.uuid == $uuid) | .status = "禁用"' "$USER_DATA" > tmp.json && mv tmp.json "$USER_DATA"
-            for i in $(seq 0 $((${#PROTOCOLS[@]} - 1))); do
-                jq --arg uuid "$UUID" ".inbounds[$i].settings.clients -= [{\"id\": \$uuid}]" "$XRAY_CONFIG" > tmp.json && mv tmp.json "$XRAY_CONFIG"
-            done
-            systemctl restart "$XRAY_SERVICE_NAME"
-            echo "用户 $USERNAME 已过期（到期时间: $EXPIRE_DATE），状态更新为禁用" | tee -a "$LOG_DIR/sync.log"
-        fi
-    fi
     check_subscription
     show_user_link
     flock -u 200
@@ -822,7 +820,6 @@ renew_user() {
     echo -e "1. 月费 (+1个月)\n2. 年费 (+1年)\n3. 永久\n4. 自定义时间"
     read -p "请选择 [默认1]: " RENEW_TYPE
     RENEW_TYPE=${RENEW_TYPE:-1}
-    RENEW_DATE=$(date "+%Y-%m-%d %H:%M:%S")
     NOW=$(date +%s)
     case "$RENEW_TYPE" in
         1) NEW_EXPIRE_TS=$((NOW + 30*24*60*60)); NEW_EXPIRE=$(date -d "@$NEW_EXPIRE_TS" "+%Y-%m-%d %H:%M:%S") ;;
@@ -845,14 +842,18 @@ renew_user() {
            ;;
         *) NEW_EXPIRE_TS=$((NOW + 30*24*60*60)); NEW_EXPIRE=$(date -d "@$NEW_EXPIRE_TS" "+%Y-%m-%d %H:%M:%S") ;;
     esac
-    jq --arg name "$USERNAME" --arg expire "$NEW_EXPIRE" '(.users[] | select(.name == $name)).expire = $expire' "$USER_DATA" > tmp.json && mv tmp.json "$USER_DATA"
+    STATUS="启用"
+    if [ "$NEW_EXPIRE" != "永久" ] && [ "$NEW_EXPIRE_TS" -lt "$NOW" ]; then
+        STATUS="禁用"
+    fi
+    jq --arg name "$USERNAME" --arg expire "$NEW_EXPIRE" --arg status "$STATUS" '(.users[] | select(.name == $name)) | .expire = $expire | .status = $status' "$USER_DATA" > tmp.json && mv tmp.json "$USER_DATA"
     for i in $(seq 0 $((${#PROTOCOLS[@]} - 1))); do
         jq --arg uuid "$UUID" ".inbounds[$i].settings.clients[] | select(.id == \$uuid)" "$XRAY_CONFIG" > /dev/null
         if [ $? -eq 0 ]; then
-            if [ "$NEW_EXPIRE" = "永久" ]; then
-                jq --arg uuid "$UUID" '(.inbounds[] | .settings.clients[] | select(.id == $uuid)) |= del(.expiration)' "$XRAY_CONFIG" > tmp.json
+            if [ "$NEW_EXPIRE" = "永久" ] || [ "$NEW_EXPIRE_TS" -ge "$NOW" ]; then
+                jq --arg uuid "$UUID" --argjson expire_ts "$NEW_EXPIRE_TS" '(.inbounds[] | .settings.clients[] | select(.id == $uuid)) |= (if $expire_ts == 0 then del(.expiration) else .expiration = $expire_ts end)' "$XRAY_CONFIG" > tmp.json
             else
-                jq --arg uuid "$UUID" --argjson expire_ts "$NEW_EXPIRE_TS" '(.inbounds[] | .settings.clients[] | select(.id == $uuid)) |= (.expiration = $expire_ts)' "$XRAY_CONFIG" > tmp.json
+                jq --arg uuid "$UUID" ".inbounds[$i].settings.clients -= [{\"id\": \$uuid}]" "$XRAY_CONFIG" > tmp.json
             fi
             [ $? -ne 0 ] || ! jq -e . tmp.json >/dev/null 2>&1 && { echo -e "${RED}更新 Xray 配置失败!${NC}"; cat tmp.json; rm -f tmp.json; exit 1; }
             mv tmp.json "$XRAY_CONFIG"
@@ -863,17 +864,6 @@ renew_user() {
     chown root:root "$XRAY_CONFIG" "$USER_DATA"
     systemctl restart "$XRAY_SERVICE_NAME" || { echo -e "${RED}Xray 服务重启失败!${NC}"; systemctl status "$XRAY_SERVICE_NAME"; cat "$LOG_DIR/error.log"; exit 1; }
     echo "用户 $USERNAME 已续期至: $NEW_EXPIRE"
-    if [ "$NEW_EXPIRE" != "永久" ]; then
-        CURRENT_TS=$(date +%s)
-        if [ "$NEW_EXPIRE_TS" -lt "$CURRENT_TS" ]; then
-            jq --arg uuid "$UUID" '.users[] | select(.uuid == $uuid) | .status = "禁用"' "$USER_DATA" > tmp.json && mv tmp.json "$USER_DATA"
-            for i in $(seq 0 $((${#PROTOCOLS[@]} - 1))); do
-                jq --arg uuid "$UUID" ".inbounds[$i].settings.clients -= [{\"id\": \$uuid}]" "$XRAY_CONFIG" > tmp.json && mv tmp.json "$XRAY_CONFIG"
-            done
-            systemctl restart "$XRAY_SERVICE_NAME"
-            echo "用户 $USERNAME 已过期（到期时间: $NEW_EXPIRE），状态更新为禁用" | tee -a "$LOG_DIR/sync.log"
-        fi
-    fi
     flock -u 200
 }
 
