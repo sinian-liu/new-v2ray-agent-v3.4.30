@@ -1,5 +1,6 @@
 #!/bin/bash
 
+# 全局变量
 XRAY_CONFIG="/usr/local/etc/xray/config.json"
 USER_DATA="/usr/local/etc/xray/users.json"
 NGINX_CONF="/etc/nginx/conf.d/xray.conf"
@@ -24,6 +25,17 @@ YELLOW='\033[33m'
 BLUE='\033[36m'
 NC='\033[0m'
 
+# 函数：设置文件和目录权限
+set_permissions() {
+    echo "正在为 $SUBSCRIPTION_DIR 设置权限..."
+    sudo chown -R www-data:www-data "$SUBSCRIPTION_DIR" "$CLASH_DIR"
+    sudo chmod -R 755 "$SUBSCRIPTION_DIR" "$CLASH_DIR"
+    sudo find "$SUBSCRIPTION_DIR" "$CLASH_DIR" -type f -exec chmod 644 {} \;
+    sudo chmod 755 /var/www
+    echo "权限设置完成。"
+}
+
+# 主菜单
 main_menu() {
     init_environment
     while true; do
@@ -69,6 +81,7 @@ main_menu() {
     done
 }
 
+# 系统检测
 detect_system() {
     . /etc/os-release
     OS_NAME="$ID"
@@ -82,10 +95,12 @@ detect_system() {
     SERVER_IP=$(curl -s ifconfig.me)
 }
 
+# 检测 Xray 服务
 detect_xray_service() {
     XRAY_SERVICE_NAME="xray"
 }
 
+# 安装依赖
 install_dependencies() {
     echo -e "${GREEN}[安装依赖...]${NC}"
     local deps
@@ -118,6 +133,7 @@ install_dependencies() {
     systemctl start nginx || { echo -e "${RED}Nginx 启动失败${NC}"; systemctl status nginx; exit 1; }
 }
 
+# 初始化环境
 init_environment() {
     [ "$EUID" -ne 0 ] && { echo -e "${RED}请使用 root 权限运行!${NC}"; exit 1; }
     detect_system
@@ -143,6 +159,7 @@ init_environment() {
     sync_user_status
 }
 
+# 加载配置
 load_config() {
     [ -f "$NGINX_CONF" ] && grep -q "server_name" "$NGINX_CONF" && {
         DOMAIN=$(grep "server_name" "$NGINX_CONF" | awk '{print $2}' | sed 's/;//' | head -n 1)
@@ -170,10 +187,12 @@ load_config() {
     }
 }
 
+# 域名检查
 check_and_set_domain() {
     [ -z "$DOMAIN" ] || [ -z "$SUBSCRIPTION_DOMAIN" ] && { echo -e "${RED}域名未配置，请先运行全新安装${NC}"; exit 1; }
 }
 
+# Xray 版本检查
 check_xray_version() {
     echo -e "${GREEN}[检查Xray版本...]${NC}"
     CURRENT_VERSION=$(xray --version 2>/dev/null | grep -oP 'Xray \K[0-9]+\.[0-9]+\.[0-9]+' || echo "未安装")
@@ -220,12 +239,14 @@ EOF
     fi
 }
 
+# 防火墙配置
 check_firewall() {
     BASE_PORT=49152
     command -v ufw >/dev/null && ufw status | grep -q "Status: active" && { ufw allow 80; ufw allow 443; ufw allow 8443; ufw allow 49152:49159/tcp; }
     command -v firewall-cmd >/dev/null && firewall-cmd --state | grep -q "running" && { firewall-cmd --permanent --add-port=80/tcp; firewall-cmd --permanent --add-port=443/tcp; firewall-cmd --permanent --add-port=8443/tcp; firewall-cmd --permanent --add-port=49152-49159/tcp; firewall-cmd --reload; }
 }
 
+# 端口检查
 check_ports() {
     PORTS=()
     for i in "${!PROTOCOLS[@]}"; do
@@ -235,6 +256,7 @@ check_ports() {
     done
 }
 
+# 申请 SSL 证书
 apply_ssl() {
     local retries=3
     while [ $retries -gt 0 ]; do
@@ -245,6 +267,7 @@ apply_ssl() {
     [ $retries -eq 0 ] && { echo -e "${RED}SSL 证书申请失败，请检查域名解析或网络${NC}"; exit 1; }
 }
 
+# 配置 Nginx
 configure_nginx() {
     WS_PATH="/xray_ws_$(openssl rand -hex 4)"
     GRPC_SERVICE="grpc_$(openssl rand -hex 4)"
@@ -302,10 +325,10 @@ server {
 }
 EOF
     nginx -t && systemctl restart nginx || { nginx -t; cat /var/log/nginx/xray_error.log | tail -n 20; exit 1; }
-    chown -R www-data:www-data "$SUBSCRIPTION_DIR" "$CLASH_DIR"
-    chmod -R 755 "$SUBSCRIPTION_DIR" "$CLASH_DIR"
+    set_permissions  # 确保 Nginx 可以访问订阅目录
 }
 
+# 检查订阅配置
 check_subscription() {
     echo -e "${GREEN}[检查订阅配置...]${NC}"
     USER_TOKEN=$(jq -r ".users[] | select(.name == \"$USERNAME\") | .token" "$USER_DATA")
@@ -391,6 +414,7 @@ check_subscription() {
     return 0
 }
 
+# 创建默认用户
 create_default_user() {
     USERNAME="自用"
     UUID=$(uuidgen)
@@ -489,6 +513,7 @@ EOF
     flock -u 200
 }
 
+# 配置 Xray
 configure_xray() {
     cat > "$XRAY_CONFIG" <<EOF
 {
@@ -517,6 +542,7 @@ EOF
     $XRAY_BIN -test -config "$XRAY_CONFIG" >/dev/null 2>&1 || { echo -e "${RED}Xray 配置测试失败!${NC}"; $XRAY_BIN -test -config "$XRAY_CONFIG"; cat "$XRAY_CONFIG"; exit 1; }
 }
 
+# 启动服务
 start_services() {
     systemctl stop "$XRAY_SERVICE_NAME" nginx >/dev/null 2>&1
     $XRAY_BIN -test -config "$XRAY_CONFIG" >/dev/null 2>&1 || { echo -e "${RED}Xray 配置无效!${NC}"; $XRAY_BIN -test -config "$XRAY_CONFIG"; cat "$XRAY_CONFIG"; exit 1; }
@@ -532,6 +558,7 @@ start_services() {
     for PORT in "${PORTS[@]}"; do nc -z 127.0.0.1 "$PORT" >/dev/null 2>&1 || { netstat -tuln | grep xray; cat "$LOG_DIR/error.log"; exit 1; }; done
 }
 
+# 安装 Xray
 install_xray() {
     detect_system
     timedatectl set-timezone Asia/Shanghai || { echo -e "${YELLOW}设置上海时区失败，尝试 NTP 同步${NC}"; $PKG_MANAGER install -y ntpdate && ntpdate pool.ntp.org; }
@@ -570,6 +597,7 @@ install_xray() {
     echo -e "\n安装完成! 输入 'v' 打开管理菜单"
 }
 
+# 显示用户链接
 show_user_link() {
     echo -e "${GREEN}[显示用户链接...]${NC}"
     check_and_set_domain
@@ -601,6 +629,7 @@ show_user_link() {
     echo -e "${GREEN}请在客户端中使用带 Token 的订阅链接（通过 $SUBSCRIPTION_DOMAIN:8443 获取订阅，上网流量走 $DOMAIN:443）${NC}"
 }
 
+# 同步用户状态
 sync_user_status() {
     echo -e "${GREEN}=== 同步用户状态 ===${NC}"
     flock -x 200
@@ -623,6 +652,7 @@ sync_user_status() {
     flock -u 200
 }
 
+# 用户管理
 user_management() {
     exec 200>$LOCK_FILE
     check_and_set_domain
@@ -647,6 +677,7 @@ user_management() {
     exec 200>&-
 }
 
+# 新建用户
 add_user() {
     echo -e "${GREEN}=== 新建用户流程 ===${NC}"
     [ ${#PROTOCOLS[@]} -eq 0 ] || [ ! -f "$XRAY_CONFIG" ] || ! jq -e '.inbounds | length > 0' "$XRAY_CONFIG" >/dev/null 2>&1 && { echo -e "${RED}未检测到 Xray 配置${NC}"; return; }
@@ -678,7 +709,8 @@ add_user() {
                esac
            else
                echo -e "${RED}无效格式! 请使用如 1h、10m、200d${NC}"
-               exit 1
+               flock -u 200
+               return
            fi
            ;;
         *) EXPIRE_TS=$((NOW + 30*24*60*60)); EXPIRE_DATE=$(date -d "@$EXPIRE_TS" "+%Y-%m-%d %H:%M:%S") ;;
@@ -689,21 +721,21 @@ add_user() {
     fi
     jq --arg name "$USERNAME" --arg uuid "$UUID" --arg expire "$EXPIRE_DATE" --arg creation "$CREATION_DATE" --arg token "$TOKEN" --arg status "$STATUS" \
        '.users += [{"id": (.users | length + 1), "name": $name, "uuid": $uuid, "expire": $expire, "creation": $creation, "token": $token, "used_traffic": 0, "status": $status}]' \
-       "$USER_DATA" > tmp.json && mv tmp.json "$USER_DATA" || { cp "$USER_DATA.bak.$(date +%F_%H%M%S)" "$USER_DATA"; exit 1; }
-    [ ! -e "$USER_DATA" ] || ! jq -e . "$USER_DATA" >/dev/null 2>&1 && { cp "$USER_DATA.bak.$(date +%F_%H%M%S)" "$USER_DATA"; exit 1; }
+       "$USER_DATA" > tmp.json && mv tmp.json "$USER_DATA" || { cp "$USER_DATA.bak.$(date +%F_%H%M%S)" "$USER_DATA"; flock -u 200; return; }
+    [ ! -e "$USER_DATA" ] || ! jq -e . "$USER_DATA" >/dev/null 2>&1 && { cp "$USER_DATA.bak.$(date +%F_%H%M%S)" "$USER_DATA"; flock -u 200; return; }
     for i in $(seq 0 $((${#PROTOCOLS[@]} - 1))); do
         if [ "$EXPIRE_DATE" = "永久" ] || [ "$EXPIRE_TS" -ge "$NOW" ]; then
             jq --arg uuid "$UUID" ".inbounds[$i].settings.clients += [{\"id\": \$uuid$(if [ \"${PROTOCOLS[$i]}\" = \"2\" ]; then echo \", \\\"alterId\\\": 0\"; fi)}]" "$XRAY_CONFIG" > tmp.json
         else
             jq --arg uuid "$UUID" ".inbounds[$i].settings.clients -= [{\"id\": \$uuid}]" "$XRAY_CONFIG" > tmp.json || true
         fi
-        [ $? -ne 0 ] || ! jq -e . tmp.json >/dev/null 2>&1 && { echo -e "${RED}添加用户到 Xray 配置失败!${NC}"; cat tmp.json; rm -f tmp.json; exit 1; }
+        [ $? -ne 0 ] || ! jq -e . tmp.json >/dev/null 2>&1 && { echo -e "${RED}添加用户到 Xray 配置失败!${NC}"; cat tmp.json; rm -f tmp.json; flock -u 200; return; }
         mv tmp.json "$XRAY_CONFIG"
     done
-    $XRAY_BIN -test -config "$XRAY_CONFIG" >/dev/null 2>&1 || { echo -e "${RED}Xray 配置测试失败!${NC}"; $XRAY_BIN -test -config "$XRAY_CONFIG"; cat "$XRAY_CONFIG"; exit 1; }
+    $XRAY_BIN -test -config "$XRAY_CONFIG" >/dev/null 2>&1 || { echo -e "${RED}Xray 配置测试失败!${NC}"; $XRAY_BIN -test -config "$XRAY_CONFIG"; cat "$XRAY_CONFIG"; flock -u 200; return; }
     chmod 600 "$XRAY_CONFIG" "$USER_DATA"
     chown root:root "$XRAY_CONFIG" "$USER_DATA"
-    systemctl restart "$XRAY_SERVICE_NAME" || { echo -e "${RED}Xray 服务重启失败!${NC}"; systemctl status "$XRAY_SERVICE_NAME"; cat "$LOG_DIR/error.log"; exit 1; }
+    systemctl restart "$XRAY_SERVICE_NAME" || { echo -e "${RED}Xray 服务重启失败!${NC}"; systemctl status "$XRAY_SERVICE_NAME"; cat "$LOG_DIR/error.log"; flock -u 200; return; }
     SUBSCRIPTION_FILE="$SUBSCRIPTION_DIR/$USERNAME.yml"
     CLASH_FILE="$CLASH_DIR/$USERNAME.yml"
     > "$SUBSCRIPTION_FILE"
@@ -791,6 +823,7 @@ EOF
     flock -u 200
 }
 
+# 用户列表
 list_users() {
     echo -e "${BLUE}用户列表:${NC}"
     printf "| %-4s | %-15s | %-36s | %-19s | %-19s | %-12s | %-6s |\n" "ID" "用户名" "UUID" "创建时间" "过期时间" "已用流量" "状态"
@@ -802,6 +835,7 @@ list_users() {
     done
 }
 
+# 用户续期
 renew_user() {
     echo -e "${GREEN}=== 用户续期流程 ===${NC}"
     flock -x 200
@@ -848,25 +882,26 @@ renew_user() {
     fi
     jq --arg name "$USERNAME" --arg expire "$NEW_EXPIRE" --arg status "$STATUS" '(.users[] | select(.name == $name)) | .expire = $expire | .status = $status' "$USER_DATA" > tmp.json && mv tmp.json "$USER_DATA"
     for i in $(seq 0 $((${#PROTOCOLS[@]} - 1))); do
-        jq --arg uuid "$UUID" ".inbounds[$i].settings.clients[] | select(.id == \$uuid)" "$XRAY_CONFIG" > /dev/null
+        jq --arg uuid "$UUID" ".inbounds[$i].settings.clients[] | select(.id == \$uuid)" "$XRAY_CONFIG" >/dev/null
         if [ $? -eq 0 ]; then
             if [ "$NEW_EXPIRE" = "永久" ] || [ "$NEW_EXPIRE_TS" -ge "$NOW" ]; then
                 jq --arg uuid "$UUID" --argjson expire_ts "$NEW_EXPIRE_TS" '(.inbounds[] | .settings.clients[] | select(.id == $uuid)) |= (if $expire_ts == 0 then del(.expiration) else .expiration = $expire_ts end)' "$XRAY_CONFIG" > tmp.json
             else
                 jq --arg uuid "$UUID" ".inbounds[$i].settings.clients -= [{\"id\": \$uuid}]" "$XRAY_CONFIG" > tmp.json
             fi
-            [ $? -ne 0 ] || ! jq -e . tmp.json >/dev/null 2>&1 && { echo -e "${RED}更新 Xray 配置失败!${NC}"; cat tmp.json; rm -f tmp.json; exit 1; }
+            [ $? -ne 0 ] || ! jq -e . tmp.json >/dev/null 2>&1 && { echo -e "${RED}更新 Xray 配置失败!${NC}"; cat tmp.json; rm -f tmp.json; flock -u 200; return; }
             mv tmp.json "$XRAY_CONFIG"
         fi
     done
-    $XRAY_BIN -test -config "$XRAY_CONFIG" >/dev/null 2>&1 || { echo -e "${RED}Xray 配置测试失败!${NC}"; $XRAY_BIN -test -config "$XRAY_CONFIG"; cat "$XRAY_CONFIG"; exit 1; }
+    $XRAY_BIN -test -config "$XRAY_CONFIG" >/dev/null 2>&1 || { echo -e "${RED}Xray 配置测试失败!${NC}"; $XRAY_BIN -test -config "$XRAY_CONFIG"; cat "$XRAY_CONFIG"; flock -u 200; return; }
     chmod 600 "$XRAY_CONFIG" "$USER_DATA"
     chown root:root "$XRAY_CONFIG" "$USER_DATA"
-    systemctl restart "$XRAY_SERVICE_NAME" || { echo -e "${RED}Xray 服务重启失败!${NC}"; systemctl status "$XRAY_SERVICE_NAME"; cat "$LOG_DIR/error.log"; exit 1; }
+    systemctl restart "$XRAY_SERVICE_NAME" || { echo -e "${RED}Xray 服务重启失败!${NC}"; systemctl status "$XRAY_SERVICE_NAME"; cat "$LOG_DIR/error.log"; flock -u 200; return; }
     echo "用户 $USERNAME 已续期至: $NEW_EXPIRE"
     flock -u 200
 }
 
+# 查看链接
 view_links() {
     echo -e "${GREEN}=== 查看链接 ===${NC}"
     RETRY_COUNT=0
@@ -970,6 +1005,7 @@ EOF
     done
 }
 
+# 删除用户
 delete_user() {
     echo -e "${GREEN}=== 删除用户流程 ===${NC}"
     [ ${#PROTOCOLS[@]} -eq 0 ] || [ ! -f "$XRAY_CONFIG" ] && { echo -e "${RED}未检测到 Xray 配置${NC}"; return; }
@@ -978,15 +1014,15 @@ delete_user() {
     UUID=$(jq -r ".users[] | select(.name == \"$INPUT\" or .uuid == \"$INPUT\") | .uuid" "$USER_DATA")
     USERNAME=$(jq -r ".users[] | select(.name == \"$INPUT\" or .uuid == \"$INPUT\") | .name" "$USER_DATA")
     if [ -n "$UUID" ]; then
-        jq "del(.users[] | select(.name == \"$USERNAME\"))" "$USER_DATA" > tmp.json && mv tmp.json "$USER_DATA" || { cp "$USER_DATA.bak.$(date +%F_%H%M%S)" "$USER_DATA"; exit 1; }
+        jq "del(.users[] | select(.name == \"$USERNAME\"))" "$USER_DATA" > tmp.json && mv tmp.json "$USER_DATA" || { cp "$USER_DATA.bak.$(date +%F_%H%M%S)" "$USER_DATA"; flock -u 200; return; }
         for i in $(seq 0 $((${#PROTOCOLS[@]} - 1))); do
             jq --arg uuid "$UUID" ".inbounds[$i].settings.clients -= [{\"id\": \$uuid}]" "$XRAY_CONFIG" > tmp.json && mv tmp.json "$XRAY_CONFIG"
         done
-        [ ! -e "$XRAY_CONFIG" ] || ! jq -e . "$XRAY_CONFIG" >/dev/null 2>&1 && { cp "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)" "$XRAY_CONFIG"; exit 1; }
-        $XRAY_BIN -test -config "$XRAY_CONFIG" >/dev/null 2>&1 || { $XRAY_BIN -test -config "$XRAY_CONFIG"; exit 1; }
+        [ ! -e "$XRAY_CONFIG" ] || ! jq -e . "$XRAY_CONFIG" >/dev/null 2>&1 && { cp "$XRAY_CONFIG.bak.$(date +%F_%H%M%S)" "$XRAY_CONFIG"; flock -u 200; return; }
+        $XRAY_BIN -test -config "$XRAY_CONFIG" >/dev/null 2>&1 || { $XRAY_BIN -test -config "$XRAY_CONFIG"; flock -u 200; return; }
         chmod 600 "$XRAY_CONFIG" "$USER_DATA"
         chown root:root "$XRAY_CONFIG" "$USER_DATA"
-        systemctl restart "$XRAY_SERVICE_NAME" || { systemctl status "$XRAY_SERVICE_NAME"; cat "$LOG_DIR/error.log"; exit 1; }
+        systemctl restart "$XRAY_SERVICE_NAME" || { systemctl status "$XRAY_SERVICE_NAME"; cat "$LOG_DIR/error.log"; flock -u 200; return; }
         echo "用户 $USERNAME 已删除并重启 Xray。"
     else
         echo -e "${RED}用户 $INPUT 不存在!${NC}"
@@ -994,6 +1030,7 @@ delete_user() {
     flock -u 200
 }
 
+# 协议管理
 protocol_management() {
     check_and_set_domain
     echo -e "${GREEN}=== 协议管理 ===${NC}"
@@ -1006,6 +1043,7 @@ protocol_management() {
     systemctl restart nginx "$XRAY_SERVICE_NAME" || exit 1
 }
 
+# 流量统计
 traffic_stats() {
     echo -e "${BLUE}=== 流量统计 ===${NC}"
     printf "| %-15s | %-12s | %-8s | %-8s |\n" "用户名" "已用流量" "总流量" "状态"
@@ -1020,6 +1058,7 @@ traffic_stats() {
     }
 }
 
+# 备份恢复
 backup_restore() {
     echo -e "${GREEN}=== 备份管理 ===${NC}"
     echo -e "1. 创建备份\n2. 恢复备份\n3. 返回主菜单"
@@ -1051,6 +1090,7 @@ backup_restore() {
     esac
 }
 
+# 查看证书
 view_certificates() {
     echo -e "${GREEN}=== 查看证书信息 ===${NC}"
     check_and_set_domain
@@ -1062,6 +1102,7 @@ view_certificates() {
     echo -e "- 证书域名: $DOMAIN\n- 申请时间: $ISSUE_DATE\n- 到期时间: $EXPIRY_DATE\n- 剩余有效期: $VALID_DAYS 天"
 }
 
+# 卸载脚本
 uninstall_script() {
     echo -e "${GREEN}=== 卸载脚本 ===${NC}"
     read -p "确定要卸载? (y/N): " CONFIRM
@@ -1077,6 +1118,7 @@ uninstall_script() {
     exit 0
 }
 
+# 安装脚本
 install_script() {
     [ "$EUID" -ne 0 ] && { echo -e "${RED}请以 root 运行!${NC}"; exit 1; }
     if [ ! -f "$SCRIPT_PATH" ]; then
