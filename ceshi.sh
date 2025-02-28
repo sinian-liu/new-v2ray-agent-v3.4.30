@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 脚本版本号
-VERSION="v1.5.1"
+VERSION="v1.6"
 
 # 全局变量
 XRAY_CONFIG="/usr/local/etc/xray/config.json"
@@ -66,7 +66,7 @@ install_deps() {
     systemctl enable nginx && systemctl start nginx || { echo -e "${RED}Nginx 启动失败!${NC}"; systemctl status nginx; exit 1; }
 }
 
-# 检查并安装 Xray 版本（参考你的代码）
+# 检查并安装 Xray 版本
 check_xray_version() {
     echo -e "${GREEN}[检查Xray版本...]${NC}"
     CURRENT_VERSION=$(xray --version 2>/dev/null | grep -oP 'Xray \K[0-9]+\.[0-9]+\.[0-9]+' || echo "未安装")
@@ -107,6 +107,7 @@ EOF
             chmod 644 "$XRAY_SYSTEMD"
             systemctl daemon-reload
             systemctl enable "$XRAY_SERVICE"
+            systemctl start "$XRAY_SERVICE" || { echo -e "${RED}Xray 服务启动失败!${NC}"; systemctl status "$XRAY_SERVICE"; exit 1; }
         else
             echo -e "${RED}需要 Xray v1.8.0+，请手动升级${NC}"
             exit 1
@@ -152,7 +153,10 @@ EOF
 
 # 全新安装
 install_xray() {
-    echo -e "${GREEN}=== 全新安装 ===${NC}"
+    echo -e "${GREEN}==== Xray高级管理脚本 ($VERSION) ====${NC}"
+    echo -e "${GREEN}服务器推荐：https://my.frantech.ca/aff.php?aff=4337${NC}"
+    echo -e "${GREEN}VPS评测官方网站：https://www.1373737.xyz/${NC}"
+    echo -e "${GREEN}YouTube频道：https://www.youtube.com/@cyndiboy7881${NC}"
     init_env
     install_deps
     check_xray_version
@@ -192,8 +196,8 @@ configure_protocols() {
         done
         PORTS+=("$PORT")
     done
-    WS_PATH="/ws_$(openssl rand -hex 4)"
-    VMESS_PATH="/vmess_$(openssl rand -hex 4)"
+    WS_PATH="/xray_ws_$(openssl rand -hex 4)"
+    VMESS_PATH="/vmess_ws_$(openssl rand -hex 4)"
     GRPC_SERVICE="grpc_$(openssl rand -hex 4)"
     TCP_PATH="/tcp_$(openssl rand -hex 4)"
     cat > "$XRAY_CONFIG" <<EOF
@@ -299,10 +303,11 @@ add_user() {
     }
     [ -z "$traffic_limit" ] && { read -p "请输入流量限制 (GB，回车为无限制): " traffic_limit; traffic_limit=${traffic_limit:-0}; }
     local token=$(echo -n "$username:$uuid" | sha256sum | cut -c 1-32)
+    local creation_date=$(date "+%Y-%m-%d %H:%M:%S")
 
     flock -x 200
-    jq --arg u "$username" --arg id "$uuid" --arg e "$expire_date" --arg t "$token" --argjson tl "$traffic_limit" \
-       '.users += [{"name": $u, "uuid": $id, "expire": $e, "token": $t, "status": "启用", "traffic_limit": $tl, "traffic_used": 0}]' "$USER_DATA" > tmp.json && mv tmp.json "$USER_DATA"
+    jq --arg u "$username" --arg id "$uuid" --arg e "$expire_date" --arg t "$token" --argjson tl "$traffic_limit" --arg c "$creation_date" \
+       '.users += [{"name": $u, "uuid": $id, "expire": $e, "token": $t, "status": "启用", "traffic_limit": $tl, "traffic_used": 0, "creation": $c}]' "$USER_DATA" > tmp.json && mv tmp.json "$USER_DATA"
 
     for i in "${!PROTOCOLS[@]}"; do
         case "${PROTOCOLS[$i]}" in
@@ -331,13 +336,13 @@ generate_subscription() {
     for i in "${!PROTOCOLS[@]}"; do
         case "${PROTOCOLS[$i]}" in
             1) echo "vless://$uuid@$DOMAIN:443?encryption=none&security=tls&type=ws&path=$WS_PATH&sni=$DOMAIN#$username" >> "$sub_file"
-               echo -e "- name: $username\n  type: vless\n  server: $DOMAIN\n  port: 443\n  uuid: $uuid\n  network: ws\n  tls: true\n  ws-opts:\n    path: $WS_PATH" >> "$clash_file" ;;
+               echo -e "- name: $username\n  type: vless\n  server: $DOMAIN\n  port: 443\n  uuid: $uuid\n  network: ws\n  tls: true\n  udp: true\n  ws-opts:\n    path: $WS_PATH" >> "$clash_file" ;;
             2) echo "vmess://$(echo -n '{\"v\":\"2\",\"ps\":\"'$username'\",\"add\":\"'$DOMAIN'\",\"port\":\"443\",\"id\":\"'$uuid'\",\"aid\":\"0\",\"net\":\"ws\",\"type\":\"none\",\"host\":\"'$DOMAIN'\",\"path\":\"'$VMESS_PATH'\",\"tls\":\"tls\"}' | base64 -w 0)" >> "$sub_file"
-               echo -e "- name: $username\n  type: vmess\n  server: $DOMAIN\n  port: 443\n  uuid: $uuid\n  alterId: 0\n  cipher: auto\n  network: ws\n  tls: true\n  ws-opts:\n    path: $VMESS_PATH" >> "$clash_file" ;;
+               echo -e "- name: $username\n  type: vmess\n  server: $DOMAIN\n  port: 443\n  uuid: $uuid\n  alterId: 0\n  cipher: auto\n  network: ws\n  tls: true\n  udp: true\n  ws-opts:\n    path: $VMESS_PATH" >> "$clash_file" ;;
             3) echo "vless://$uuid@$DOMAIN:443?encryption=none&security=tls&type=grpc&serviceName=$GRPC_SERVICE&sni=$DOMAIN#$username" >> "$sub_file"
-               echo -e "- name: $username\n  type: vless\n  server: $DOMAIN\n  port: 443\n  uuid: $uuid\n  network: grpc\n  tls: true\n  grpc-opts:\n    grpc-service-name: $GRPC_SERVICE" >> "$clash_file" ;;
+               echo -e "- name: $username\n  type: vless\n  server: $DOMAIN\n  port: 443\n  uuid: $uuid\n  network: grpc\n  tls: true\n  udp: true\n  grpc-opts:\n    grpc-service-name: $GRPC_SERVICE" >> "$clash_file" ;;
             4) echo "vless://$uuid@$DOMAIN:443?encryption=none&security=tls&type=http&path=$TCP_PATH&sni=$DOMAIN#$username" >> "$sub_file"
-               echo -e "- name: $username\n  type: vless\n  server: $DOMAIN\n  port: 443\n  uuid: $uuid\n  network: http\n  tls: true\n  http-opts:\n    path: $TCP_PATH" >> "$clash_file" ;;
+               echo -e "- name: $username\n  type: vless\n  server: $DOMAIN\n  port: 443\n  uuid: $uuid\n  network: http\n  tls: true\n  udp: true\n  http-opts:\n    path: $TCP_PATH" >> "$clash_file" ;;
         esac
     done
     chown "$NGINX_USER:$NGINX_USER" "$sub_file" "$clash_file"
@@ -347,17 +352,24 @@ generate_subscription() {
     echo -e "${GREEN}订阅链接: $sub_url${NC}"
     echo -e "${GREEN}Clash 订阅: $clash_url${NC}"
     status=$(curl -s -o /dev/null -w "%{http_code}" --insecure -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" "$sub_url")
-    [ "$status" -ne 200 ] && { echo -e "${RED}订阅链接不可访问 (状态码: $status)，请检查 Cloudflare 完全严格模式设置或 Nginx 配置${NC}"; }
+    [ "$status" -ne 200 ] && { echo -e "${RED}订阅链接不可访问 (状态码: $status)，请检查 Cloudflare 设置、Nginx 配置或 Xray 服务${NC}"; }
 }
 
 # 用户到期和流量检测
 check_expiry_and_traffic() {
+    echo -e "${GREEN}=== 同步用户状态 ===${NC}"
     flock -x 200
     local now=$(date +%s)
     if ! grep -q "uuid" "$LOG_DIR/access.log" && [ -s "$LOG_DIR/access.log" ]; then
         echo -e "${YELLOW}警告: access.log 未包含 UUID，可能影响流量统计，请检查 Xray 日志配置${NC}"
     fi
+    local expired_found=0
     jq -r '.users[] | [.name, .uuid, .expire, .status, .traffic_limit, .traffic_used] | join("\t")' "$USER_DATA" | while IFS=$'\t' read -r name uuid expire status limit used; do
+        if [ -z "$expire" ] || [ "$expire" == "" ]; then
+            echo -e "${YELLOW}用户 $name 的到期时间为空，已设置为永久${NC}"
+            jq --arg n "$name" '.users[] | select(.name == $n) | .expire = "永久"' "$USER_DATA" > tmp.json && mv tmp.json "$USER_DATA"
+            expire="永久"
+        fi
         local expire_ts=$(date -d "$expire" +%s 2>/dev/null || echo 0)
         local traffic=$(awk -v u="$uuid" '$0 ~ u {sum += $NF} END {print sum/1024/1024/1024}' "$LOG_DIR/access.log" 2>/dev/null || echo "0")
         jq --arg n "$name" --argjson t "$traffic" '.users[] | select(.name == $n) | .traffic_used = $t' "$USER_DATA" > tmp.json && mv tmp.json "$USER_DATA"
@@ -370,9 +382,11 @@ check_expiry_and_traffic() {
                 done
                 systemctl restart "$XRAY_SERVICE"
                 echo -e "${YELLOW}用户 $name 已过期或流量超限，已禁用${NC}"
+                expired_found=1
             fi
         fi
     done
+    [ "$expired_found" -eq 0 ] && echo "无需要同步的过期用户。"
     flock -u 200
 }
 
@@ -380,29 +394,85 @@ check_expiry_and_traffic() {
 user_management() {
     [ -z "$DOMAIN" ] && { echo -e "${RED}请先完成全新安装!${NC}"; return; }
     while true; do
-        echo -e "${BLUE}=== 用户管理 ===${NC}"
-        echo -e "1. 添加用户\n2. 删除用户\n3. 列出用户\n4. 续期用户\n5. 导入用户\n6. 导出用户\n7. 重置流量\n8. 切换状态\n9. 返回"
-        read -p "请选择: " choice
+        echo -e "${BLUE}用户管理菜单${NC}"
+        echo -e "1. 新建用户\n2. 用户续期\n3. 查看链接\n4. 用户列表\n5. 删除用户\n6. 检查并同步用户状态\n7. 返回主菜单"
+        read -p "请选择操作（回车返回主菜单）: " choice
+        [ -z "$choice" ] && break
         case "$choice" in
-            1) read -p "用户名: " username; add_user "$username";;
-            2) read -p "用户名: " username; jq --arg n "$username" 'del(.users[] | select(.name == $n))' "$USER_DATA" > tmp.json && mv tmp.json "$USER_DATA"; systemctl restart "$XRAY_SERVICE"; echo -e "${GREEN}用户 $username 已删除${NC}";;
-            3) echo -e "用户名      UUID                                  到期时间                状态    流量限制(GB)  已用流量(GB)"; 
-               jq -r '.users[] | [.name, .uuid, .expire, (if .status == "启用" then "启用" else "禁用" end), .traffic_limit, .traffic_used] | join("\t")' "$USER_DATA" | 
-               awk 'BEGIN {FS="\t"; OFS="\t"} {printf "%-12s %-36s %-22s %-6s %-12.2f %-12.2f\n", $1, $2, $3, $4, $5, $6}' ;;
-            4) read -p "用户名: " username; add_user "$username" "$(jq -r ".users[] | select(.name == \"$username\") | .uuid" "$USER_DATA")"; echo -e "${GREEN}续期成功${NC}";;
-            5) read -p "输入用户文件路径: " file; jq -s '.[0].users += .[1].users' "$USER_DATA" "$file" > tmp.json && mv tmp.json "$USER_DATA"; echo -e "${GREEN}用户导入完成${NC}";;
-            6) jq '.users' "$USER_DATA" > "/tmp/users_export_$(date +%F).json"; echo -e "${GREEN}用户已导出至 /tmp/users_export_$(date +%F).json${NC}";;
-            7) read -p "用户名: " username; jq --arg n "$username" '.users[] | select(.name == $n) | .traffic_used = 0' "$USER_DATA" > tmp.json && mv tmp.json "$USER_DATA"; echo -e "${GREEN}用户 $username 流量已重置${NC}";;
-            8) read -p "用户名: " username; read -p "状态 (启用/禁用): " status; status=$(if [ "$status" = "启用" ]; then echo "启用"; else echo "禁用"; fi); jq --arg n "$username" --arg s "$status" '.users[] | select(.name == $n) | .status = $s' "$USER_DATA" > tmp.json && mv tmp.json "$USER_DATA"; systemctl restart "$XRAY_SERVICE"; echo -e "${GREEN}状态更新成功${NC}";;
-            9) break;;
+            1) echo -e "${GREEN}=== 新建用户流程 ===${NC}"; read -p "输入用户名: " username; add_user "$username";;
+            2) echo -e "${GREEN}=== 用户续期流程 ===${NC}"; read -p "输入要续期的用户名: " username; add_user "$username" "$(jq -r ".users[] | select(.name == \"$username\") | .uuid" "$USER_DATA")"; echo -e "${GREEN}续期成功${NC}";;
+            3) echo -e "${GREEN}=== 查看链接 ===${NC}"; read -p "请输入用户名: " username; show_user_link "$username";;
+            4) list_users;;
+            5) echo -e "${GREEN}=== 删除用户流程 ===${NC}"; read -p "输入要删除的用户名: " username; [ -n "$username" ] && delete_user "$username" || echo -e "${RED}用户名不能为空!${NC}";;
+            6) check_expiry_and_traffic;;
+            7) break;;
             *) echo -e "${RED}无效选项!${NC}";;
         esac
     done
 }
 
+# 显示用户链接
+show_user_link() {
+    local username="$1"
+    local user_info=$(jq -r ".users[] | select(.name == \"$username\") | [.uuid, .expire, .creation, .token, .status] | join(\"\t\")" "$USER_DATA")
+    [ -z "$user_info" ] && { echo -e "${RED}用户 $username 不存在!${NC}"; return; }
+    IFS=$'\t' read -r UUID EXPIRE_DATE CREATION_DATE USER_TOKEN STATUS <<< "$user_info"
+    echo -e "${GREEN}[显示用户链接...]${NC}"
+    for i in "${!PROTOCOLS[@]}"; do
+        case "${PROTOCOLS[$i]}" in
+            1) VLESS_WS_LINK="vless://$UUID@$DOMAIN:443?encryption=none&security=tls&type=ws&path=$WS_PATH&sni=$DOMAIN&host=$DOMAIN#$username"
+               echo "[二维码 (VLESS+WS+TLS)]:"; qrencode -t ansiutf8 "$VLESS_WS_LINK" || echo -e "${YELLOW}二维码生成失败${NC}"
+               echo -e "\n链接地址 (VLESS+WS+TLS):\n$VLESS_WS_LINK" ;;
+            2) VMESS_LINK="vmess://$(echo -n '{\"v\":\"2\",\"ps\":\"'$username'\",\"add\":\"'$DOMAIN'\",\"port\":\"443\",\"id\":\"'$UUID'\",\"aid\":\"0\",\"net\":\"ws\",\"type\":\"none\",\"host\":\"'$DOMAIN'\",\"path\":\"'$VMESS_PATH'\",\"tls\":\"tls\",\"sni\":\"'$DOMAIN'\"}' | base64 -w 0)"
+               echo "[二维码 (VMess+WS+TLS)]:"; qrencode -t ansiutf8 "$VMESS_LINK" || echo -e "${YELLOW}二维码生成失败${NC}"
+               echo -e "\n链接地址 (VMess+WS+TLS):\n$VMESS_LINK" ;;
+            3) VLESS_GRPC_LINK="vless://$UUID@$DOMAIN:443?encryption=none&security=tls&type=grpc&serviceName=$GRPC_SERVICE&sni=$DOMAIN#$username"
+               echo "[二维码 (VLESS+gRPC+TLS)]:"; qrencode -t ansiutf8 "$VLESS_GRPC_LINK" || echo -e "${YELLOW}二维码生成失败${NC}"
+               echo -e "\n链接地址 (VLESS+gRPC+TLS):\n$VLESS_GRPC_LINK" ;;
+            4) VLESS_TCP_LINK="vless://$UUID@$DOMAIN:443?encryption=none&security=tls&type=http&path=$TCP_PATH&sni=$DOMAIN&host=$DOMAIN#$username"
+               echo "[二维码 (VLESS+TCP+TLS)]:"; qrencode -t ansiutf8 "$VLESS_TCP_LINK" || echo -e "${YELLOW}二维码生成失败${NC}"
+               echo -e "\n链接地址 (VLESS+TCP+TLS):\n$VLESS_TCP_LINK" ;;
+        esac
+    done
+    echo -e "\n订阅链接（需携带 Token）:\nhttps://$DOMAIN/subscribe/$username.yml?token=$USER_TOKEN"
+    echo -e "Clash 配置链接:\nhttps://$DOMAIN/clash/$username.yml?token=$USER_TOKEN"
+    echo -e "${GREEN}账号创建时间: $CREATION_DATE${NC}"
+    echo -e "${GREEN}账号到期时间: $EXPIRE_DATE${NC}"
+    echo -e "${GREEN}账号状态: $STATUS${NC}"
+    echo -e "${GREEN}请在客户端中使用带 Token 的订阅链接（通过 $DOMAIN 获取订阅，上网流量走 $DOMAIN:443）${NC}"
+}
+
+# 用户列表
+list_users() {
+    echo -e "${BLUE}用户列表:${NC}"
+    echo -e "| 用户名       | UUID                                 | 创建时间            | 到期时间            | 已用流量 | 状态 |"
+    echo -e "|--------------|--------------------------------------|---------------------|---------------------|----------|------|"
+    jq -r '.users[] | [.name, .uuid, .creation, .expire, .traffic_used, (if .status == "启用" then "启用" else "禁用" end)] | join("\t")' "$USER_DATA" | \
+    while IFS=$'\t' read -r name uuid creation expire used status; do
+        used_fmt=$(awk "BEGIN {printf \"%.2fG\", $used/1073741824}")
+        printf "| %-12s | %-36s | %-19s | %-19s | %-8s | %-6s |\n" "$name" "$uuid" "$creation" "$expire" "$used_fmt" "$status"
+    done
+}
+
+# 删除用户
+delete_user() {
+    local username="$1"
+    local uuid=$(jq -r ".users[] | select(.name == \"$username\") | .uuid" "$USER_DATA")
+    [ -z "$uuid" ] && { echo -e "${RED}用户 $username 不存在!${NC}"; return; }
+    flock -x 200
+    jq "del(.users[] | select(.name == \"$username\"))" "$USER_DATA" > tmp.json && mv tmp.json "$USER_DATA"
+    for i in "${!PROTOCOLS[@]}"; do
+        jq --arg id "$uuid" ".inbounds[$i].settings.clients -= [{\"id\": \$id}]" "$XRAY_CONFIG" > tmp.json && mv tmp.json "$XRAY_CONFIG"
+    done
+    $XRAY_BIN -test -c "$XRAY_CONFIG" || { echo -e "${RED}Xray 配置测试失败!${NC}"; $XRAY_BIN -test -c "$XRAY_CONFIG"; exit 1; }
+    systemctl restart "$XRAY_SERVICE"
+    echo -e "${GREEN}用户 $username 已删除${NC}"
+    flock -u 200
+}
+
 # 协议管理
 protocol_management() {
-    [ -z "$DOMAIN" ] && { echo -e "${RED}请先完成全新安装!${NC}"; return; }
+    [ -z "$DOMAIN" ] || [ -z "$UUID" ] && { echo -e "${RED}请先完成全新安装并创建默认用户!${NC}"; return; }
     while true; do
         echo -e "${GREEN}=== 协议管理 ===${NC}"
         echo -e "当前协议: ${PROTOCOLS[*]}"
@@ -514,7 +584,6 @@ change_domain() {
     certbot certonly --nginx -d "$new_domain" --non-interactive --agree-tos -m "admin@$new_domain" || { echo -e "${RED}证书更新失败!${NC}"; return; }
     DOMAIN="$new_domain"
     systemctl restart "$XRAY_SERVICE" nginx
-    # 更新所有用户的订阅文件
     jq -r '.users[] | [.name, .uuid, .token] | join("\t")' "$USER_DATA" | while IFS=$'\t' read -r name uuid token; do
         generate_subscription "$name" "$uuid" "$token"
     done
@@ -557,12 +626,26 @@ main_menu() {
     check_expiry_and_traffic
     [ ! -L /usr/local/bin/v ] && install_script
     while true; do
-        XRAY_STATUS=$(systemctl is-active "$XRAY_SERVICE" 2>/dev/null || echo "inactive")
+        XRAY_STATUS=$(systemctl is-active "$XRAY_SERVICE" 2>/dev/null || echo "已停止")
         NGINX_STATUS=$(systemctl is-active nginx 2>/dev/null || echo "inactive")
-        echo -e "${GREEN}=== Xray 管理脚本 ($VERSION) ===${NC}"
-        echo -e "${GREEN}Xray: $XRAY_STATUS | Nginx: $NGINX_STATUS${NC}"
-        echo -e "1. 全新安装\n2. 用户管理\n3. 协议管理\n4. 流量统计\n5. 备份恢复\n6. 查看证书\n7. 查看日志\n8. 测试连接\n9. 清理日志\n10. 更换域名\n11. 检查资源\n12. 卸载脚本\n13. 退出"
-        read -p "请选择: " choice
+        PROTOCOL_TEXT=""
+        for i in "${PROTOCOLS[@]}"; do
+            case "$i" in
+                1) PROTOCOL_TEXT="$PROTOCOL_TEXT VLESS+WS+TLS" ;;
+                2) PROTOCOL_TEXT="$PROTOCOL_TEXT VMess+WS+TLS" ;;
+                3) PROTOCOL_TEXT="$PROTOCOL_TEXT VLESS+gRPC+TLS" ;;
+                4) PROTOCOL_TEXT="$PROTOCOL_TEXT VLESS+TCP+TLS" ;;
+            esac
+        done
+        [ -n "$PROTOCOL_TEXT" ] && PROTOCOL_TEXT="| ${GREEN}使用协议:${PROTOCOL_TEXT}${NC}" || PROTOCOL_TEXT="| ${RED}未配置协议${NC}"
+        echo -e "${GREEN}==== Xray高级管理脚本 ($VERSION) ====${NC}"
+        echo -e "${GREEN}服务器推荐：https://my.frantech.ca/aff.php?aff=4337${NC}"
+        echo -e "${GREEN}VPS评测官方网站：https://www.1373737.xyz/${NC}"
+        echo -e "${GREEN}YouTube频道：https://www.youtube.com/@cyndiboy7881${NC}"
+        echo -e "${GREEN}Xray状态: $XRAY_STATUS $PROTOCOL_TEXT${NC}\n"
+        echo -e "1. 全新安装\n2. 用户管理\n3. 协议管理\n4. 流量统计\n5. 备份恢复\n6. 查看证书\n7. 卸载脚本\n8. 退出脚本"
+        read -p "请选择操作 [1-8]（回车退出）: " choice
+        [ -z "$choice" ] && exit 0
         case "$choice" in
             1) install_xray;;
             2) user_management;;
@@ -570,13 +653,8 @@ main_menu() {
             4) traffic_stats;;
             5) backup_restore;;
             6) view_certificates;;
-            7) view_logs;;
-            8) test_connection;;
-            9) clean_logs;;
-            10) change_domain;;
-            11) check_resources;;
-            12) uninstall_script;;
-            13) exit 0;;
+            7) uninstall_script;;
+            8) exit 0;;
             *) echo -e "${RED}无效选项!${NC}";;
         esac
     done
