@@ -17,7 +17,7 @@ INSTALL_DIR="/root/v2ray"
 SCRIPT_PATH="$INSTALL_DIR/xray-install.sh"
 SETTINGS_CONF="/usr/local/etc/xray/settings.conf"
 
-declare DOMAIN SUBSCRIPTION_DOMAIN WS_PATH VMESS_PATH GRPC_SERVICE TCP_PATH PROTOCOLS PORTS BASE_PORT UUID DELETE_THRESHOLD_DAYS SERVER_IP
+declare DOMAIN WS_PATH VMESS_PATH GRPC_SERVICE TCP_PATH PROTOCOLS PORTS BASE_PORT UUID DELETE_THRESHOLD_DAYS SERVER_IP
 
 RED='\033[31m'
 GREEN='\033[32m'
@@ -163,7 +163,6 @@ init_environment() {
 load_config() {
     [ -f "$NGINX_CONF" ] && grep -q "server_name" "$NGINX_CONF" && {
         DOMAIN=$(grep "server_name" "$NGINX_CONF" | awk '{print $2}' | sed 's/;//' | head -n 1)
-        SUBSCRIPTION_DOMAIN=$(grep "server_name" "$NGINX_CONF" | awk '{print $2}' | sed 's/;//' | tail -n 1)
         WS_PATH=$(grep "location /xray_ws_" "$NGINX_CONF" | awk -F' ' '{print $2}' | head -n 1)
         VMESS_PATH=$(grep "location /vmess_ws_" "$NGINX_CONF" | awk -F' ' '{print $2}' | head -n 1)
         GRPC_SERVICE=$(grep "location /grpc_" "$NGINX_CONF" | awk -F' ' '{print $2}' | sed 's#/##g' | head -n 1)
@@ -189,7 +188,7 @@ load_config() {
 
 # 域名检查
 check_and_set_domain() {
-    [ -z "$DOMAIN" ] || [ -z "$SUBSCRIPTION_DOMAIN" ] && { echo -e "${RED}域名未配置，请先运行全新安装${NC}"; exit 1; }
+    [ -z "$DOMAIN" ] && { echo -e "${RED}域名未配置，请先运行全新安装${NC}"; exit 1; }
 }
 
 # Xray 版本检查
@@ -242,8 +241,8 @@ EOF
 # 防火墙配置
 check_firewall() {
     BASE_PORT=49152
-    command -v ufw >/dev/null && ufw status | grep -q "Status: active" && { ufw allow 80; ufw allow 443; ufw allow 8443; ufw allow 49152:49159/tcp; }
-    command -v firewall-cmd >/dev/null && firewall-cmd --state | grep -q "running" && { firewall-cmd --permanent --add-port=80/tcp; firewall-cmd --permanent --add-port=443/tcp; firewall-cmd --permanent --add-port=8443/tcp; firewall-cmd --permanent --add-port=49152-49159/tcp; firewall-cmd --reload; }
+    command -v ufw >/dev/null && ufw status | grep -q "Status: active" && { ufw allow 80; ufw allow 443; ufw allow 49152:49159/tcp; }
+    command -v firewall-cmd >/dev/null && firewall-cmd --state | grep -q "running" && { firewall-cmd --permanent --add-port=80/tcp; firewall-cmd --permanent --add-port=443/tcp; firewall-cmd --permanent --add-port=49152-49159/tcp; firewall-cmd --reload; }
 }
 
 # 端口检查
@@ -260,7 +259,7 @@ check_ports() {
 apply_ssl() {
     local retries=3
     while [ $retries -gt 0 ]; do
-        certbot certonly --nginx -d "$DOMAIN" -d "$SUBSCRIPTION_DOMAIN" --non-interactive --agree-tos -m "admin@$DOMAIN" && break
+        certbot certonly --nginx -d "$DOMAIN" --non-interactive --agree-tos -m "admin@$DOMAIN" && break
         retries=$((retries - 1))
         sleep 5
     done
@@ -302,16 +301,6 @@ EOF
         esac
     done
     cat >> "$NGINX_CONF" <<EOF
-}
-server {
-    listen 8443 ssl;
-    server_name $SUBSCRIPTION_DOMAIN localhost;
-    ssl_certificate $CERTS_DIR/$DOMAIN/fullchain.pem;
-    ssl_certificate_key $CERTS_DIR/$DOMAIN/privkey.pem;
-    ssl_protocols TLSv1.2 TLSv1.3;
-    ssl_ciphers HIGH:!aNULL:!MD5;
-    access_log /var/log/nginx/xray_access.log;
-    error_log /var/log/nginx/xray_error.log info;
     location /subscribe/ {
         root /var/www;
         autoindex off;
@@ -325,15 +314,15 @@ server {
 }
 EOF
     nginx -t && systemctl restart nginx || { nginx -t; cat /var/log/nginx/xray_error.log | tail -n 20; exit 1; }
-    set_permissions  # 确保 Nginx 可以访问订阅目录
+    set_permissions
 }
 
 # 检查订阅配置
 check_subscription() {
     echo -e "${GREEN}[检查订阅配置...]${NC}"
     USER_TOKEN=$(jq -r ".users[] | select(.name == \"$USERNAME\") | .token" "$USER_DATA")
-    local SUBSCRIPTION_URL="https://$SUBSCRIPTION_DOMAIN:8443/subscribe/$USERNAME.yml?token=$USER_TOKEN"
-    local CLASH_URL="https://$SUBSCRIPTION_DOMAIN:8443/clash/$USERNAME.yml?token=$USER_TOKEN"
+    local SUBSCRIPTION_URL="https://$DOMAIN/subscribe/$USERNAME.yml?token=$USER_TOKEN"
+    local CLASH_URL="https://$DOMAIN/clash/$USERNAME.yml?token=$USER_TOKEN"
     local sub_status=$(curl -s -o /dev/null -w "%{http_code}" --insecure \
         -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36" \
         -H "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8" \
@@ -349,7 +338,7 @@ check_subscription() {
         nginx -t || { echo -e "${RED}Nginx 配置错误${NC}"; cat /var/log/nginx/xray_error.log | tail -n 20; return 1; }
         systemctl restart nginx
         echo -e "${YELLOW}检查端口和 Xray 服务${NC}"
-        ss -tuln | grep -E '443|49152|8443'
+        ss -tuln | grep -E '443|49152'
         systemctl status "$XRAY_SERVICE_NAME" | tail -n 10
         sub_status=$(curl -s -o /dev/null -w "%{http_code}" --insecure \
             -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36" \
@@ -365,7 +354,7 @@ check_subscription() {
             echo -e "${RED}订阅链接仍不可访问（状态码: $sub_status），可能原因:${NC}"
             echo "1. 检查文件权限:"
             ls -l "$SUBSCRIPTION_DIR/$USERNAME.yml"
-            echo "2. 子域名 $SUBSCRIPTION_DOMAIN 未设置为灰云或 8443 端口未开放"
+            echo "2. Cloudflare 配置错误或端口未开放"
             curl -v -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36" \
                 -H "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8" \
                 -H "Referer: https://$DOMAIN/" \
@@ -564,19 +553,13 @@ install_xray() {
     timedatectl set-timezone Asia/Shanghai || { echo -e "${YELLOW}设置上海时区失败，尝试 NTP 同步${NC}"; $PKG_MANAGER install -y ntpdate && ntpdate pool.ntp.org; }
     check_firewall
     echo -e "${GREEN}[配置域名设置]${NC}"
-    echo -e "需要两个子域名："
-    echo -e "1. 主域名（如 tk.changkaiyuan.xyz）：用于 Xray 上网流量，走 Cloudflare 橙云，端口 443"
-    echo -e "2. 订阅域名（如 sub.changkaiyuan.xyz）：用于订阅文件分发，走灰云，端口 8443"
-    read -p "请输入主域名（示例：tk.changkaiyuan.xyz）: " DOMAIN
-    read -p "请输入订阅域名（示例：sub.changkaiyuan.xyz）: " SUBSCRIPTION_DOMAIN
+    echo -e "请输入您的域名（例如 tk.changkaiyuan.xyz），用于代理流量和订阅文件分发，走 Cloudflare 橙云，端口 443"
+    read -p "请输入域名: " DOMAIN
     DOMAIN_IP=$(dig +short "$DOMAIN" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -n 1)
-    SUBDOMAIN_IP=$(dig +short "$SUBSCRIPTION_DOMAIN" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -n 1)
-    if [ "$DOMAIN_IP" != "$SERVER_IP" ] || [ "$SUBDOMAIN_IP" != "$SERVER_IP" ]; then
+    if [ "$DOMAIN_IP" != "$SERVER_IP" ]; then
         echo -e "${RED}域名验证失败！${NC}"
-        echo -e "主域名 $DOMAIN 解析为 $DOMAIN_IP，订阅域名 $SUBSCRIPTION_DOMAIN 解析为 $SUBDOMAIN_IP，服务器 IP 为 $SERVER_IP"
-        echo -e "请确保："
-        echo -e "1. $DOMAIN 设置为橙云（A 记录指向 $SERVER_IP）"
-        echo -e "2. $SUBSCRIPTION_DOMAIN 设置为灰云（A 记录指向 $SERVER_IP）"
+        echo -e "域名 $DOMAIN 解析为 $DOMAIN_IP，服务器 IP 为 $SERVER_IP"
+        echo -e "请确保 $DOMAIN 设置为橙云（A 记录指向 $SERVER_IP）"
         read -p "已正确设置域名？[y/N]: " CONFIRM
         [[ ! "$CONFIRM" =~ ^[Yy] ]] && { echo -e "${RED}请设置域名后重试${NC}"; exit 1; }
     fi
@@ -621,12 +604,12 @@ show_user_link() {
                echo -e "\n链接地址 (VLESS+TCP+TLS):\n$VLESS_TCP_LINK" ;;
         esac
     done
-    echo -e "\n订阅链接（需携带 Token）:\nhttps://$SUBSCRIPTION_DOMAIN:8443/subscribe/$USERNAME.yml?token=$USER_TOKEN"
-    echo -e "Clash 配置链接:\nhttps://$SUBSCRIPTION_DOMAIN:8443/clash/$USERNAME.yml?token=$USER_TOKEN"
+    echo -e "\n订阅链接（需携带 Token）:\nhttps://$DOMAIN/subscribe/$USERNAME.yml?token=$USER_TOKEN"
+    echo -e "Clash 配置链接:\nhttps://$DOMAIN/clash/$USERNAME.yml?token=$USER_TOKEN"
     echo -e "${GREEN}账号创建时间: $CREATION_DATE${NC}"
     echo -e "${GREEN}账号到期时间: $EXPIRE_DATE${NC}"
     echo -e "${GREEN}账号状态: $STATUS${NC}"
-    echo -e "${GREEN}请在客户端中使用带 Token 的订阅链接（通过 $SUBSCRIPTION_DOMAIN:8443 获取订阅，上网流量走 $DOMAIN:443）${NC}"
+    echo -e "${GREEN}请在客户端中使用带 Token 的订阅链接（通过 $DOMAIN 获取订阅，上网流量走 $DOMAIN:443）${NC}"
 }
 
 # 同步用户状态
@@ -657,7 +640,7 @@ user_management() {
     exec 200>$LOCK_FILE
     check_and_set_domain
     [ ${#PROTOCOLS[@]} -eq 0 ] || [ ! -f "$XRAY_CONFIG" ] && { echo -e "${YELLOW}未检测到 Xray 配置${NC}"; return; }
-    sync_user_status  # 每次进入用户管理时检查过期状态
+    sync_user_status
     while true; do
         echo -e "${BLUE}用户管理菜单${NC}"
         echo -e "1. 新建用户\n2. 用户续期\n3. 查看链接\n4. 用户列表\n5. 删除用户\n6. 检查并同步用户状态\n7. 返回主菜单"
@@ -1074,13 +1057,10 @@ backup_restore() {
                chown root:root "$XRAY_CONFIG" "$USER_DATA"
                read -p "是否更换域名? [y/N]: " CHANGE_DOMAIN
                [[ "$CHANGE_DOMAIN" =~ ^[Yy] ]] && {
-                   read -p "输入新主域名: " NEW_DOMAIN
-                   read -p "输入新订阅域名: " NEW_SUBSCRIPTION_DOMAIN
+                   read -p "输入新域名: " NEW_DOMAIN
                    sed -i "s/$DOMAIN/$NEW_DOMAIN/g" "$XRAY_CONFIG" "$NGINX_CONF"
-                   sed -i "s/$SUBSCRIPTION_DOMAIN/$NEW_SUBSCRIPTION_DOMAIN/g" "$NGINX_CONF"
-                   certbot certonly --nginx -d "$NEW_DOMAIN" -d "$NEW_SUBSCRIPTION_DOMAIN" --non-interactive --agree-tos -m "admin@$NEW_DOMAIN" >/dev/null 2>&1
+                   certbot certonly --nginx -d "$NEW_DOMAIN" --non-interactive --agree-tos -m "admin@$NEW_DOMAIN" >/dev/null 2>&1
                    DOMAIN="$NEW_DOMAIN"
-                   SUBSCRIPTION_DOMAIN="$NEW_SUBSCRIPTION_DOMAIN"
                }
                systemctl restart nginx "$XRAY_SERVICE_NAME" || exit 1
                echo "备份恢复完成!"
@@ -1132,4 +1112,5 @@ install_script() {
     main_menu
 }
 
+# 启动脚本
 install_script "$@"
