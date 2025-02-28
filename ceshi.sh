@@ -1,7 +1,9 @@
+
+
 #!/bin/bash
 
-# 脚本版本号：v1.2
-# 更新说明：修复服务器重启后订阅失败问题（403 Forbidden），通过添加缓存控制头和确保配置加载，不修改 Cloudflare 设置
+# 脚本版本号：v1.3
+# 更新说明：修复 TLS 握手超时问题，确保 Cloudflare 橙云下 WebSocket 连接正常
 
 # 全局变量
 XRAY_CONFIG="/usr/local/etc/xray/config.json"
@@ -42,7 +44,7 @@ set_permissions() {
 main_menu() {
     init_environment
     while true; do
-        echo -e "${GREEN}==== Xray高级管理脚本 (v1.2) ====${NC}"
+        echo -e "${GREEN}==== Xray高级管理脚本 (v1.3) ====${NC}"
         echo -e "${GREEN}服务器推荐：https://my.frantech.ca/aff.php?aff=4337${NC}"
         echo -e "${GREEN}VPS评测官方网站：https://www.1373737.xyz/${NC}"
         echo -e "${GREEN}YouTube频道：https://www.youtube.com/@cyndiboy7881${NC}"
@@ -291,6 +293,7 @@ server {
     ssl_certificate_key $CERTS_DIR/$DOMAIN/privkey.pem;
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_ciphers HIGH:!aNULL:!MD5;
+    ssl_prefer_server_ciphers on;
     access_log /var/log/nginx/xray_access.log;
     error_log /var/log/nginx/xray_error.log info;
 EOF
@@ -298,10 +301,36 @@ EOF
         PROTOCOL=${PROTOCOLS[$i]}
         PORT=${PORTS[$i]}
         case "$PROTOCOL" in
-            1) echo "    location $WS_PATH { proxy_pass http://127.0.0.1:$PORT; proxy_http_version 1.1; proxy_set_header Upgrade \$http_upgrade; proxy_set_header Connection \"Upgrade\"; proxy_set_header Host \$host; }" >> "$NGINX_CONF" ;;
-            2) echo "    location $VMESS_PATH { proxy_pass http://127.0.0.1:$PORT; proxy_http_version 1.1; proxy_set_header Upgrade \$http_upgrade; proxy_set_header Connection \"Upgrade\"; proxy_set_header Host \$host; }" >> "$NGINX_CONF" ;;
+            1) echo "    location $WS_PATH { 
+                    proxy_pass http://127.0.0.1:$PORT; 
+                    proxy_http_version 1.1; 
+                    proxy_set_header Upgrade \$http_upgrade; 
+                    proxy_set_header Connection \"Upgrade\"; 
+                    proxy_set_header Host \$host; 
+                    proxy_set_header X-Real-IP \$remote_addr; 
+                    proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for; 
+                    proxy_read_timeout 300s; 
+                    proxy_connect_timeout 60s; 
+                }" >> "$NGINX_CONF" ;;
+            2) echo "    location $VMESS_PATH { 
+                    proxy_pass http://127.0.0.1:$PORT; 
+                    proxy_http_version 1.1; 
+                    proxy_set_header Upgrade \$http_upgrade; 
+                    proxy_set_header Connection \"Upgrade\"; 
+                    proxy_set_header Host \$host; 
+                    proxy_set_header X-Real-IP \$remote_addr; 
+                    proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for; 
+                    proxy_read_timeout 300s; 
+                    proxy_connect_timeout 60s; 
+                }" >> "$NGINX_CONF" ;;
             3) echo "    location /$GRPC_SERVICE { grpc_pass grpc://127.0.0.1:$PORT; }" >> "$NGINX_CONF" ;;
-            4) echo "    location $TCP_PATH { proxy_pass http://127.0.0.1:$PORT; proxy_http_version 2.0; proxy_set_header Host \$host; proxy_set_header X-Real-IP \$remote_addr; proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for; }" >> "$NGINX_CONF" ;;
+            4) echo "    location $TCP_PATH { 
+                    proxy_pass http://127.0.0.1:$PORT; 
+                    proxy_http_version 2.0; 
+                    proxy_set_header Host \$host; 
+                    proxy_set_header X-Real-IP \$remote_addr; 
+                    proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for; 
+                }" >> "$NGINX_CONF" ;;
         esac
     done
     cat >> "$NGINX_CONF" <<EOF
@@ -319,7 +348,12 @@ EOF
     }
 }
 EOF
-    nginx -t && systemctl restart nginx || { nginx -t; cat /var/log/nginx/xray_error.log | tail -n 20; exit 1; }
+    nginx -t && systemctl restart nginx || { 
+        echo -e "${RED}Nginx 配置测试失败!${NC}"; 
+        nginx -t; 
+        cat /var/log/nginx/xray_error.log | tail -n 20; 
+        exit 1; 
+    }
     set_permissions
 }
 
@@ -553,8 +587,20 @@ start_services() {
     systemctl enable nginx >/dev/null 2>&1
     systemctl restart nginx || { nginx -t; cat /var/log/nginx/xray_error.log | tail -n 20; exit 1; }
     sleep 3
-    systemctl is-active nginx >/dev/null && systemctl is-active "$XRAY_SERVICE_NAME" >/dev/null || { echo "Nginx: $(systemctl is-active nginx)"; echo "Xray: $(systemctl is-active "$XRAY_SERVICE_NAME")"; cat "$LOG_DIR/error.log"; exit 1; }
-    for PORT in "${PORTS[@]}"; do nc -z 127.0.0.1 "$PORT" >/dev/null 2>&1 || { netstat -tuln | grep xray; cat "$LOG_DIR/error.log"; exit 1; }; done
+    systemctl is-active nginx >/dev/null && systemctl is-active "$XRAY_SERVICE_NAME" >/dev/null || { 
+        echo "Nginx: $(systemctl is-active nginx)"; 
+        echo "Xray: $(systemctl is-active "$XRAY_SERVICE_NAME")"; 
+        cat "$LOG_DIR/error.log"; 
+        exit 1; 
+    }
+    for PORT in "${PORTS[@]}"; do 
+        nc -z 127.0.0.1 "$PORT" >/dev/null 2>&1 || { 
+            echo -e "${RED}Xray 端口 $PORT 未监听!${NC}"; 
+            netstat -tuln | grep xray; 
+            cat "$LOG_DIR/error.log"; 
+            exit 1; 
+        }; 
+    done
     set_permissions  # 重启服务后确保权限正确
 }
 
