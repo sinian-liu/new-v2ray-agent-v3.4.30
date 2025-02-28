@@ -1,5 +1,8 @@
 #!/bin/bash
 
+# 脚本版本号：v1.2
+# 更新说明：修复服务器重启后订阅失败问题（403 Forbidden），通过添加缓存控制头和确保配置加载，不修改 Cloudflare 设置
+
 # 全局变量
 XRAY_CONFIG="/usr/local/etc/xray/config.json"
 USER_DATA="/usr/local/etc/xray/users.json"
@@ -39,7 +42,7 @@ set_permissions() {
 main_menu() {
     init_environment
     while true; do
-        echo -e "${GREEN}==== Xray高级管理脚本 ====${NC}"
+        echo -e "${GREEN}==== Xray高级管理脚本 (v1.2) ====${NC}"
         echo -e "${GREEN}服务器推荐：https://my.frantech.ca/aff.php?aff=4337${NC}"
         echo -e "${GREEN}VPS评测官方网站：https://www.1373737.xyz/${NC}"
         echo -e "${GREEN}YouTube频道：https://www.youtube.com/@cyndiboy7881${NC}"
@@ -157,6 +160,7 @@ init_environment() {
     exec 200>$LOCK_FILE
     trap 'rm -f tmp.json; flock -u 200; rm -f $LOCK_FILE' EXIT
     sync_user_status
+    set_permissions  # 初始化时确保权限正确
 }
 
 # 加载配置
@@ -273,7 +277,7 @@ configure_nginx() {
     VMESS_PATH="/vmess_ws_$(openssl rand -hex 4)"
     TCP_PATH="/tcp_$(openssl rand -hex 4)"
     [ -f "$NGINX_CONF" ] && mv "$NGINX_CONF" "$NGINX_CONF.bak.$(date +%F_%H%M%S)"
-    rm -f /etc/nginx/sites-enabled/default
+    rm -f /etc/nginx/sites-enabled/default  # 确保默认配置不干扰
     cat > "$NGINX_CONF" <<EOF
 server {
     listen 80;
@@ -305,11 +309,13 @@ EOF
         root /var/www;
         autoindex off;
         allow all;
+        add_header Cache-Control "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0";
     }
     location /clash/ {
         root /var/www;
         autoindex off;
         allow all;
+        add_header Cache-Control "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0";
     }
 }
 EOF
@@ -337,6 +343,7 @@ check_subscription() {
         echo -e "${YELLOW}订阅链接 $SUBSCRIPTION_URL 不可访问（状态码: $sub_status），尝试修复...${NC}"
         nginx -t || { echo -e "${RED}Nginx 配置错误${NC}"; cat /var/log/nginx/xray_error.log | tail -n 20; return 1; }
         systemctl restart nginx
+        set_permissions  # 重启后重新设置权限
         echo -e "${YELLOW}检查端口和 Xray 服务${NC}"
         ss -tuln | grep -E '443|49152'
         systemctl status "$XRAY_SERVICE_NAME" | tail -n 10
@@ -378,6 +385,7 @@ check_subscription() {
     else
         echo -e "${YELLOW}Clash 配置链接 $CLASH_URL 不可访问（状态码: $clash_status），尝试修复...${NC}"
         systemctl restart nginx
+        set_permissions  # 重启后重新设置权限
         clash_status=$(curl -s -o /dev/null -w "%{http_code}" --insecure \
             -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36" \
             -H "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8" \
@@ -499,6 +507,7 @@ EOF
     done
     chmod 644 "$SUBSCRIPTION_FILE" "$CLASH_FILE"
     chown www-data:www-data "$SUBSCRIPTION_FILE" "$CLASH_FILE"
+    set_permissions  # 创建默认用户后确保权限正确
     flock -u 200
 }
 
@@ -537,14 +546,16 @@ start_services() {
     $XRAY_BIN -test -config "$XRAY_CONFIG" >/dev/null 2>&1 || { echo -e "${RED}Xray 配置无效!${NC}"; $XRAY_BIN -test -config "$XRAY_CONFIG"; cat "$XRAY_CONFIG"; exit 1; }
     systemctl daemon-reload
     systemctl enable "$XRAY_SERVICE_NAME" >/dev/null 2>&1
-    systemctl enable nginx >/dev/null 2>&1
     systemctl restart "$XRAY_SERVICE_NAME" || { echo -e "${RED}Xray 服务启动失败!${NC}"; systemctl status "$XRAY_SERVICE_NAME"; cat "$LOG_DIR/error.log"; exit 1; }
     sleep 3
     systemctl is-active "$XRAY_SERVICE_NAME" >/dev/null || { echo -e "${RED}Xray 服务未运行!${NC}"; systemctl status "$XRAY_SERVICE_NAME"; cat "$LOG_DIR/error.log"; exit 1; }
+    configure_nginx  # 重启后重新生成 Nginx 配置
+    systemctl enable nginx >/dev/null 2>&1
     systemctl restart nginx || { nginx -t; cat /var/log/nginx/xray_error.log | tail -n 20; exit 1; }
     sleep 3
     systemctl is-active nginx >/dev/null && systemctl is-active "$XRAY_SERVICE_NAME" >/dev/null || { echo "Nginx: $(systemctl is-active nginx)"; echo "Xray: $(systemctl is-active "$XRAY_SERVICE_NAME")"; cat "$LOG_DIR/error.log"; exit 1; }
     for PORT in "${PORTS[@]}"; do nc -z 127.0.0.1 "$PORT" >/dev/null 2>&1 || { netstat -tuln | grep xray; cat "$LOG_DIR/error.log"; exit 1; }; done
+    set_permissions  # 重启服务后确保权限正确
 }
 
 # 安装 Xray
@@ -801,6 +812,7 @@ EOF
     done
     chmod 644 "$SUBSCRIPTION_FILE" "$CLASH_FILE"
     chown www-data:www-data "$SUBSCRIPTION_FILE" "$CLASH_FILE"
+    set_permissions  # 新建用户后确保权限正确
     check_subscription
     show_user_link
     flock -u 200
@@ -982,6 +994,7 @@ EOF
             done
             chmod 644 "$SUBSCRIPTION_FILE" "$CLASH_FILE"
             chown www-data:www-data "$SUBSCRIPTION_FILE" "$CLASH_FILE"
+            set_permissions
             show_user_link
             break
         fi
