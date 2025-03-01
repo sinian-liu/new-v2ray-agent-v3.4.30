@@ -85,10 +85,28 @@ checkNetwork() {
 installTools() {
     echoColor blue "安装依赖工具..."
     ${update_cmd} || { echoColor red "系统更新失败，请检查网络或包管理器"; exit 1; }
-    local tools="curl wget unzip jq nginx uuid-runtime qrencode grpc-tools"
-    ${install_cmd} ${tools} || { echoColor red "工具安装失败，请检查包管理器"; cleanup; exit 1; }
+    local tools="curl wget unzip jq nginx uuid-runtime qrencode python3 python3-pip"
+    ${install_cmd} ${tools} || { 
+        echoColor red "基础工具安装失败，请检查包管理器或网络连接"
+        echoColor yellow "已尝试安装: ${tools}"
+        cleanup
+        exit 1
+    }
+    # 安装 grpc-tools 通过 pip
+    if ! command -v grpcurl >/dev/null 2>&1; then
+        python3 -m pip install grpcio-tools || {
+            echoColor red "grpc-tools 安装失败，请检查 pip 或网络"
+            echoColor yellow "尝试运行 'sudo python3 -m pip install grpcio-tools' 手动安装"
+            cleanup
+            exit 1
+        }
+    fi
     if ! command -v acme.sh >/dev/null 2>&1; then
-        curl -s https://get.acme.sh | sh -s -- --force || { echoColor red "acme.sh 安装失败，请检查网络或 GitHub 访问"; cleanup; exit 1; }
+        curl -s https://get.acme.sh | sh -s -- --force || { 
+            echoColor red "acme.sh 安装失败，请检查网络或 GitHub 访问"
+            cleanup
+            exit 1
+        }
     fi
     mkdir -p /var/log
     touch "${log_file}"
