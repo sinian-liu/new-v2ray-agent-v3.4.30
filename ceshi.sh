@@ -92,11 +92,21 @@ installTools() {
         cleanup
         exit 1
     }
+    # 检查并升级 pip
+    local pip_version=$(python3 -m pip --version | awk '{print $2}' | cut -d'.' -f1)
+    if [[ -z "${pip_version}" || "${pip_version}" -lt 23 ]]; then
+        echoColor yellow "pip 版本过旧，正在升级..."
+        python3 -m pip install --upgrade pip || {
+            echoColor red "pip 升级失败，请手动运行 'sudo python3 -m pip install --upgrade pip'"
+            cleanup
+            exit 1
+        }
+    fi
     # 安装 grpc-tools 通过 pip
     if ! command -v grpcurl >/dev/null 2>&1; then
-        python3 -m pip install grpcio-tools --break-system-packages || {
+        python3 -m pip install grpcio-tools || {
             echoColor red "grpc-tools 安装失败，请检查 pip 或网络"
-            echoColor yellow "尝试运行 'sudo python3 -m pip install grpcio-tools --break-system-packages' 手动安装"
+            echoColor yellow "尝试运行 'sudo python3 -m pip install grpcio-tools' 手动安装"
             cleanup
             exit 1
         }
