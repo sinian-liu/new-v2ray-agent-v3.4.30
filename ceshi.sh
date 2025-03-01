@@ -4,7 +4,7 @@
 # 作者: 基于 sinian-liu 的 v2ray-agent-2.5.73 重新设计并优化
 
 # 版本号
-VERSION="1.0.9"
+VERSION="1.0.10"
 
 # 颜色输出函数
 echoColor() {
@@ -243,6 +243,28 @@ initTLSandNginx() {
         exit 1
     fi
 
+    # 清空可能由 certbot 生成的重复配置
+    echoColor yellow "清理旧的 Nginx 配置..."
+    rm -f /etc/nginx/sites-enabled/* 2>/dev/null
+    rm -f /etc/nginx/conf.d/*.conf 2>/dev/null
+
+    # 生成初始 Nginx 配置（用于 certbot 验证）
+    cat <<EOF >/etc/nginx/conf.d/initial.conf
+server {
+    listen 80;
+    server_name ${current_domain};
+    location / {
+        root /var/www/html;
+        index index.html;
+    }
+}
+EOF
+    mkdir -p /var/www/html
+    echo "<h1>V2Ray Agent Initial Config</h1>" >/var/www/html/index.html
+    chmod 644 /var/www/html/index.html
+    nginx -t || { echoColor red "初始 Nginx 配置校验失败"; cleanup; exit 1; }
+    systemctl restart nginx || { echoColor red "Nginx 重启失败，请检查日志 (/var/log/nginx/error.log)"; cleanup; exit 1; }
+
     # 使用 certbot 申请证书
     echoColor yellow "使用 certbot 为 ${current_domain} 申请 Let’s Encrypt 证书..."
     certbot --nginx -d "${current_domain}" --non-interactive --agree-tos --email "admin@${current_domain}" || {
@@ -273,7 +295,7 @@ initTLSandNginx() {
     }
     chmod 600 "${tls_dir}"/*
 
-    # 配置 Nginx
+    # 生成最终 Nginx 配置
     cat <<EOF >"${nginx_conf}"
 server {
     listen 80;
@@ -304,10 +326,6 @@ server {
     }
 }
 EOF
-    mkdir -p /var/www/html
-    echo "<h1>V2Ray Agent</h1>" >/var/www/html/index.html
-    chmod 644 /var/www/html/index.html
-
     nginx -t || { echoColor red "Nginx 配置校验失败，请检查 ${nginx_conf}"; cleanup; exit 1; }
     systemctl restart nginx || { echoColor red "Nginx 重启失败，请检查日志 (/var/log/nginx/error.log)"; cleanup; exit 1; }
     echoColor yellow "安装完成后，可在 Cloudflare 启用橙云以使用完整功能"
@@ -401,7 +419,7 @@ initV2RayConfig() {
 }
 EOF
     chmod 600 "${v2ray_config}"
-    "${v2ray_bin}" -test -config "${v2ray_config}" || {
+    "${v2ray_bin}" test -config "${v2ray_config}" || {
         echoColor red "V2Ray 配置测试失败，请检查配置 ${v2ray_config}"
         cleanup
         exit 1
