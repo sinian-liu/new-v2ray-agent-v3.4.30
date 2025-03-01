@@ -4,7 +4,7 @@
 # 作者: 基于 sinian-liu 的 v2ray-agent-2.5.73 重新设计并优化
 
 # 版本号
-VERSION="1.0.4"
+VERSION="1.0.5"
 
 # 颜色输出函数
 echoColor() {
@@ -65,6 +65,8 @@ initVars() {
     log_file="/var/log/v2ray-agent.log"
     backup_dir="${config_dir}/backup"
     sub_all_file="${sub_dir}/all_subscriptions.txt"
+    acme_sh_dir="${HOME}/.acme.sh"
+    acme_sh_bin="${acme_sh_dir}/acme.sh"
     current_domain=""
     default_port=443
     api_port=10000
@@ -111,12 +113,20 @@ installTools() {
             exit 1
         }
     fi
-    if ! command -v acme.sh >/dev/null 2>&1; then
-        curl -s https://get.acme.sh | sh -s -- --force || { 
+    # 安装 acme.sh
+    if [[ ! -f "${acme_sh_bin}" ]]; then
+        echoColor blue "安装 acme.sh..."
+        curl -s https://get.acme.sh | sh -s -- --force --home "${acme_sh_dir}" || { 
             echoColor red "acme.sh 安装失败，请检查网络或 GitHub 访问"
+            echoColor yellow "尝试手动运行 'curl https://get.acme.sh | sh -s -- --force --home ${acme_sh_dir}'"
             cleanup
             exit 1
         }
+        if [[ ! -f "${acme_sh_bin}" ]]; then
+            echoColor red "acme.sh 安装后仍未找到，请检查安装日志 ${acme_sh_dir}/acme.sh.log"
+            cleanup
+            exit 1
+        fi
     fi
     mkdir -p /var/log
     touch "${log_file}"
@@ -248,12 +258,12 @@ initTLSandNginx() {
         exit 1
     fi
 
-    ~/.acme.sh/acme.sh --issue -d "${current_domain}" --nginx --force --server letsencrypt || {
-        echoColor red "证书申请失败，请检查网络或 acme.sh 日志 (~/.acme.sh/acme.sh.log)"
+    "${acme_sh_bin}" --issue -d "${current_domain}" --nginx --force --server letsencrypt || {
+        echoColor red "证书申请失败，请检查网络或 acme.sh 日志 (${acme_sh_dir}/acme.sh.log)"
         cleanup
         exit 1
     }
-    ~/.acme.sh/acme.sh --install-cert -d "${current_domain}" \
+    "${acme_sh_bin}" --install-cert -d "${current_domain}" \
         --key-file "${tls_dir}/${current_domain}.key" \
         --fullchain-file "${tls_dir}/${current_domain}.crt" || {
         echoColor red "证书安装失败"
@@ -711,7 +721,7 @@ installCron() {
     crontab -l > /tmp/cron_backup 2>/dev/null || touch /tmp/cron_backup
     sed -i '/v2ray-agent/d' /tmp/cron_backup
     echo "0 2 * * * /bin/bash \"$(realpath "$0")\" check_expiration >> ${log_file} 2>&1" >> /tmp/cron_backup
-    echo "0 3 * * * ~/.acme.sh/acme.sh --cron --home ~/.acme.sh >> ${log_file} 2>&1" >> /tmp/cron_backup
+    echo "0 3 * * * ${acme_sh_bin} --cron --home ${acme_sh_dir} >> ${log_file} 2>&1" >> /tmp/cron_backup
     echo "0 0 * * * truncate -s 0 ${log_file}" >> /tmp/cron_backup
     crontab /tmp/cron_backup || { echoColor red "定时任务安装失败"; cleanup; exit 1; }
     rm -f /tmp/cron_backup
