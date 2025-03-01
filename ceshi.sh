@@ -4,7 +4,7 @@
 # 作者: 基于 sinian-liu 的 v2ray-agent-2.5.73 重新设计并优化
 
 # 版本号
-VERSION="1.0.6"
+VERSION="1.0.7"
 
 # 颜色输出函数
 echoColor() {
@@ -99,7 +99,7 @@ installTools() {
     local pip_version=$(python3 -m pip --version | awk '{print $2}' | cut -d'.' -f1)
     if [[ -z "${pip_version}" || "${pip_version}" -lt 23 ]]; then
         echoColor yellow "pip 版本过旧，正在升级..."
-        python3 -m pip install --upgrade pip || {
+        python3 -m pip install --upgrade pip --root-user-action=ignore || {
             echoColor red "pip 升级失败，请手动运行 'sudo python3 -m pip install --upgrade pip'"
             cleanup
             exit 1
@@ -108,7 +108,7 @@ installTools() {
     # 安装 grpc-tools 通过 pip
     if ! command -v grpcurl >/dev/null 2>&1; then
         echoColor yellow "安装 grpc-tools..."
-        python3 -m pip install grpcio-tools || {
+        python3 -m pip install grpcio-tools --root-user-action=ignore || {
             echoColor red "grpc-tools 安装失败，请检查 pip 或网络"
             echoColor yellow "尝试运行 'sudo python3 -m pip install grpcio-tools' 手动安装"
             cleanup
@@ -119,7 +119,7 @@ installTools() {
     if [[ ! -f "${acme_sh_bin}" ]]; then
         echoColor blue "安装 acme.sh..."
         curl -s -o /tmp/acme.sh https://get.acme.sh || {
-            echoColor red "下载 acme.sh 失败，请检查网络连接或 GitHub 访问"
+            echoColor red "下载 acme.sh 失败，请检查网络连接或尝试使用备用源"
             cleanup
             exit 1
         }
