@@ -4,7 +4,7 @@
 # 作者: 基于 sinian-liu 的 v2ray-agent-2.5.73 重新设计并优化
 
 # 版本号
-VERSION="1.0.5"
+VERSION="1.0.6"
 
 # 颜色输出函数
 echoColor() {
@@ -65,7 +65,7 @@ initVars() {
     log_file="/var/log/v2ray-agent.log"
     backup_dir="${config_dir}/backup"
     sub_all_file="${sub_dir}/all_subscriptions.txt"
-    acme_sh_dir="${HOME}/.acme.sh"
+    acme_sh_dir="/root/.acme.sh"
     acme_sh_bin="${acme_sh_dir}/acme.sh"
     current_domain=""
     default_port=443
@@ -88,6 +88,7 @@ installTools() {
     echoColor blue "安装依赖工具..."
     ${update_cmd} || { echoColor red "系统更新失败，请检查网络或包管理器"; exit 1; }
     local tools="curl wget unzip jq nginx uuid-runtime qrencode python3 python3-pip"
+    echoColor yellow "安装基础工具: ${tools}"
     ${install_cmd} ${tools} || { 
         echoColor red "基础工具安装失败，请检查包管理器或网络连接"
         echoColor yellow "已尝试安装: ${tools}"
@@ -106,6 +107,7 @@ installTools() {
     fi
     # 安装 grpc-tools 通过 pip
     if ! command -v grpcurl >/dev/null 2>&1; then
+        echoColor yellow "安装 grpc-tools..."
         python3 -m pip install grpcio-tools || {
             echoColor red "grpc-tools 安装失败，请检查 pip 或网络"
             echoColor yellow "尝试运行 'sudo python3 -m pip install grpcio-tools' 手动安装"
@@ -116,17 +118,25 @@ installTools() {
     # 安装 acme.sh
     if [[ ! -f "${acme_sh_bin}" ]]; then
         echoColor blue "安装 acme.sh..."
-        curl -s https://get.acme.sh | sh -s -- --force --home "${acme_sh_dir}" || { 
-            echoColor red "acme.sh 安装失败，请检查网络或 GitHub 访问"
-            echoColor yellow "尝试手动运行 'curl https://get.acme.sh | sh -s -- --force --home ${acme_sh_dir}'"
+        curl -s -o /tmp/acme.sh https://get.acme.sh || {
+            echoColor red "下载 acme.sh 失败，请检查网络连接或 GitHub 访问"
             cleanup
             exit 1
         }
+        chmod +x /tmp/acme.sh
+        /tmp/acme.sh --install --force --home "${acme_sh_dir}" || {
+            echoColor red "acme.sh 安装失败，请检查安装日志 /tmp/acme.sh.log"
+            cat /tmp/acme.sh.log 2>/dev/null || echoColor yellow "未找到安装日志"
+            cleanup
+            exit 1
+        }
+        rm -f /tmp/acme.sh /tmp/acme.sh.log
         if [[ ! -f "${acme_sh_bin}" ]]; then
-            echoColor red "acme.sh 安装后仍未找到，请检查安装日志 ${acme_sh_dir}/acme.sh.log"
+            echoColor red "acme.sh 安装后仍未找到，请检查 ${acme_sh_dir}"
             cleanup
             exit 1
         fi
+        echoColor green "acme.sh 安装成功"
     fi
     mkdir -p /var/log
     touch "${log_file}"
