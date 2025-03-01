@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# v2ray-agent 简化版（全面优化，中文交互）
+# v2ray-agent 简化版（使用 certbot 自动申请证书，中文交互）
 # 当前日期: 2025-03-01
 # 作者: 基于 sinian-liu 的 v2ray-agent-2.5.73 重新设计并优化
 
 # 版本号
-VERSION="1.0.7"
+VERSION="1.0.9"
 
 # 颜色输出函数
 echoColor() {
@@ -65,8 +65,6 @@ initVars() {
     log_file="/var/log/v2ray-agent.log"
     backup_dir="${config_dir}/backup"
     sub_all_file="${sub_dir}/all_subscriptions.txt"
-    acme_sh_dir="/root/.acme.sh"
-    acme_sh_bin="${acme_sh_dir}/acme.sh"
     current_domain=""
     default_port=443
     api_port=10000
@@ -87,7 +85,7 @@ checkNetwork() {
 installTools() {
     echoColor blue "安装依赖工具..."
     ${update_cmd} || { echoColor red "系统更新失败，请检查网络或包管理器"; exit 1; }
-    local tools="curl wget unzip jq nginx uuid-runtime qrencode python3 python3-pip"
+    local tools="curl wget unzip jq nginx uuid-runtime qrencode python3 python3-pip certbot python3-certbot-nginx"
     echoColor yellow "安装基础工具: ${tools}"
     ${install_cmd} ${tools} || { 
         echoColor red "基础工具安装失败，请检查包管理器或网络连接"
@@ -99,7 +97,7 @@ installTools() {
     local pip_version=$(python3 -m pip --version | awk '{print $2}' | cut -d'.' -f1)
     if [[ -z "${pip_version}" || "${pip_version}" -lt 23 ]]; then
         echoColor yellow "pip 版本过旧，正在升级..."
-        python3 -m pip install --upgrade pip --root-user-action=ignore || {
+        python3 -m pip install --upgrade pip || {
             echoColor red "pip 升级失败，请手动运行 'sudo python3 -m pip install --upgrade pip'"
             cleanup
             exit 1
@@ -108,35 +106,12 @@ installTools() {
     # 安装 grpc-tools 通过 pip
     if ! command -v grpcurl >/dev/null 2>&1; then
         echoColor yellow "安装 grpc-tools..."
-        python3 -m pip install grpcio-tools --root-user-action=ignore || {
+        python3 -m pip install grpcio-tools || {
             echoColor red "grpc-tools 安装失败，请检查 pip 或网络"
             echoColor yellow "尝试运行 'sudo python3 -m pip install grpcio-tools' 手动安装"
             cleanup
             exit 1
         }
-    fi
-    # 安装 acme.sh
-    if [[ ! -f "${acme_sh_bin}" ]]; then
-        echoColor blue "安装 acme.sh..."
-        curl -s -o /tmp/acme.sh https://get.acme.sh || {
-            echoColor red "下载 acme.sh 失败，请检查网络连接或尝试使用备用源"
-            cleanup
-            exit 1
-        }
-        chmod +x /tmp/acme.sh
-        /tmp/acme.sh --install --force --home "${acme_sh_dir}" || {
-            echoColor red "acme.sh 安装失败，请检查安装日志 /tmp/acme.sh.log"
-            cat /tmp/acme.sh.log 2>/dev/null || echoColor yellow "未找到安装日志"
-            cleanup
-            exit 1
-        }
-        rm -f /tmp/acme.sh /tmp/acme.sh.log
-        if [[ ! -f "${acme_sh_bin}" ]]; then
-            echoColor red "acme.sh 安装后仍未找到，请检查 ${acme_sh_dir}"
-            cleanup
-            exit 1
-        fi
-        echoColor green "acme.sh 安装成功"
     fi
     mkdir -p /var/log
     touch "${log_file}"
@@ -240,7 +215,7 @@ manageFirewall() {
     fi
 }
 
-# 初始化 TLS 证书并配置 Nginx
+# 初始化 TLS 证书并配置 Nginx（使用 certbot）
 initTLSandNginx() {
     echoColor blue "配置 TLS 和 Nginx..."
     if [[ -f "${nginx_conf}" || -f "${v2ray_config}" ]]; then
@@ -264,24 +239,41 @@ initTLSandNginx() {
     local resolved_ip=$(dig +short "${current_domain}" A | grep -v '\.$' | tail -n1)
     if [[ -z "${resolved_ip}" || "${resolved_ip}" != "${server_ip}" ]]; then
         echoColor red "域名未解析到本地 IP (${server_ip})，解析结果: ${resolved_ip}"
-        echoColor yellow "请在 Cloudflare 设置 A 记录指向 ${server_ip}，并暂时关闭橙云"
+        echoColor yellow "请在 DNS 设置中将 A 记录指向 ${server_ip}，并暂时关闭 Cloudflare 橙云"
         exit 1
     fi
 
-    "${acme_sh_bin}" --issue -d "${current_domain}" --nginx --force --server letsencrypt || {
-        echoColor red "证书申请失败，请检查网络或 acme.sh 日志 (${acme_sh_dir}/acme.sh.log)"
+    # 使用 certbot 申请证书
+    echoColor yellow "使用 certbot 为 ${current_domain} 申请 Let’s Encrypt 证书..."
+    certbot --nginx -d "${current_domain}" --non-interactive --agree-tos --email "admin@${current_domain}" || {
+        echoColor red "证书申请失败，请检查网络、域名解析或 certbot 日志 (/var/log/letsencrypt/letsencrypt.log)"
         cleanup
         exit 1
     }
-    "${acme_sh_bin}" --install-cert -d "${current_domain}" \
-        --key-file "${tls_dir}/${current_domain}.key" \
-        --fullchain-file "${tls_dir}/${current_domain}.crt" || {
-        echoColor red "证书安装失败"
+
+    # 获取 certbot 生成的证书路径
+    local cert_path="/etc/letsencrypt/live/${current_domain}/fullchain.pem"
+    local key_path="/etc/letsencrypt/live/${current_domain}/privkey.pem"
+    if [[ ! -f "${cert_path}" || ! -f "${key_path}" ]]; then
+        echoColor red "证书文件未找到，请检查 certbot 是否正确安装证书"
+        cleanup
+        exit 1
+    fi
+
+    # 复制证书到指定目录
+    cp "${cert_path}" "${tls_dir}/${current_domain}.crt" || {
+        echoColor red "复制证书文件失败"
+        cleanup
+        exit 1
+    }
+    cp "${key_path}" "${tls_dir}/${current_domain}.key" || {
+        echoColor red "复制私钥文件失败"
         cleanup
         exit 1
     }
     chmod 600 "${tls_dir}"/*
 
+    # 配置 Nginx
     cat <<EOF >"${nginx_conf}"
 server {
     listen 80;
@@ -318,7 +310,7 @@ EOF
 
     nginx -t || { echoColor red "Nginx 配置校验失败，请检查 ${nginx_conf}"; cleanup; exit 1; }
     systemctl restart nginx || { echoColor red "Nginx 重启失败，请检查日志 (/var/log/nginx/error.log)"; cleanup; exit 1; }
-    echoColor yellow "安装完成后，请在 Cloudflare 启用橙云以使用完整功能"
+    echoColor yellow "安装完成后，可在 Cloudflare 启用橙云以使用完整功能"
 }
 
 # 初始化 V2Ray 配置（支持多端口和 API）
@@ -731,7 +723,7 @@ installCron() {
     crontab -l > /tmp/cron_backup 2>/dev/null || touch /tmp/cron_backup
     sed -i '/v2ray-agent/d' /tmp/cron_backup
     echo "0 2 * * * /bin/bash \"$(realpath "$0")\" check_expiration >> ${log_file} 2>&1" >> /tmp/cron_backup
-    echo "0 3 * * * ${acme_sh_bin} --cron --home ${acme_sh_dir} >> ${log_file} 2>&1" >> /tmp/cron_backup
+    echo "0 3 * * * certbot renew --quiet >> ${log_file} 2>&1" >> /tmp/cron_backup
     echo "0 0 * * * truncate -s 0 ${log_file}" >> /tmp/cron_backup
     crontab /tmp/cron_backup || { echoColor red "定时任务安装失败"; cleanup; exit 1; }
     rm -f /tmp/cron_backup
