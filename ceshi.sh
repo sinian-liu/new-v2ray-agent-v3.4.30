@@ -1,664 +1,785 @@
-#!/bin/bash
+#!/usr/bin/env bash
+# v2ray-agent 简化版（全面优化）
+# 当前日期: 2025-03-01
+# 作者: 基于 sinian-liu 的 v2ray-agent-2.5.73 重新设计并优化
 
-# 脚本版本号
-VERSION="v1.6"
+# 版本号
+VERSION="1.0.3"
 
-# 全局变量
-XRAY_CONFIG="/usr/local/etc/xray/config.json"
-USER_DATA="/usr/local/etc/xray/users.json"
-NGINX_CONF="/etc/nginx/conf.d/xray.conf"
-SUBSCRIPTION_DIR="/var/www/subscribe"
-CLASH_DIR="/var/www/clash"
-BACKUP_DIR="/var/backups/xray"
-CERTS_DIR="/etc/letsencrypt/live"
-LOG_DIR="/usr/local/var/log/xray"
-LOCK_FILE="/tmp/xray_users.lock"
-XRAY_SERVICE="xray"
-XRAY_BIN="/usr/local/bin/xray"
-SCRIPT_PATH="/usr/local/bin/xray_menu.sh"
-SYSTEMD_SERVICE="/etc/systemd/system/xray-menu.service"
-XRAY_SYSTEMD="/etc/systemd/system/xray.service"
-BASE_PORT=49152
-
-RED='\033[31m'
-GREEN='\033[32m'
-YELLOW='\033[33m'
-BLUE='\033[36m'
-NC='\033[0m'
-
-# 检测系统并设置包管理器
-detect_system() {
-    . /etc/os-release
-    case "$ID" in
-        ubuntu|debian) PKG_MANAGER="apt-get"; PKG_INSTALL="install -y"; NGINX_USER="www-data";;
-        centos) [ "$VERSION_ID" -ge 8 ] && PKG_MANAGER="dnf" || PKG_MANAGER="yum"; PKG_INSTALL="install -y"; NGINX_USER="nginx";;
-        *) echo -e "${RED}不支持的系统: $ID${NC}"; exit 1;;
+# 颜色输出函数
+echoColor() {
+    case $1 in
+        "red") echo -e "\033[31m$2\033[0m" ;;
+        "green") echo -e "\033[32m$2\033[0m" ;;
+        "yellow") echo -e "\033[33m$2\033[0m" ;;
+        "blue") echo -e "\033[34m$2\033[0m" ;;
     esac
 }
 
-# 初始化环境
-init_env() {
-    [ "$EUID" -ne 0 ] && { echo -e "${RED}请以 root 运行!${NC}"; exit 1; }
-    detect_system
-    timedatectl set-timezone Asia/Shanghai || { echo -e "${YELLOW}设置上海时区失败${NC}"; }
-    mkdir -p "$LOG_DIR" "$SUBSCRIPTION_DIR" "$CLASH_DIR" "$BACKUP_DIR" "/usr/local/etc/xray"
-    chmod 700 "$LOG_DIR" "$SUBSCRIPTION_DIR" "$CLASH_DIR" "$BACKUP_DIR" "/usr/local/etc/xray"
-    chown root:root "$LOG_DIR" "$SUBSCRIPTION_DIR" "$CLASH_DIR" "$BACKUP_DIR" "/usr/local/etc/xray"
-    touch "$LOG_DIR/access.log" "$LOG_DIR/error.log"
-    chmod 660 "$LOG_DIR/access.log" "$LOG_DIR/error.log"
-    chown "$NGINX_USER:$NGINX_USER" "$LOG_DIR/access.log" "$LOG_DIR/error.log"
-    [ ! -f "$USER_DATA" ] && echo '{"users": []}' > "$USER_DATA" && chmod 600 "$USER_DATA" && chown root:root "$USER_DATA"
-    [ ! -f "$XRAY_CONFIG" ] && echo '{"log": {"loglevel": "info", "access": "'"$LOG_DIR/access.log"'", "error": "'"$LOG_DIR/error.log"'"}, "inbounds": [], "outbounds": [{"protocol": "freedom"}]}' > "$XRAY_CONFIG" && chmod 600 "$XRAY_CONFIG" && chown root:root "$XRAY_CONFIG"
-    exec 200>"$LOCK_FILE"
-    trap 'rm -f "$LOCK_FILE"' EXIT
-}
-
-# 安装依赖
-install_deps() {
-    echo -e "${GREEN}安装依赖...${NC}"
-    $PKG_MANAGER update -y || { echo -e "${RED}更新包索引失败，请检查网络!${NC}"; exit 1; }
-    $PKG_MANAGER $PKG_INSTALL curl jq nginx uuid-runtime qrencode unzip ntpdate || { echo -e "${RED}依赖安装失败，请检查错误日志!${NC}"; $PKG_MANAGER $PKG_INSTALL curl jq nginx uuid-runtime qrencode unzip ntpdate; exit 1; }
-    if ! command -v certbot >/dev/null; then
-        $PKG_MANAGER $PKG_INSTALL python3-certbot-nginx || { echo -e "${RED}Certbot 安装失败!${NC}"; exit 1; }
-        echo "0 0 * * * certbot renew --quiet" | crontab -
+# 检查系统类型
+checkSystem() {
+    if grep -qi "centos" /etc/redhat-release 2>/dev/null || grep -qi "centos" /proc/version; then
+        release="centos"
+        install_cmd="yum -y install"
+        update_cmd="yum update -y"
+        [[ -f "/etc/centos-release" ]] && centos_version=$(awk '{print $4}' /etc/centos-release | cut -d'.' -f1)
+        [[ "${centos_version}" -lt 7 ]] && { echoColor red "Unsupported system, requires CentOS 7+"; exit 1; }
+    elif grep -qi "debian" /etc/issue || grep -qi "debian" /proc/version; then
+        release="debian"
+        install_cmd="apt -y install"
+        update_cmd="apt update"
+        debian_version=$(cat /etc/debian_version | cut -d'.' -f1)
+        [[ "${debian_version}" -lt 9 ]] && { echoColor red "Unsupported system, requires Debian 9+"; exit 1; }
+    elif grep -qi "ubuntu" /etc/issue || grep -qi "ubuntu" /proc/version; then
+        release="ubuntu"
+        install_cmd="apt -y install"
+        update_cmd="apt update"
+        ubuntu_version=$(lsb_release -sr | cut -d'.' -f1)
+        [[ "${ubuntu_version}" -lt 18 ]] && { echoColor red "Unsupported system, requires Ubuntu 18.04+"; exit 1; }
+    else
+        echoColor red "Unsupported system, use CentOS 7+, Debian 9+, or Ubuntu 18.04+"
+        exit 1
     fi
-    ntpdate pool.ntp.org || { echo -e "${YELLOW}时间同步失败${NC}"; }
-    systemctl enable nginx && systemctl start nginx || { echo -e "${RED}Nginx 启动失败!${NC}"; systemctl status nginx; exit 1; }
 }
 
-# 检查并安装 Xray 版本
-check_xray_version() {
-    echo -e "${GREEN}[检查Xray版本...]${NC}"
-    CURRENT_VERSION=$(xray --version 2>/dev/null | grep -oP 'Xray \K[0-9]+\.[0-9]+\.[0-9]+' || echo "未安装")
-    if [ "$CURRENT_VERSION" = "未安装" ] || ! command -v xray >/dev/null || [[ "$(printf '%s\n' "1.8.0" "$CURRENT_VERSION" | sort -V | head -n1)" != "1.8.0" ]]; then
-        LATEST_VERSION=$(curl -s https://api.github.com/repos/XTLS/Xray-core/releases/latest | jq -r '.tag_name' | sed 's/v//' || echo "unknown")
-        echo "当前版本: $CURRENT_VERSION，需 v1.8.0+ 支持内置过期时间管理，最新版本: $LATEST_VERSION"
-        read -p "是否安装最新版本? [y/N]: " UPDATE
-        if [[ "$UPDATE" =~ ^[Yy] ]]; then
-            [ -f "$XRAY_SYSTEMD" ] && mv "$XRAY_SYSTEMD" "$XRAY_SYSTEMD.bak.$(date +%F_%H%M%S)"
-            bash <(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh) || { echo -e "${RED}Xray 安装失败!${NC}"; exit 1; }
-            systemctl stop "$XRAY_SERVICE" >/dev/null 2>&1
-            cat > "$XRAY_SYSTEMD" <<EOF
-[Unit]
-Description=Xray Service
-After=network.target nss-lookup.target
-[Service]
-Type=simple
-ExecStartPre=/bin/mkdir -p $LOG_DIR
-ExecStartPre=/bin/chown -R root:root $LOG_DIR
-ExecStartPre=/bin/chmod -R 770 $LOG_DIR
-ExecStartPre=/bin/touch $LOG_DIR/access.log $LOG_DIR/error.log
-ExecStartPre=/bin/chown $NGINX_USER:$NGINX_USER $LOG_DIR/access.log $LOG_DIR/error.log
-ExecStartPre=/bin/chmod 660 $LOG_DIR/access.log $LOG_DIR/error.log
-ExecStartPre=/bin/chown root:root $XRAY_CONFIG
-ExecStartPre=/bin/chmod 600 $XRAY_CONFIG
-ExecStart=$XRAY_BIN run -config $XRAY_CONFIG
-Restart=on-failure
-RestartSec=5
-User=root
-Group=root
-LimitNPROC=10000
-LimitNOFILE=1000000
-AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
-CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
-[Install]
-WantedBy=multi-user.target
-EOF
-            chmod 644 "$XRAY_SYSTEMD"
-            systemctl daemon-reload
-            systemctl enable "$XRAY_SERVICE"
-            systemctl start "$XRAY_SERVICE" || { echo -e "${RED}Xray 服务启动失败!${NC}"; systemctl status "$XRAY_SERVICE"; exit 1; }
-        else
-            echo -e "${RED}需要 Xray v1.8.0+，请手动升级${NC}"
-            exit 1
+# 检查 CPU 架构
+checkCPU() {
+    case "$(uname -m)" in
+        'x86_64') cpu_arch="64" ;;
+        'aarch64') cpu_arch="arm64-v8a" ;;
+        *) echoColor red "Unsupported CPU architecture, only x86_64 and aarch64 supported"; exit 1 ;;
+    esac
+}
+
+# 初始化变量
+initVars() {
+    config_dir="/etc/v2ray-agent"
+    tls_dir="${config_dir}/tls"
+    sub_dir="${config_dir}/subscribe"
+    expiration_file="${config_dir}/expiration_users.json"
+    v2ray_config="${config_dir}/v2ray/config.json"
+    v2ray_bin="${config_dir}/v2ray/v2ray"
+    nginx_conf="/etc/nginx/conf.d/v2ray.conf"
+    log_file="/var/log/v2ray-agent.log"
+    backup_dir="${config_dir}/backup"
+    sub_all_file="${sub_dir}/all_subscriptions.txt"
+    current_domain=""
+    default_port=443
+    api_port=10000
+    installed=0
+    [[ -f "${v2ray_config}" && -f "${v2ray_bin}" ]] && installed=1
+}
+
+# 检查网络连接
+checkNetwork() {
+    echoColor blue "Checking network connection..."
+    if ! ping -c 3 -W 2 8.8.8.8 >/dev/null 2>&1; then
+        echoColor red "Unable to connect to network, check network settings"
+        exit 1
+    fi
+}
+
+# 安装依赖工具
+installTools() {
+    echoColor blue "Installing dependencies..."
+    ${update_cmd} || { echoColor red "System update failed"; exit 1; }
+    local tools="curl wget unzip jq nginx uuid-runtime qrencode grpc-tools"
+    ${install_cmd} ${tools} || { echoColor red "Tool installation failed"; cleanup; exit 1; }
+    if ! command -v acme.sh >/dev/null 2>&1; then
+        curl -s https://get.acme.sh | sh -s -- --force || { echoColor red "acme.sh installation failed"; cleanup; exit 1; }
+    fi
+    mkdir -p /var/log
+    touch "${log_file}"
+    chmod 640 "${log_file}"
+}
+
+# 创建目录
+createDirs() {
+    echoColor blue "Creating directories..."
+    mkdir -p "${config_dir}" "${tls_dir}" "${sub_dir}" "${config_dir}/v2ray" "${backup_dir}" || {
+        echoColor red "Directory creation failed, check permissions"
+        cleanup
+        exit 1
+    }
+    chmod 700 "${config_dir}" "${tls_dir}" "${sub_dir}" "${config_dir}/v2ray" "${backup_dir}"
+}
+
+# 检查更新
+checkUpdate() {
+    echoColor blue "Checking for updates..."
+    local remote_version=$(curl -s https://raw.githubusercontent.com/sinian-liu/v2ray-agent-2.5.73/master/install.sh | grep "VERSION=" | head -1 | cut -d'"' -f2)
+    if [[ -n "${remote_version}" && "${remote_version}" > "${VERSION}" ]]; then
+        echoColor yellow "New version available: ${remote_version} (current: ${VERSION})"
+        read -r -p "Update now? [y/N]: " update_choice
+        if [[ "${update_choice}" =~ ^[Yy]$ ]]; then
+            wget -q -O /tmp/v2ray-agent.sh "https://raw.githubusercontent.com/sinian-liu/v2ray-agent-2.5.73/master/install.sh" || {
+                echoColor red "Update download failed"
+                return 1
+            }
+            chmod +x /tmp/v2ray-agent.sh
+            mv /tmp/v2ray-agent.sh "$(realpath "$0")"
+            echoColor green "Updated to version ${remote_version}"
+            exec "$(realpath "$0")"
         fi
     fi
-    echo -e "${GREEN}Xray 版本检查通过: $CURRENT_VERSION${NC}"
 }
 
-# 配置防火墙
-config_firewall() {
-    if command -v ufw >/dev/null; then
-        ufw allow 80/tcp
-        ufw allow 443/tcp
-        ufw allow "${BASE_PORT}-$(($BASE_PORT + 3))/tcp"
-    elif command -v firewall-cmd >/dev/null; then
-        firewall-cmd --permanent --add-port=80/tcp
-        firewall-cmd --permanent --add-port=443/tcp
-        firewall-cmd --permanent --add-port="${BASE_PORT}-$(($BASE_PORT + 3))/tcp"
-        firewall-cmd --reload
+# 安装 V2Ray
+installV2Ray() {
+    echoColor blue "Installing V2Ray..."
+    local latest_version=$(curl -s -H "Accept: application/vnd.github+json" \
+        "https://api.github.com/repos/v2fly/v2ray-core/releases/latest" | jq -r .tag_name)
+    if [[ -z "${latest_version}" ]]; then
+        echoColor red "Failed to fetch V2Ray version"
+        cleanup
+        exit 1
     fi
+    local url="https://github.com/v2fly/v2ray-core/releases/download/${latest_version}/v2ray-linux-${cpu_arch}.zip"
+    wget -q "${url}" -O /tmp/v2ray.zip || { echoColor red "V2Ray download failed"; cleanup; exit 1; }
+    unzip -o /tmp/v2ray.zip -d "${config_dir}/v2ray" || { echoColor red "V2Ray extraction failed"; cleanup; exit 1; }
+    chmod +x "${v2ray_bin}"
+    rm -f /tmp/v2ray.zip
 }
 
-# 设置 Nginx 和脚本开机自启
-setup_autostart() {
-    cat > "$SYSTEMD_SERVICE" <<EOF
+# 配置 V2Ray 服务
+installV2RayService() {
+    echoColor blue "Configuring V2Ray service..."
+    cat <<EOF >/etc/systemd/system/v2ray.service
 [Unit]
-Description=Xray Menu Service
+Description=V2Ray Service
 After=network.target
 
 [Service]
 Type=simple
-ExecStart=$SCRIPT_PATH --check-expiry
+ExecStart=${v2ray_bin} -config ${v2ray_config}
 Restart=on-failure
-User=root
+ExecReload=/bin/kill -HUP \$MAINPID
+User=nobody
+Group=nogroup
+LimitNOFILE=65535
 
 [Install]
 WantedBy=multi-user.target
 EOF
-    systemctl daemon-reload
-    systemctl enable xray-menu.service
-    systemctl enable nginx
+    systemctl daemon-reload || { echoColor red "systemd configuration failed"; cleanup; exit 1; }
+    systemctl enable v2ray
 }
 
-# 全新安装
-install_xray() {
-    echo -e "${GREEN}==== Xray高级管理脚本 ($VERSION) ====${NC}"
-    echo -e "${GREEN}服务器推荐：https://my.frantech.ca/aff.php?aff=4337${NC}"
-    echo -e "${GREEN}VPS评测官方网站：https://www.1373737.xyz/${NC}"
-    echo -e "${GREEN}YouTube频道：https://www.youtube.com/@cyndiboy7881${NC}"
-    init_env
-    install_deps
-    check_xray_version
-    config_firewall
-
-    read -p "请输入域名 (如 u.changkaiyuan.xyz): " DOMAIN
-    SERVER_IP=$(curl -s ifconfig.me)
-    DOMAIN_IP=$(dig +short "$DOMAIN" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -n 1)
-    [ -z "$DOMAIN_IP" ] && { echo -e "${RED}域名解析失败，请检查 DNS 设置!${NC}"; exit 1; }
-    [ "$DOMAIN_IP" != "$SERVER_IP" ] && { echo -e "${RED}域名 $DOMAIN 解析为 $DOMAIN_IP，与服务器 IP $SERVER_IP 不符，请检查 Cloudflare 设置!${NC}"; exit 1; }
-
-    echo -e "支持的协议:\n1. VLESS+WS+TLS (推荐)\n2. VMess+WS+TLS\n3. VLESS+gRPC+TLS\n4. VLESS+TCP+TLS (HTTP/2)"
-    read -p "请选择（多选用空格分隔，默认 1）: " -a PROTOCOLS
-    [ ${#PROTOCOLS[@]} -eq 0 ] && PROTOCOLS=(1)
-
-    configure_protocols
-    certbot certonly --nginx -d "$DOMAIN" --non-interactive --agree-tos -m "admin@$DOMAIN" || { echo -e "${RED}证书申请失败!${NC}"; exit 1; }
-    configure_nginx
-
-    USERNAME="default"
-    UUID=$(uuidgen)
-    add_user "$USERNAME" "$UUID" "permanent" "0"
-    systemctl restart "$XRAY_SERVICE" nginx
-    setup_autostart
-
-    echo -e "${GREEN}安装完成! 输入 'v' 打开管理菜单${NC}"
+# 管理防火墙
+manageFirewall() {
+    echoColor blue "Configuring firewall..."
+    if command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active firewalld >/dev/null 2>&1; then
+        firewall-cmd --permanent --add-port=80/tcp
+        firewall-cmd --permanent --add-port=443/tcp
+        firewall-cmd --permanent --add-port=${api_port}/tcp
+        firewall-cmd --reload
+    elif command -v ufw >/dev/null 2>&1 && ufw status | grep -q "active"; then
+        ufw allow 80/tcp
+        ufw allow 443/tcp
+        ufw allow ${api_port}/tcp
+    elif command -v iptables >/dev/null 2>&1; then
+        iptables -A INPUT -p tcp --dport 80 -j ACCEPT
+        iptables -A INPUT -p tcp --dport 443 -j ACCEPT
+        iptables -A INPUT -p tcp --dport ${api_port} -j ACCEPT
+    fi
 }
 
-# 配置协议
-configure_protocols() {
-    PORTS=()
-    for i in "${!PROTOCOLS[@]}"; do
-        PORT=$((BASE_PORT + i))
-        while ss -tuln | grep -q ":$PORT"; do 
-            PORT=$((PORT + 1))
-            echo -e "${YELLOW}端口 $((PORT - 1)) 被占用，已切换至 $PORT${NC}"
-        done
-        PORTS+=("$PORT")
-    done
-    WS_PATH="/xray_ws_$(openssl rand -hex 4)"
-    VMESS_PATH="/vmess_ws_$(openssl rand -hex 4)"
-    GRPC_SERVICE="grpc_$(openssl rand -hex 4)"
-    TCP_PATH="/tcp_$(openssl rand -hex 4)"
-    cat > "$XRAY_CONFIG" <<EOF
-{
-  "log": {"loglevel": "info", "access": "$LOG_DIR/access.log", "error": "$LOG_DIR/error.log"},
-  "inbounds": [],
-  "outbounds": [{"protocol": "freedom"}]
-}
-EOF
-    for i in "${!PROTOCOLS[@]}"; do
-        case "${PROTOCOLS[$i]}" in
-            1) jq ".inbounds += [{\"port\": ${PORTS[$i]}, \"protocol\": \"vless\", \"settings\": {\"clients\": [], \"decryption\": \"none\"}, \"streamSettings\": {\"network\": \"ws\", \"wsSettings\": {\"path\": \"$WS_PATH\"}}}]" "$XRAY_CONFIG" > tmp.json ;;
-            2) jq ".inbounds += [{\"port\": ${PORTS[$i]}, \"protocol\": \"vmess\", \"settings\": {\"clients\": []}, \"streamSettings\": {\"network\": \"ws\", \"wsSettings\": {\"path\": \"$VMESS_PATH\"}}}]" "$XRAY_CONFIG" > tmp.json ;;
-            3) jq ".inbounds += [{\"port\": ${PORTS[$i]}, \"protocol\": \"vless\", \"settings\": {\"clients\": [], \"decryption\": \"none\"}, \"streamSettings\": {\"network\": \"grpc\", \"grpcSettings\": {\"serviceName\": \"$GRPC_SERVICE\"}}}]" "$XRAY_CONFIG" > tmp.json ;;
-            4) jq ".inbounds += [{\"port\": ${PORTS[$i]}, \"protocol\": \"vless\", \"settings\": {\"clients\": [], \"decryption\": \"none\"}, \"streamSettings\": {\"network\": \"http\", \"httpSettings\": {\"path\": \"$TCP_PATH\"}}}]" "$XRAY_CONFIG" > tmp.json ;;
-        esac
-        mv tmp.json "$XRAY_CONFIG"
-        $XRAY_BIN -test -c "$XRAY_CONFIG" || { echo -e "${RED}Xray 配置错误!${NC}"; exit 1; }
-    done
-}
+# 初始化 TLS 证书并配置 Nginx
+initTLSandNginx() {
+    echoColor blue "Configuring TLS and Nginx..."
+    if [[ -f "${nginx_conf}" || -f "${v2ray_config}" ]]; then
+        echoColor yellow "Existing configuration detected, reinstalling will overwrite."
+        read -r -p "Continue? [y/N]: " overwrite_choice
+        [[ ! "${overwrite_choice}" =~ ^[Yy]$ ]] && { echoColor red "Installation aborted"; exit 1; }
+    fi
 
-# 配置 Nginx（适配 Cloudflare 完全严格模式）
-configure_nginx() {
-    cat > "$NGINX_CONF" <<EOF
+    read -r -p "Enter domain (must resolve to this server with Cloudflare orange cloud): " domain
+    if [[ -z "${domain}" ]]; then
+        echoColor red "Domain cannot be empty"
+        exit 1
+    fi
+    current_domain="${domain}"
+
+    local server_ip=$(curl -s -m 5 "https://api.cloudflare.com/cdn-cgi/trace" | grep "ip=" | cut -d'=' -f2)
+    local resolved_ip=$(dig +short "${current_domain}" A | grep -v '\.$' | tail -n1)
+    if [[ -z "${resolved_ip}" || "${resolved_ip}" != "${server_ip}" ]]; then
+        echoColor red "Domain not resolved to local IP (${server_ip}), resolved: ${resolved_ip}"
+        exit 1
+    fi
+    if ! curl -s -m 5 -I "http://${current_domain}" | grep -qi "cf-ray"; then
+        echoColor red "Cloudflare proxy not enabled"
+        exit 1
+    fi
+
+    ~/.acme.sh/acme.sh --issue -d "${current_domain}" --nginx --force --server letsencrypt || {
+        echoColor red "Certificate issuance failed, check logs (~/.acme.sh/acme.sh.log)"
+        cleanup
+        exit 1
+    }
+    ~/.acme.sh/acme.sh --install-cert -d "${current_domain}" \
+        --key-file "${tls_dir}/${current_domain}.key" \
+        --fullchain-file "${tls_dir}/${current_domain}.crt" || {
+        echoColor red "Certificate installation failed"
+        cleanup
+        exit 1
+    }
+    chmod 600 "${tls_dir}"/*
+
+    cat <<EOF >"${nginx_conf}"
 server {
     listen 80;
-    server_name $DOMAIN;
+    server_name ${current_domain};
     return 301 https://\$host\$request_uri;
 }
+
 server {
     listen 443 ssl http2;
-    server_name $DOMAIN;
-    ssl_certificate $CERTS_DIR/$DOMAIN/fullchain.pem;
-    ssl_certificate_key $CERTS_DIR/$DOMAIN/privkey.pem;
+    server_name ${current_domain};
+    ssl_certificate ${tls_dir}/${current_domain}.crt;
+    ssl_certificate_key ${tls_dir}/${current_domain}.key;
     ssl_protocols TLSv1.2 TLSv1.3;
-    ssl_ciphers ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384;
+    ssl_ciphers EECDH+AESGCM:EDH+AESGCM:AES256+EECDH:AES256+EDH;
     ssl_prefer_server_ciphers on;
     ssl_session_cache shared:SSL:10m;
     ssl_session_timeout 1d;
-    ssl_stapling on;
-    ssl_stapling_verify on;
 
-    # Cloudflare 完全严格模式优化
-    proxy_ssl_server_name on;
-    proxy_ssl_protocols TLSv1.2 TLSv1.3;
-
-EOF
-    for i in "${!PROTOCOLS[@]}"; do
-        case "${PROTOCOLS[$i]}" in
-            1) echo "    location $WS_PATH { proxy_pass http://127.0.0.1:${PORTS[$i]}; proxy_http_version 1.1; proxy_set_header Upgrade \$http_upgrade; proxy_set_header Connection \"Upgrade\"; proxy_set_header Host \$host; proxy_set_header X-Real-IP \$remote_addr; proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for; }" >> "$NGINX_CONF" ;;
-            2) echo "    location $VMESS_PATH { proxy_pass http://127.0.0.1:${PORTS[$i]}; proxy_http_version 1.1; proxy_set_header Upgrade \$http_upgrade; proxy_set_header Connection \"Upgrade\"; proxy_set_header Host \$host; proxy_set_header X-Real-IP \$remote_addr; proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for; }" >> "$NGINX_CONF" ;;
-            3) echo "    location /$GRPC_SERVICE { grpc_pass grpc://127.0.0.1:${PORTS[$i]}; grpc_set_header Host \$host; grpc_set_header X-Real-IP \$remote_addr; }" >> "$NGINX_CONF" ;;
-            4) echo "    location $TCP_PATH { proxy_pass http://127.0.0.1:${PORTS[$i]}; proxy_http_version 2.0; proxy_set_header Host \$host; proxy_set_header X-Real-IP \$remote_addr; proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for; }" >> "$NGINX_CONF" ;;
-        esac
-    done
-    cat >> "$NGINX_CONF" <<EOF
-    location /subscribe/ { 
-        root /var/www; 
-        add_header Access-Control-Allow-Origin "*"; 
-        add_header Cache-Control "no-store, no-cache, must-revalidate"; 
+    location /sub/ {
+        root ${config_dir};
+        try_files \$uri \$uri/ =404;
     }
-    location /clash/ { 
-        root /var/www; 
-        add_header Access-Control-Allow-Origin "*"; 
-        add_header Cache-Control "no-store, no-cache, must-revalidate"; 
+
+    location / {
+        root /var/www/html;
+        index index.html;
+        try_files \$uri \$uri/ /index.html;
     }
 }
 EOF
-    nginx -t && systemctl restart nginx || { echo -e "${RED}Nginx 配置错误!${NC}"; nginx -t; exit 1; }
-    chown -R "$NGINX_USER:$NGINX_USER" "$SUBSCRIPTION_DIR" "$CLASH_DIR"
-    chmod -R 755 "$SUBSCRIPTION_DIR" "$CLASH_DIR"
+    mkdir -p /var/www/html
+    echo "<h1>V2Ray Agent</h1>" >/var/www/html/index.html
+    chmod 644 /var/www/html/index.html
+
+    nginx -t || { echoColor red "Nginx config validation failed"; cleanup; exit 1; }
+    systemctl restart nginx || { echoColor red "Nginx restart failed"; cleanup; exit 1; }
 }
 
-# 添加用户（支持自定义到期时间）
-add_user() {
-    local username="$1" uuid="$2" expire="$3" traffic_limit="$4"
-    [ -z "$uuid" ] && uuid=$(uuidgen)
-    [ -z "$expire" ] && {
-        echo -e "到期时间选项:\n1. 月 (30天)\n2. 年 (365天)\n3. 自定义时间\n4. 永久"
-        read -p "请选择 [1-4]: " expire_choice
-        case "$expire_choice" in
-            1) expire_date=$(date -d "+30 days" "+%Y-%m-%d %H:%M:%S") ;;
-            2) expire_date=$(date -d "+365 days" "+%Y-%m-%d %H:%M:%S") ;;
-            3) while true; do
-                   read -p "请输入自定义时间 (如 1m/1h/1d/1y): " custom_time
-                   if [[ "$custom_time" =~ ^([0-9]+)([mhdy])$ ]]; then
-                       num=${BASH_REMATCH[1]}
-                       unit=${BASH_REMATCH[2]}
-                       case "$unit" in
-                           m) expire_date=$(date -d "+$num minutes" "+%Y-%m-%d %H:%M:%S") ;;
-                           h) expire_date=$(date -d "+$num hours" "+%Y-%m-%d %H:%M:%S") ;;
-                           d) expire_date=$(date -d "+$num days" "+%Y-%m-%d %H:%M:%S") ;;
-                           y) expire_date=$(date -d "+$num years" "+%Y-%m-%d %H:%M:%S") ;;
-                       esac
-                       break
-                   else
-                       echo -e "${RED}无效格式! 请使用如 1m、1h、1d、1y${NC}"
-                   fi
-               done ;;
-            4) expire_date="永久" ;;
-            *) expire_date=$(date -d "+30 days" "+%Y-%m-%d %H:%M:%S") ;;
-        esac
+# 初始化 V2Ray 配置（支持多端口和 API）
+initV2RayConfig() {
+    echoColor blue "Initializing V2Ray configuration..."
+    cat <<EOF >"${v2ray_config}"
+{
+  "log": {
+    "loglevel": "warning",
+    "access": "${log_file}",
+    "error": "${log_file}"
+  },
+  "api": {
+    "tag": "api",
+    "services": ["StatsService"]
+  },
+  "stats": {},
+  "policy": {
+    "levels": {
+      "0": {
+        "statsUserUplink": true,
+        "statsUserDownlink": true
+      }
+    },
+    "system": {
+      "statsInboundUplink": true,
+      "statsInboundDownlink": true
     }
-    [ -z "$traffic_limit" ] && { read -p "请输入流量限制 (GB，回车为无限制): " traffic_limit; traffic_limit=${traffic_limit:-0}; }
-    local token=$(echo -n "$username:$uuid" | sha256sum | cut -c 1-32)
-    local creation_date=$(date "+%Y-%m-%d %H:%M:%S")
-
-    flock -x 200
-    jq --arg u "$username" --arg id "$uuid" --arg e "$expire_date" --arg t "$token" --argjson tl "$traffic_limit" --arg c "$creation_date" \
-       '.users += [{"name": $u, "uuid": $id, "expire": $e, "token": $t, "status": "启用", "traffic_limit": $tl, "traffic_used": 0, "creation": $c}]' "$USER_DATA" > tmp.json && mv tmp.json "$USER_DATA"
-
-    for i in "${!PROTOCOLS[@]}"; do
-        case "${PROTOCOLS[$i]}" in
-            1) jq ".inbounds[$i].settings.clients += [{\"id\": \"$uuid\"}]" "$XRAY_CONFIG" > tmp.json ;;
-            2) jq ".inbounds[$i].settings.clients += [{\"id\": \"$uuid\", \"alterId\": 0}]" "$XRAY_CONFIG" > tmp.json ;;
-            3) jq ".inbounds[$i].settings.clients += [{\"id\": \"$uuid\"}]" "$XRAY_CONFIG" > tmp.json ;;
-            4) jq ".inbounds[$i].settings.clients += [{\"id\": \"$uuid\"}]" "$XRAY_CONFIG" > tmp.json ;;
-        esac
-        mv tmp.json "$XRAY_CONFIG"
-        $XRAY_BIN -test -c "$XRAY_CONFIG" || { echo -e "${RED}Xray 配置错误!${NC}"; exit 1; }
-    done
-
-    generate_subscription "$username" "$uuid" "$token"
-    systemctl restart "$XRAY_SERVICE"
-    flock -u 200
+  },
+  "inbounds": [
+    {
+      "port": ${default_port},
+      "protocol": "vless",
+      "settings": {
+        "clients": [],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "tls",
+        "tlsSettings": {
+          "alpn": ["http/1.1"],
+          "certificates": [
+            {
+              "certificateFile": "${tls_dir}/${current_domain}.crt",
+              "keyFile": "${tls_dir}/${current_domain}.key"
+            }
+          ]
+        }
+      },
+      "tag": "vless_default"
+    },
+    {
+      "port": ${api_port},
+      "protocol": "dokodemo-door",
+      "settings": {
+        "address": "127.0.0.1",
+        "port": ${api_port},
+        "network": "tcp"
+      },
+      "tag": "api"
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "freedom",
+      "settings": {}
+    },
+    {
+      "protocol": "blackhole",
+      "tag": "blocked"
+    }
+  ],
+  "routing": {
+    "rules": [
+      {
+        "type": "field",
+        "inboundTag": ["api"],
+        "outboundTag": "api"
+      },
+      {
+        "type": "field",
+        "ip": ["geoip:private"],
+        "outboundTag": "blocked"
+      }
+    ]
+  }
+}
+EOF
+    chmod 600 "${v2ray_config}"
+    "${v2ray_bin}" -test -config "${v2ray_config}" || {
+        echoColor red "V2Ray configuration test failed"
+        cleanup
+        exit 1
+    }
 }
 
-# 生成订阅链接并验证
-generate_subscription() {
-    local username="$1" uuid="$2" token="$3"
-    local sub_file="$SUBSCRIPTION_DIR/$username.yml"
-    local clash_file="$CLASH_DIR/$username.yml"
-    > "$sub_file"
-    > "$clash_file"
-
-    for i in "${!PROTOCOLS[@]}"; do
-        case "${PROTOCOLS[$i]}" in
-            1) echo "vless://$uuid@$DOMAIN:443?encryption=none&security=tls&type=ws&path=$WS_PATH&sni=$DOMAIN#$username" >> "$sub_file"
-               echo -e "- name: $username\n  type: vless\n  server: $DOMAIN\n  port: 443\n  uuid: $uuid\n  network: ws\n  tls: true\n  udp: true\n  ws-opts:\n    path: $WS_PATH" >> "$clash_file" ;;
-            2) echo "vmess://$(echo -n '{\"v\":\"2\",\"ps\":\"'$username'\",\"add\":\"'$DOMAIN'\",\"port\":\"443\",\"id\":\"'$uuid'\",\"aid\":\"0\",\"net\":\"ws\",\"type\":\"none\",\"host\":\"'$DOMAIN'\",\"path\":\"'$VMESS_PATH'\",\"tls\":\"tls\"}' | base64 -w 0)" >> "$sub_file"
-               echo -e "- name: $username\n  type: vmess\n  server: $DOMAIN\n  port: 443\n  uuid: $uuid\n  alterId: 0\n  cipher: auto\n  network: ws\n  tls: true\n  udp: true\n  ws-opts:\n    path: $VMESS_PATH" >> "$clash_file" ;;
-            3) echo "vless://$uuid@$DOMAIN:443?encryption=none&security=tls&type=grpc&serviceName=$GRPC_SERVICE&sni=$DOMAIN#$username" >> "$sub_file"
-               echo -e "- name: $username\n  type: vless\n  server: $DOMAIN\n  port: 443\n  uuid: $uuid\n  network: grpc\n  tls: true\n  udp: true\n  grpc-opts:\n    grpc-service-name: $GRPC_SERVICE" >> "$clash_file" ;;
-            4) echo "vless://$uuid@$DOMAIN:443?encryption=none&security=tls&type=http&path=$TCP_PATH&sni=$DOMAIN#$username" >> "$sub_file"
-               echo -e "- name: $username\n  type: vless\n  server: $DOMAIN\n  port: 443\n  uuid: $uuid\n  network: http\n  tls: true\n  udp: true\n  http-opts:\n    path: $TCP_PATH" >> "$clash_file" ;;
-        esac
-    done
-    chown "$NGINX_USER:$NGINX_USER" "$sub_file" "$clash_file"
-    chmod 644 "$sub_file" "$clash_file"
-    local sub_url="https://$DOMAIN/subscribe/$username.yml?token=$token"
-    local clash_url="https://$DOMAIN/clash/$username.yml?token=$token"
-    echo -e "${GREEN}订阅链接: $sub_url${NC}"
-    echo -e "${GREEN}Clash 订阅: $clash_url${NC}"
-    status=$(curl -s -o /dev/null -w "%{http_code}" --insecure -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" "$sub_url")
-    [ "$status" -ne 200 ] && { echo -e "${RED}订阅链接不可访问 (状态码: $status)，请检查 Cloudflare 设置、Nginx 配置或 Xray 服务${NC}"; }
-}
-
-# 用户到期和流量检测
-check_expiry_and_traffic() {
-    echo -e "${GREEN}=== 同步用户状态 ===${NC}"
-    flock -x 200
-    local now=$(date +%s)
-    if ! grep -q "uuid" "$LOG_DIR/access.log" && [ -s "$LOG_DIR/access.log" ]; then
-        echo -e "${YELLOW}警告: access.log 未包含 UUID，可能影响流量统计，请检查 Xray 日志配置${NC}"
+# 添加用户（支持多端口）
+addUser() {
+    echoColor blue "Adding user..."
+    if [[ ! -f "${v2ray_config}" ]]; then
+        echoColor red "V2Ray not installed"
+        return 1
     fi
-    local expired_found=0
-    jq -r '.users[] | [.name, .uuid, .expire, .status, .traffic_limit, .traffic_used] | join("\t")' "$USER_DATA" | while IFS=$'\t' read -r name uuid expire status limit used; do
-        if [ -z "$expire" ] || [ "$expire" == "" ]; then
-            echo -e "${YELLOW}用户 $name 的到期时间为空，已设置为永久${NC}"
-            jq --arg n "$name" '.users[] | select(.name == $n) | .expire = "永久"' "$USER_DATA" > tmp.json && mv tmp.json "$USER_DATA"
-            expire="永久"
-        fi
-        local expire_ts=$(date -d "$expire" +%s 2>/dev/null || echo 0)
-        local traffic=$(awk -v u="$uuid" '$0 ~ u {sum += $NF} END {print sum/1024/1024/1024}' "$LOG_DIR/access.log" 2>/dev/null || echo "0")
-        jq --arg n "$name" --argjson t "$traffic" '.users[] | select(.name == $n) | .traffic_used = $t' "$USER_DATA" > tmp.json && mv tmp.json "$USER_DATA"
-        if { [ "$expire" != "永久" ] && [ "$expire_ts" -lt "$now" ]; } || { [ "$limit" -gt 0 ] && awk "BEGIN {exit !($traffic > $limit)}"; }; then
-            if [ "$status" = "启用" ]; then
-                jq --arg n "$name" '.users[] | select(.name == $n) | .status = "禁用"' "$USER_DATA" > tmp.json && mv tmp.json "$USER_DATA"
-                for i in "${!PROTOCOLS[@]}"; do
-                    jq --arg id "$uuid" ".inbounds[$i].settings.clients -= [{\"id\": \$id}]" "$XRAY_CONFIG" > tmp.json && mv tmp.json "$XRAY_CONFIG"
-                    $XRAY_BIN -test -c "$XRAY_CONFIG" || { echo -e "${RED}Xray 配置错误!${NC}"; exit 1; }
-                done
-                systemctl restart "$XRAY_SERVICE"
-                echo -e "${YELLOW}用户 $name 已过期或流量超限，已禁用${NC}"
-                expired_found=1
-            fi
+    local retry=1
+    while [[ ${retry} -eq 1 ]]; do
+        read -r -p "Enter user email: " email
+        if [[ -z "${email}" ]] || ! echo "${email}" | grep -q "@" || jq -r ".inbounds[].settings.clients[] | select(.email == \"${email}\")" "${v2ray_config}" | grep -q .; then
+            echoColor red "Email is invalid, empty, or exists"
+            read -r -p "Retry? [y/N]: " retry_choice
+            [[ ! "${retry_choice}" =~ ^[Yy]$ ]] && retry=0 || retry=1
+        else
+            retry=0
         fi
     done
-    [ "$expired_found" -eq 0 ] && echo "无需要同步的过期用户。"
-    flock -u 200
-}
+    [[ ${retry} -eq 0 && -z "${email}" ]] && return 1
 
-# 用户管理
-user_management() {
-    [ -z "$DOMAIN" ] && { echo -e "${RED}请先完成全新安装!${NC}"; return; }
-    while true; do
-        echo -e "${BLUE}用户管理菜单${NC}"
-        echo -e "1. 新建用户\n2. 用户续期\n3. 查看链接\n4. 用户列表\n5. 删除用户\n6. 检查并同步用户状态\n7. 返回主菜单"
-        read -p "请选择操作（回车返回主菜单）: " choice
-        [ -z "$choice" ] && break
-        case "$choice" in
-            1) echo -e "${GREEN}=== 新建用户流程 ===${NC}"; read -p "输入用户名: " username; add_user "$username";;
-            2) echo -e "${GREEN}=== 用户续期流程 ===${NC}"; read -p "输入要续期的用户名: " username; add_user "$username" "$(jq -r ".users[] | select(.name == \"$username\") | .uuid" "$USER_DATA")"; echo -e "${GREEN}续期成功${NC}";;
-            3) echo -e "${GREEN}=== 查看链接 ===${NC}"; read -p "请输入用户名: " username; show_user_link "$username";;
-            4) list_users;;
-            5) echo -e "${GREEN}=== 删除用户流程 ===${NC}"; read -p "输入要删除的用户名: " username; [ -n "$username" ] && delete_user "$username" || echo -e "${RED}用户名不能为空!${NC}";;
-            6) check_expiry_and_traffic;;
-            7) break;;
-            *) echo -e "${RED}无效选项!${NC}";;
-        esac
+    retry=1
+    while [[ ${retry} -eq 1 ]]; do
+        read -r -p "Enter expiration date (YYYY-MM-DD): " exp_date
+        if ! date -d "${exp_date}" >/dev/null 2>&1; then
+            echoColor red "Expiration date format error, should be YYYY-MM-DD"
+            read -r -p "Retry? [y/N]: " retry_choice
+            [[ ! "${retry_choice}" =~ ^[Yy]$ ]] && retry=0 || retry=1
+        else
+            retry=0
+        fi
     done
-}
+    [[ ${retry} -eq 0 && -z "${exp_date}" ]] && return 1
 
-# 显示用户链接
-show_user_link() {
-    local username="$1"
-    local user_info=$(jq -r ".users[] | select(.name == \"$username\") | [.uuid, .expire, .creation, .token, .status] | join(\"\t\")" "$USER_DATA")
-    [ -z "$user_info" ] && { echo -e "${RED}用户 $username 不存在!${NC}"; return; }
-    IFS=$'\t' read -r UUID EXPIRE_DATE CREATION_DATE USER_TOKEN STATUS <<< "$user_info"
-    echo -e "${GREEN}[显示用户链接...]${NC}"
-    for i in "${!PROTOCOLS[@]}"; do
-        case "${PROTOCOLS[$i]}" in
-            1) VLESS_WS_LINK="vless://$UUID@$DOMAIN:443?encryption=none&security=tls&type=ws&path=$WS_PATH&sni=$DOMAIN&host=$DOMAIN#$username"
-               echo "[二维码 (VLESS+WS+TLS)]:"; qrencode -t ansiutf8 "$VLESS_WS_LINK" || echo -e "${YELLOW}二维码生成失败${NC}"
-               echo -e "\n链接地址 (VLESS+WS+TLS):\n$VLESS_WS_LINK" ;;
-            2) VMESS_LINK="vmess://$(echo -n '{\"v\":\"2\",\"ps\":\"'$username'\",\"add\":\"'$DOMAIN'\",\"port\":\"443\",\"id\":\"'$UUID'\",\"aid\":\"0\",\"net\":\"ws\",\"type\":\"none\",\"host\":\"'$DOMAIN'\",\"path\":\"'$VMESS_PATH'\",\"tls\":\"tls\",\"sni\":\"'$DOMAIN'\"}' | base64 -w 0)"
-               echo "[二维码 (VMess+WS+TLS)]:"; qrencode -t ansiutf8 "$VMESS_LINK" || echo -e "${YELLOW}二维码生成失败${NC}"
-               echo -e "\n链接地址 (VMess+WS+TLS):\n$VMESS_LINK" ;;
-            3) VLESS_GRPC_LINK="vless://$UUID@$DOMAIN:443?encryption=none&security=tls&type=grpc&serviceName=$GRPC_SERVICE&sni=$DOMAIN#$username"
-               echo "[二维码 (VLESS+gRPC+TLS)]:"; qrencode -t ansiutf8 "$VLESS_GRPC_LINK" || echo -e "${YELLOW}二维码生成失败${NC}"
-               echo -e "\n链接地址 (VLESS+gRPC+TLS):\n$VLESS_GRPC_LINK" ;;
-            4) VLESS_TCP_LINK="vless://$UUID@$DOMAIN:443?encryption=none&security=tls&type=http&path=$TCP_PATH&sni=$DOMAIN&host=$DOMAIN#$username"
-               echo "[二维码 (VLESS+TCP+TLS)]:"; qrencode -t ansiutf8 "$VLESS_TCP_LINK" || echo -e "${YELLOW}二维码生成失败${NC}"
-               echo -e "\n链接地址 (VLESS+TCP+TLS):\n$VLESS_TCP_LINK" ;;
-        esac
-    done
-    echo -e "\n订阅链接（需携带 Token）:\nhttps://$DOMAIN/subscribe/$username.yml?token=$USER_TOKEN"
-    echo -e "Clash 配置链接:\nhttps://$DOMAIN/clash/$username.yml?token=$USER_TOKEN"
-    echo -e "${GREEN}账号创建时间: $CREATION_DATE${NC}"
-    echo -e "${GREEN}账号到期时间: $EXPIRE_DATE${NC}"
-    echo -e "${GREEN}账号状态: $STATUS${NC}"
-    echo -e "${GREEN}请在客户端中使用带 Token 的订阅链接（通过 $DOMAIN 获取订阅，上网流量走 $DOMAIN:443）${NC}"
-}
+    read -r -p "Enter port (default ${default_port}, or new port): " port
+    [[ -z "${port}" ]] && port=${default_port}
+    if ! [[ "${port}" =~ ^[0-9]+$ ]] || [[ "${port}" -lt 1 || "${port}" -gt 65535 ]]; then
+        echoColor red "Invalid port number"
+        return 1
+    fi
 
-# 用户列表
-list_users() {
-    echo -e "${BLUE}用户列表:${NC}"
-    echo -e "| 用户名       | UUID                                 | 创建时间            | 到期时间            | 已用流量 | 状态 |"
-    echo -e "|--------------|--------------------------------------|---------------------|---------------------|----------|------|"
-    jq -r '.users[] | [.name, .uuid, .creation, .expire, .traffic_used, (if .status == "启用" then "启用" else "禁用" end)] | join("\t")' "$USER_DATA" | \
-    while IFS=$'\t' read -r name uuid creation expire used status; do
-        used_fmt=$(awk "BEGIN {printf \"%.2fG\", $used/1073741824}")
-        printf "| %-12s | %-36s | %-19s | %-19s | %-8s | %-6s |\n" "$name" "$uuid" "$creation" "$expire" "$used_fmt" "$status"
-    done
+    backupConfig
+    local uuid=$(uuidgen)
+    local inbound_exists=$(jq -r ".inbounds[] | select(.port == ${port})" "${v2ray_config}")
+    if [[ -z "${inbound_exists}" ]]; then
+        local new_inbound=$(jq -r ".inbounds += [{\"port\": ${port}, \"protocol\": \"vless\", \"settings\": {\"clients\": [{\"id\": \"${uuid}\", \"email\": \"${email}\"}], \"decryption\": \"none\"}, \"streamSettings\": {\"network\": \"tcp\", \"security\": \"tls\", \"tlsSettings\": {\"alpn\": [\"http/1.1\"], \"certificates\": [{\"certificateFile\": \"${tls_dir}/${current_domain}.crt\", \"keyFile\": \"${tls_dir}/${current_domain}.key\"}]}}}]" "${v2ray_config}")
+        echo "${new_inbound}" | jq . >"${v2ray_config}" || { echoColor red "Configuration update failed"; return 1; }
+    else
+        local clients=$(jq -r "(.inbounds[] | select(.port == ${port}) | .settings.clients) += [{\"id\": \"${uuid}\", \"email\": \"${email}\"}]" "${v2ray_config}")
+        echo "${clients}" | jq . >"${v2ray_config}" || { echoColor red "Configuration update failed"; return 1; }
+    fi
+
+    if [[ ! -f "${expiration_file}" ]]; then
+        echo '{"users":[]}' >"${expiration_file}"
+    fi
+    local exp_timestamp=$(date -d "${exp_date}" +%s)
+    local expiration_data=$(jq -r ".users += [{\"email\": \"${email}\", \"expiration\": ${exp_timestamp}, \"port\": ${port}}]" "${expiration_file}")
+    echo "${expiration_data}" | jq . >"${expiration_file}" || { echoColor red "Expiration update failed"; return 1; }
+    chmod 600 "${expiration_file}"
+
+    echoColor green "User ${email} added successfully on port ${port}, expires on: ${exp_date}"
+    generateSubscription "${email}" "${uuid}" "${port}"
+    reloadCore
 }
 
 # 删除用户
-delete_user() {
-    local username="$1"
-    local uuid=$(jq -r ".users[] | select(.name == \"$username\") | .uuid" "$USER_DATA")
-    [ -z "$uuid" ] && { echo -e "${RED}用户 $username 不存在!${NC}"; return; }
-    flock -x 200
-    jq "del(.users[] | select(.name == \"$username\"))" "$USER_DATA" > tmp.json && mv tmp.json "$USER_DATA"
-    for i in "${!PROTOCOLS[@]}"; do
-        jq --arg id "$uuid" ".inbounds[$i].settings.clients -= [{\"id\": \$id}]" "$XRAY_CONFIG" > tmp.json && mv tmp.json "$XRAY_CONFIG"
-    done
-    $XRAY_BIN -test -c "$XRAY_CONFIG" || { echo -e "${RED}Xray 配置测试失败!${NC}"; $XRAY_BIN -test -c "$XRAY_CONFIG"; exit 1; }
-    systemctl restart "$XRAY_SERVICE"
-    echo -e "${GREEN}用户 $username 已删除${NC}"
-    flock -u 200
-}
-
-# 协议管理
-protocol_management() {
-    [ -z "$DOMAIN" ] || [ -z "$UUID" ] && { echo -e "${RED}请先完成全新安装并创建默认用户!${NC}"; return; }
-    while true; do
-        echo -e "${GREEN}=== 协议管理 ===${NC}"
-        echo -e "当前协议: ${PROTOCOLS[*]}"
-        echo -e "1. 添加协议\n2. 删除协议\n3. 返回"
-        read -p "请选择: " choice
-        case "$choice" in
-            1) echo -e "支持的协议:\n1. VLESS+WS+TLS\n2. VMess+WS+TLS\n3. VLESS+gRPC+TLS\n4. VLESS+TCP+TLS (HTTP/2)"
-               read -p "添加协议编号: " new_proto
-               if [[ ! " ${PROTOCOLS[*]} " =~ " $new_proto " ]]; then
-                   PROTOCOLS+=("$new_proto")
-                   configure_protocols
-                   configure_nginx
-                   systemctl restart "$XRAY_SERVICE" nginx
-                   echo -e "${GREEN}协议 $new_proto 已添加${NC}"
-               else
-                   echo -e "${YELLOW}协议已存在${NC}"
-               fi;;
-            2) read -p "输入要删除的协议编号: " del_proto
-               if [[ " ${PROTOCOLS[*]} " =~ " $del_proto " ]]; then
-                   for i in "${!PROTOCOLS[@]}"; do
-                       if [ "${PROTOCOLS[$i]}" = "$del_proto" ]; then
-                           unset 'PROTOCOLS[i]'
-                           configure_protocols
-                           configure_nginx
-                           systemctl restart "$XRAY_SERVICE" nginx
-                           echo -e "${GREEN}协议 $del_proto 已删除${NC}"
-                           break
-                       fi
-                   done
-               else
-                   echo -e "${RED}协议不存在${NC}"
-               fi;;
-            3) break;;
-            *) echo -e "${RED}无效选项!${NC}";;
-        esac
-    done
-}
-
-# 流量统计
-traffic_stats() {
-    [ -z "$DOMAIN" ] && { echo -e "${RED}请先完成全新安装!${NC}"; return; }
-    echo -e "${BLUE}=== 流量统计 ===${NC}"
-    if ! grep -q "uuid" "$LOG_DIR/access.log" && [ -s "$LOG_DIR/access.log" ]; then
-        echo -e "${YELLOW}警告: access.log 未包含 UUID，可能影响统计准确性${NC}"
+removeUser() {
+    echoColor blue "Deleting user..."
+    if [[ ! -f "${v2ray_config}" ]]; then
+        echoColor red "V2Ray not installed"
+        return 1
     fi
-    jq -r '.users[] | [.name, (if .status == "启用" then "启用" else "禁用" end), .traffic_limit, .traffic_used] | join("\t")' "$USER_DATA" | column -t -s $'\t'
+    local retry=1
+    while [[ ${retry} -eq 1 ]]; do
+        read -r -p "Enter email of user to delete: " email
+        if ! jq -r ".inbounds[].settings.clients[] | select(.email == \"${email}\")" "${v2ray_config}" | grep -q .; then
+            echoColor red "User does not exist"
+            read -r -p "Retry? [y/N]: " retry_choice
+            [[ ! "${retry_choice}" =~ ^[Yy]$ ]] && retry=0 || retry=1
+        else
+            retry=0
+        fi
+    done
+    [[ ${retry} -eq 0 && -z "${email}" ]] && return 1
+
+    backupConfig
+    local port=$(jq -r ".users[] | select(.email == \"${email}\") | .port" "${expiration_file}")
+    local clients=$(jq -r "(.inbounds[] | select(.port == ${port}) | .settings.clients) -= [(.settings.clients[] | select(.email == \"${email}\"))]" "${v2ray_config}")
+    echo "${clients}" | jq . >"${v2ray_config}" || { echoColor red "Configuration update failed"; return 1; }
+    local expiration_data=$(jq -r "del(.users[] | select(.email == \"${email}\"))" "${expiration_file}")
+    echo "${expiration_data}" | jq . >"${expiration_file}"
+    rm -f "${sub_dir}/${email}.txt" "${sub_dir}/${email}.base64"
+    echoColor green "User ${email} deleted successfully from port ${port}"
+    reloadCore
 }
 
-# 备份恢复
-backup_restore() {
-    [ -z "$DOMAIN" ] && { echo -e "${RED}请先完成全新安装!${NC}"; return; }
-    echo -e "${BLUE}=== 备份恢复 ===${NC}"
-    echo -e "1. 备份\n2. 恢复\n3. 返回"
-    read -p "请选择: " choice
-    case "$choice" in
-        1) tar -czf "$BACKUP_DIR/xray_backup_$(date +%F).tar.gz" "$XRAY_CONFIG" "$USER_DATA" "$NGINX_CONF" "$CERTS_DIR/$DOMAIN"; echo -e "${GREEN}备份完成${NC}";;
-        2) ls "$BACKUP_DIR"; read -p "输入备份文件: " file; tar -xzf "$BACKUP_DIR/$file" -C /; systemctl restart "$XRAY_SERVICE" nginx; echo -e "${GREEN}恢复完成${NC}";;
-        3) return;;
-        *) echo -e "${RED}无效选项!${NC}";;
+# 续期用户
+renewUser() {
+    echoColor blue "Renewing user expiration..."
+    if [[ ! -f "${v2ray_config}" ]]; then
+        echoColor red "V2Ray not installed"
+        return 1
+    fi
+    read -r -p "Enter email of user to renew: " email
+    if ! jq -r ".inbounds[].settings.clients[] | select(.email == \"${email}\")" "${v2ray_config}" | grep -q .; then
+        echoColor red "User does not exist"
+        return 1
+    fi
+    read -r -p "Enter new expiration date (YYYY-MM-DD): " exp_date
+    if ! date -d "${exp_date}" >/dev/null 2>&1; then
+        echoColor red "Expiration date format error"
+        return 1
+    fi
+
+    backupConfig
+    local exp_timestamp=$(date -d "${exp_date}" +%s)
+    local expiration_data=$(jq -r "(.users[] | select(.email == \"${email}\") | .expiration) |= ${exp_timestamp}" "${expiration_file}")
+    echo "${expiration_data}" | jq . >"${expiration_file}" || { echoColor red "Expiration update failed"; return 1; }
+    echoColor green "User ${email} expiration renewed to: ${exp_date}"
+}
+
+# 生成订阅
+generateSubscription() {
+    local email=$1
+    local uuid=$2
+    local port=$3
+    echoColor blue "Generating subscription for ${email}..."
+    local sub_config="vless://${uuid}@${current_domain}:${port}?encryption=none&security=tls&type=tcp#${email}"
+    echo "${sub_config}" >"${sub_dir}/${email}.txt"
+    local base64_sub=$(echo -n "${sub_config}" | base64 -w 0)
+    echoColor yellow "Subscription URL: https://${current_domain}/sub/${email}.txt"
+    echoColor yellow "Base64 Subscription: ${base64_sub}"
+    echo "${base64_sub}" >"${sub_dir}/${email}.base64"
+    chmod 640 "${sub_dir}/${email}.txt" "${sub_dir}/${email}.base64"
+    if command -v qrencode >/dev/null 2>&1; then
+        qrencode -t UTF8 "${sub_config}"
+        echoColor green "QR Code generated above"
+    fi
+    updateSubscriptionSummary
+}
+
+# 更新订阅汇总
+updateSubscriptionSummary() {
+    echoColor blue "Updating subscription summary..."
+    > "${sub_all_file}"
+    for sub_file in "${sub_dir}"/*.txt; do
+        [[ -f "${sub_file}" ]] && cat "${sub_file}" >> "${sub_all_file}"
+    done
+    chmod 640 "${sub_all_file}"
+    echoColor green "Subscription summary updated: https://${current_domain}/sub/all_subscriptions.txt"
+}
+
+# 查看所有用户及订阅
+showUsers() {
+    echoColor blue "Current user list:"
+    if [[ ! -f "${v2ray_config}" ]]; then
+        echoColor red "V2Ray not installed"
+        return
+    fi
+    jq -r '.inbounds[] | [.port, (.settings.clients[] | [.email, .id] | join(" - "))] | join(": ")' "${v2ray_config}" | while read -r line; do
+        local port=$(echo "${line}" | cut -d':' -f1)
+        local user_info=$(echo "${line}" | cut -d':' -f2-)
+        local email=$(echo "${user_info}" | cut -d' ' -f2)
+        local exp_time=$(jq -r ".users[] | select(.email == \"${email}\") | .expiration" "${expiration_file}" | xargs -I {} date -d @{} +%Y-%m-%d)
+        echoColor yellow "Port ${port}: ${user_info} (Expires: ${exp_time})"
+        if [[ -f "${sub_dir}/${email}.txt" ]]; then
+            echoColor green "  Subscription: $(cat "${sub_dir}/${email}.txt")"
+        fi
+    done
+}
+
+# 检查到期用户
+checkExpiration() {
+    echoColor blue "Checking expired users..."
+    if [[ ! -f "${expiration_file}" ]]; then
+        echoColor yellow "No expiration records found"
+        return
+    fi
+
+    local current_timestamp=$(date +%s)
+    local updated=0
+    local expired_users=()
+
+    jq -c '.users[]' "${expiration_file}" | while read -r user; do
+        local email=$(echo "${user}" | jq -r '.email')
+        local exp_timestamp=$(echo "${user}" | jq -r '.expiration')
+        if [[ "${current_timestamp}" -ge "${exp_timestamp}" ]]; then
+            echoColor yellow "User ${email} has expired, disabling..."
+            expired_users+=("${email}")
+            updated=1
+        fi
+    done
+
+    if [[ ${updated} -eq 1 ]]; then
+        backupConfig
+        local clients=$(cat "${v2ray_config}")
+        for email in "${expired_users[@]}"; do
+            local port=$(jq -r ".users[] | select(.email == \"${email}\") | .port" "${expiration_file}")
+            clients=$(echo "${clients}" | jq -r "(.inbounds[] | select(.port == ${port}) | .settings.clients) -= [(.settings.clients[] | select(.email == \"${email}\"))]")
+            rm -f "${sub_dir}/${email}.txt" "${sub_dir}/${email}.base64"
+        done
+        echo "${clients}" | jq . >"${v2ray_config}" || { echoColor red "Configuration update failed"; return 1; }
+        local expiration_data=$(jq -r "del(.users[] | select(.email == \"${expired_users[*]}\"))" "${expiration_file}")
+        echo "${expiration_data}" | jq . >"${expiration_file}"
+        reloadCore
+        echoColor green "Expired users disabled"
+    else
+        echoColor green "No expired users"
+    fi
+}
+
+# 重载核心
+reloadCore() {
+    if systemctl is-active v2ray >/dev/null 2>&1; then
+        systemctl restart v2ray || { echoColor red "V2Ray restart failed, check logs (${log_file})"; return 1; }
+    else
+        systemctl start v2ray || { echoColor red "V2Ray start failed, check logs (${log_file})"; return 1; }
+    fi
+}
+
+# 服务管理
+manageService() {
+    echoColor blue "Managing V2Ray service..."
+    echoColor yellow "1. Start V2Ray"
+    echoColor yellow "2. Stop V2Ray"
+    echoColor yellow "3. Restart V2Ray"
+    read -r -p "Select action: " action
+    case ${action} in
+        1) systemctl start v2ray && echoColor green "V2Ray started" || echoColor red "Start failed" ;;
+        2) systemctl stop v2ray && echoColor green "V2Ray stopped" || echoColor red "Stop failed" ;;
+        3) reloadCore && echoColor green "V2Ray restarted" || echoColor red "Restart failed" ;;
+        *) echoColor red "Invalid action" ;;
     esac
 }
 
-# 查看证书
-view_certificates() {
-    [ -z "$DOMAIN" ] && { echo -e "${RED}请先完成全新安装!${NC}"; return; }
-    echo -e "${GREEN}=== 证书信息 ===${NC}"
-    certbot certificates --cert-name "$DOMAIN" | grep -E "Certificate Name|Expiry Date|VALID" || echo -e "${RED}未找到证书信息${NC}"
+# 监控状态
+monitorStatus() {
+    echoColor blue "Monitoring V2Ray status..."
+    if ! systemctl is-active v2ray >/dev/null 2>&1; then
+        echoColor red "V2Ray is not running"
+        return
+    fi
+    local uptime=$(systemctl status v2ray | grep "Active:" | awk '{print $4" "$5" "$6}')
+    local connections=$(ss -tn | grep ":${default_port}" | wc -l)
+    echoColor green "Status: Running"
+    echoColor yellow "Uptime: ${uptime}"
+    echoColor yellow "Active Connections: ${connections}"
 }
 
-# 查看日志
-view_logs() {
-    [ -z "$DOMAIN" ] && { echo -e "${RED}请先完成全新安装!${NC}"; return; }
-    echo -e "${BLUE}=== 查看日志 ===${NC}"
-    tail -n 20 "$LOG_DIR/error.log"
-}
-
-# 测试连接
-test_connection() {
-    [ -z "$DOMAIN" ] && { echo -e "${RED}请先完成全新安装!${NC}"; return; }
-    echo -e "${BLUE}=== 测试连接 ===${NC}"
-    read -p "请输入用户名: " username
-    local uuid=$(jq -r ".users[] | select(.name == \"$username\") | .uuid" "$USER_DATA")
-    [ -z "$uuid" ] && { echo -e "${RED}用户不存在!${NC}"; return; }
-    for i in "${!PROTOCOLS[@]}"; do
-        case "${PROTOCOLS[$i]}" in
-            1) echo -e "测试 VLESS+WS+TLS..."; curl -s -o /dev/null -w "%{http_code}\n" --insecure "https://$DOMAIN$WS_PATH" ;;
-            2) echo -e "测试 VMess+WS+TLS..."; curl -s -o /dev/null -w "%{http_code}\n" --insecure "https://$DOMAIN$VMESS_PATH" ;;
-            3) echo -e "测试 VLESS+gRPC+TLS..."; curl -s -o /dev/null -w "%{http_code}\n" --insecure "https://$DOMAIN/$GRPC_SERVICE" ;;
-            4) echo -e "测试 VLESS+TCP+TLS..."; curl -s -o /dev/null -w "%{http_code}\n" --insecure "https://$DOMAIN$TCP_PATH" ;;
-        esac
+# 流量统计
+trafficStats() {
+    echoColor blue "Traffic statistics..."
+    if [[ ! -f "${v2ray_config}" ]]; then
+        echoColor red "V2Ray not installed"
+        return
+    fi
+    grpcurl -plaintext -d '{"name": "api"}' 127.0.0.1:${api_port} v2ray.core.app.stats.command.StatsService.GetStats | jq -r '.stat[] | [.name, .value] | join(": ")' | while read -r stat; do
+        local name=$(echo "${stat}" | cut -d':' -f1 | xargs)
+        local value=$(echo "${stat}" | cut -d':' -f2 | xargs)
+        if [[ "${name}" =~ "user" ]]; then
+            local email=$(echo "${name}" | cut -d'>' -f2 | cut -d'_' -f1)
+            local type=$(echo "${name}" | cut -d'_' -f2)
+            local size=$(numfmt --to=iec-i --suffix=B "${value}")
+            echoColor yellow "User: ${email}, ${type}: ${size}"
+        fi
     done
-    echo -e "${GREEN}返回 200 表示连接正常${NC}"
 }
 
-# 清理日志
-clean_logs() {
-    [ -z "$DOMAIN" ] && { echo -e "${RED}请先完成全新安装!${NC}"; return; }
-    echo -e "${BLUE}=== 清理日志 ===${NC}"
-    find "$LOG_DIR" -type f -mtime +30 -exec rm -f {} \;
-    echo -e "${GREEN}30 天前的日志已清理${NC}"
+# 导出配置
+exportConfig() {
+    echoColor blue "Exporting configuration..."
+    local timestamp=$(date +%Y%m%d_%H%M%S)
+    local export_file="${backup_dir}/export_${timestamp}.tar.gz"
+    tar -czf "${export_file}" "${v2ray_config}" "${expiration_file}" "${sub_dir}" || {
+        echoColor red "Export failed"
+        return 1
+    }
+    chmod 600 "${export_file}"
+    echoColor green "Configuration exported to: ${export_file}"
 }
 
-# 更换域名并更新订阅文件
-change_domain() {
-    [ -z "$DOMAIN" ] && { echo -e "${RED}请先完成全新安装!${NC}"; return; }
-    echo -e "${BLUE}=== 更换域名 ===${NC}"
-    read -p "请输入新域名: " new_domain
-    sed -i "s/$DOMAIN/$new_domain/g" "$XRAY_CONFIG" "$NGINX_CONF"
-    certbot certonly --nginx -d "$new_domain" --non-interactive --agree-tos -m "admin@$new_domain" || { echo -e "${RED}证书更新失败!${NC}"; return; }
-    DOMAIN="$new_domain"
-    systemctl restart "$XRAY_SERVICE" nginx
-    jq -r '.users[] | [.name, .uuid, .token] | join("\t")' "$USER_DATA" | while IFS=$'\t' read -r name uuid token; do
-        generate_subscription "$name" "$uuid" "$token"
-    done
-    echo -e "${GREEN}域名更换完成，所有订阅文件已更新${NC}"
+# 导入配置
+importConfig() {
+    echoColor blue "Importing configuration..."
+    read -r -p "Enter path to exported configuration file: " import_file
+    if [[ ! -f "${import_file}" || ! "${import_file}" =~ \.tar\.gz$ ]]; then
+        echoColor red "Invalid or missing export file"
+        return 1
+    fi
+    backupConfig
+    tar -xzf "${import_file}" -C "${config_dir}" || {
+        echoColor red "Import failed"
+        return 1
+    }
+    reloadCore
+    echoColor green "Configuration imported successfully"
 }
 
-# 检查系统资源
-check_resources() {
-    [ -z "$DOMAIN" ] && { echo -e "${RED}请先完成全新安装!${NC}"; return; }
-    echo -e "${BLUE}=== 系统资源 ===${NC}"
-    echo -e "CPU 使用率: $(top -bn1 | grep "Cpu(s)" | awk '{print $2}')%"
-    echo -e "内存使用: $(free -h | awk '/^Mem:/ {print $3 "/" $2}')"
-    echo -e "磁盘空间: $(df -h / | awk 'NR==2 {print $3 "/" $2}')"
+# 安装定时任务
+installCron() {
+    echoColor blue "Installing cron jobs..."
+    if ! command -v crontab >/dev/null 2>&1; then
+        ${install_cmd} cron || { echoColor red "Cron installation failed"; cleanup; exit 1; }
+    fi
+    crontab -l > /tmp/cron_backup 2>/dev/null || touch /tmp/cron_backup
+    sed -i '/v2ray-agent/d' /tmp/cron_backup
+    echo "0 2 * * * /bin/bash \"$(realpath "$0")\" check_expiration >> ${log_file} 2>&1" >> /tmp/cron_backup
+    echo "0 3 * * * ~/.acme.sh/acme.sh --cron --home ~/.acme.sh >> ${log_file} 2>&1" >> /tmp/cron_backup
+    echo "0 0 * * * truncate -s 0 ${log_file}" >> /tmp/cron_backup
+    crontab /tmp/cron_backup || { echoColor red "Cron job installation failed"; cleanup; exit 1; }
+    rm -f /tmp/cron_backup
+    echoColor green "Cron jobs installed successfully"
 }
 
-# 卸载脚本
-uninstall_script() {
-    echo -e "${GREEN}=== 卸载脚本 ===${NC}"
-    read -p "确认卸载? (y/N): " confirm
-    [ "$confirm" != "y" ] && return
-    systemctl stop "$XRAY_SERVICE" nginx xray-menu.service
-    systemctl disable xray-menu.service
-    rm -rf "$XRAY_CONFIG" "$USER_DATA" "$NGINX_CONF" "$SUBSCRIPTION_DIR" "$CLASH_DIR" "$BACKUP_DIR" "$LOG_DIR" "$LOCK_FILE" "$XRAY_BIN" "$SCRIPT_PATH" "$SYSTEMD_SERVICE" "$XRAY_SYSTEMD"
-    systemctl daemon-reload
-    systemctl restart nginx
-    echo -e "${GREEN}卸载完成${NC}"
+# 备份配置
+backupConfig() {
+    local timestamp=$(date +%Y%m%d_%H%M%S)
+    cp "${v2ray_config}" "${backup_dir}/config_${timestamp}.json"
+    cp "${expiration_file}" "${backup_dir}/expiration_${timestamp}.json"
 }
 
-# 安装脚本并设置快捷命令
-install_script() {
-    cp "$0" "$SCRIPT_PATH"
-    chmod 700 "$SCRIPT_PATH"
-    ln -sf "$SCRIPT_PATH" /usr/local/bin/v
+# 清理残留
+cleanup() {
+    rm -f /tmp/v2ray.zip /tmp/cron_backup
+}
+
+# 检查安装状态
+checkStatus() {
+    if [[ ${installed} -eq 1 ]]; then
+        local status=$(systemctl is-active v2ray)
+        echoColor green "V2Ray installed, status: ${status}"
+    else
+        echoColor yellow "V2Ray not installed"
+    fi
 }
 
 # 主菜单
-main_menu() {
-    init_env
-    [ "$1" = "--check-expiry" ] && { check_expiry_and_traffic; exit 0; }
-    check_expiry_and_traffic
-    [ ! -L /usr/local/bin/v ] && install_script
-    while true; do
-        XRAY_STATUS=$(systemctl is-active "$XRAY_SERVICE" 2>/dev/null || echo "已停止")
-        NGINX_STATUS=$(systemctl is-active nginx 2>/dev/null || echo "inactive")
-        PROTOCOL_TEXT=""
-        for i in "${PROTOCOLS[@]}"; do
-            case "$i" in
-                1) PROTOCOL_TEXT="$PROTOCOL_TEXT VLESS+WS+TLS" ;;
-                2) PROTOCOL_TEXT="$PROTOCOL_TEXT VMess+WS+TLS" ;;
-                3) PROTOCOL_TEXT="$PROTOCOL_TEXT VLESS+gRPC+TLS" ;;
-                4) PROTOCOL_TEXT="$PROTOCOL_TEXT VLESS+TCP+TLS" ;;
-            esac
-        done
-        [ -n "$PROTOCOL_TEXT" ] && PROTOCOL_TEXT="| ${GREEN}使用协议:${PROTOCOL_TEXT}${NC}" || PROTOCOL_TEXT="| ${RED}未配置协议${NC}"
-        echo -e "${GREEN}==== Xray高级管理脚本 ($VERSION) ====${NC}"
-        echo -e "${GREEN}服务器推荐：https://my.frantech.ca/aff.php?aff=4337${NC}"
-        echo -e "${GREEN}VPS评测官方网站：https://www.1373737.xyz/${NC}"
-        echo -e "${GREEN}YouTube频道：https://www.youtube.com/@cyndiboy7881${NC}"
-        echo -e "${GREEN}Xray状态: $XRAY_STATUS $PROTOCOL_TEXT${NC}\n"
-        echo -e "1. 全新安装\n2. 用户管理\n3. 协议管理\n4. 流量统计\n5. 备份恢复\n6. 查看证书\n7. 卸载脚本\n8. 退出脚本"
-        read -p "请选择操作 [1-8]（回车退出）: " choice
-        [ -z "$choice" ] && exit 0
-        case "$choice" in
-            1) install_xray;;
-            2) user_management;;
-            3) protocol_management;;
-            4) traffic_stats;;
-            5) backup_restore;;
-            6) view_certificates;;
-            7) uninstall_script;;
-            8) exit 0;;
-            *) echo -e "${RED}无效选项!${NC}";;
-        esac
-    done
+menu() {
+    echoColor red "===== V2Ray-Agent v${VERSION} ====="
+    checkStatus
+    echoColor yellow "1. Install V2Ray and Nginx"
+    echoColor yellow "2. Add user"
+    echoColor yellow "3. Delete user"
+    echoColor yellow "4. Renew user expiration"
+    echoColor yellow "5. View users and subscriptions"
+    echoColor yellow "6. Check expired users"
+    echoColor yellow "7. Manage V2Ray service"
+    echoColor yellow "8. Monitor status"
+    echoColor yellow "9. Traffic statistics"
+    echoColor yellow "10. Export configuration"
+    echoColor yellow "11. Import configuration"
+    echoColor yellow "12. Exit"
+    read -r -p "Select: " choice
+
+    case ${choice} in
+        1)
+            checkNetwork
+            checkSystem
+            checkCPU
+            initVars
+            checkUpdate
+            createDirs
+            installTools
+            installV2Ray
+            installV2RayService
+            manageFirewall
+            initTLSandNginx
+            initV2RayConfig
+            installCron
+            reloadCore
+            echoColor green "Installation completed"
+            echoColor yellow "Subscription URL: https://${current_domain}/sub/<email>.txt"
+            ;;
+        2)
+            addUser
+            ;;
+        3)
+            removeUser
+            ;;
+        4)
+            renewUser
+            ;;
+        5)
+            showUsers
+            ;;
+        6)
+            checkExpiration
+            ;;
+        7)
+            manageService
+            ;;
+        8)
+            monitorStatus
+            ;;
+        9)
+            trafficStats
+            ;;
+        10)
+            exportConfig
+            ;;
+        11)
+            importConfig
+            ;;
+        12)
+            echoColor green "Exiting script"
+            exit 0
+            ;;
+        *)
+            echoColor red "Invalid option"
+            ;;
+    esac
+    menu
 }
 
-# 启动
-main_menu "$@"
+# 参数处理
+case "$1" in
+    "check_expiration")
+        initVars
+        checkExpiration
+        exit 0
+        ;;
+    *)
+        initVars
+        menu
+        ;;
+esac
