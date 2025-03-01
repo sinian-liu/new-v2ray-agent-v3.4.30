@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# v2ray-agent 简化版（全面优化）
+# v2ray-agent 简化版（全面优化，中文交互）
 # 当前日期: 2025-03-01
 # 作者: 基于 sinian-liu 的 v2ray-agent-2.5.73 重新设计并优化
 
@@ -22,22 +22,24 @@ checkSystem() {
         release="centos"
         install_cmd="yum -y install"
         update_cmd="yum update -y"
-        [[ -f "/etc/centos-release" ]] && centos_version=$(awk '{print $4}' /etc/centos-release | cut -d'.' -f1)
-        [[ "${centos_version}" -lt 7 ]] && { echoColor red "Unsupported system, requires CentOS 7+"; exit 1; }
+        if [[ -f "/etc/centos-release" ]]; then
+            centos_version=$(awk '{print $4}' /etc/centos-release | cut -d'.' -f1)
+            [[ "${centos_version}" -lt 7 ]] && { echoColor red "不支持的系统，需要 CentOS 7+"; exit 1; }
+        fi
     elif grep -qi "debian" /etc/issue || grep -qi "debian" /proc/version; then
         release="debian"
         install_cmd="apt -y install"
         update_cmd="apt update"
         debian_version=$(cat /etc/debian_version | cut -d'.' -f1)
-        [[ "${debian_version}" -lt 9 ]] && { echoColor red "Unsupported system, requires Debian 9+"; exit 1; }
+        [[ "${debian_version}" -lt 9 ]] && { echoColor red "不支持的系统，需要 Debian 9+"; exit 1; }
     elif grep -qi "ubuntu" /etc/issue || grep -qi "ubuntu" /proc/version; then
         release="ubuntu"
         install_cmd="apt -y install"
         update_cmd="apt update"
         ubuntu_version=$(lsb_release -sr | cut -d'.' -f1)
-        [[ "${ubuntu_version}" -lt 18 ]] && { echoColor red "Unsupported system, requires Ubuntu 18.04+"; exit 1; }
+        [[ "${ubuntu_version}" -lt 18 ]] && { echoColor red "不支持的系统，需要 Ubuntu 18.04+"; exit 1; }
     else
-        echoColor red "Unsupported system, use CentOS 7+, Debian 9+, or Ubuntu 18.04+"
+        echoColor red "不支持的系统，请使用 CentOS 7+、Debian 9+ 或 Ubuntu 18.04+"
         exit 1
     fi
 }
@@ -47,7 +49,7 @@ checkCPU() {
     case "$(uname -m)" in
         'x86_64') cpu_arch="64" ;;
         'aarch64') cpu_arch="arm64-v8a" ;;
-        *) echoColor red "Unsupported CPU architecture, only x86_64 and aarch64 supported"; exit 1 ;;
+        *) echoColor red "不支持的 CPU 架构，仅支持 x86_64 和 aarch64"; exit 1 ;;
     esac
 }
 
@@ -72,21 +74,21 @@ initVars() {
 
 # 检查网络连接
 checkNetwork() {
-    echoColor blue "Checking network connection..."
+    echoColor blue "检查网络连接..."
     if ! ping -c 3 -W 2 8.8.8.8 >/dev/null 2>&1; then
-        echoColor red "Unable to connect to network, check network settings"
+        echoColor red "无法连接到网络，请检查网络设置"
         exit 1
     fi
 }
 
 # 安装依赖工具
 installTools() {
-    echoColor blue "Installing dependencies..."
-    ${update_cmd} || { echoColor red "System update failed"; exit 1; }
+    echoColor blue "安装依赖工具..."
+    ${update_cmd} || { echoColor red "系统更新失败，请检查网络或包管理器"; exit 1; }
     local tools="curl wget unzip jq nginx uuid-runtime qrencode grpc-tools"
-    ${install_cmd} ${tools} || { echoColor red "Tool installation failed"; cleanup; exit 1; }
+    ${install_cmd} ${tools} || { echoColor red "工具安装失败，请检查包管理器"; cleanup; exit 1; }
     if ! command -v acme.sh >/dev/null 2>&1; then
-        curl -s https://get.acme.sh | sh -s -- --force || { echoColor red "acme.sh installation failed"; cleanup; exit 1; }
+        curl -s https://get.acme.sh | sh -s -- --force || { echoColor red "acme.sh 安装失败，请检查网络或 GitHub 访问"; cleanup; exit 1; }
     fi
     mkdir -p /var/log
     touch "${log_file}"
@@ -95,9 +97,9 @@ installTools() {
 
 # 创建目录
 createDirs() {
-    echoColor blue "Creating directories..."
+    echoColor blue "创建必要目录..."
     mkdir -p "${config_dir}" "${tls_dir}" "${sub_dir}" "${config_dir}/v2ray" "${backup_dir}" || {
-        echoColor red "Directory creation failed, check permissions"
+        echoColor red "目录创建失败，请检查权限"
         cleanup
         exit 1
     }
@@ -106,19 +108,20 @@ createDirs() {
 
 # 检查更新
 checkUpdate() {
-    echoColor blue "Checking for updates..."
+    echoColor blue "检查更新..."
+    # 假设 GitHub 仓库 URL（需替换为实际可用 URL）
     local remote_version=$(curl -s https://raw.githubusercontent.com/sinian-liu/v2ray-agent-2.5.73/master/install.sh | grep "VERSION=" | head -1 | cut -d'"' -f2)
     if [[ -n "${remote_version}" && "${remote_version}" > "${VERSION}" ]]; then
-        echoColor yellow "New version available: ${remote_version} (current: ${VERSION})"
-        read -r -p "Update now? [y/N]: " update_choice
+        echoColor yellow "发现新版本: ${remote_version} (当前: ${VERSION})"
+        read -r -p "是否现在更新? [y/N]: " update_choice
         if [[ "${update_choice}" =~ ^[Yy]$ ]]; then
             wget -q -O /tmp/v2ray-agent.sh "https://raw.githubusercontent.com/sinian-liu/v2ray-agent-2.5.73/master/install.sh" || {
-                echoColor red "Update download failed"
+                echoColor red "更新下载失败"
                 return 1
             }
             chmod +x /tmp/v2ray-agent.sh
             mv /tmp/v2ray-agent.sh "$(realpath "$0")"
-            echoColor green "Updated to version ${remote_version}"
+            echoColor green "已更新至版本 ${remote_version}"
             exec "$(realpath "$0")"
         fi
     fi
@@ -126,27 +129,27 @@ checkUpdate() {
 
 # 安装 V2Ray
 installV2Ray() {
-    echoColor blue "Installing V2Ray..."
+    echoColor blue "安装 V2Ray..."
     local latest_version=$(curl -s -H "Accept: application/vnd.github+json" \
         "https://api.github.com/repos/v2fly/v2ray-core/releases/latest" | jq -r .tag_name)
     if [[ -z "${latest_version}" ]]; then
-        echoColor red "Failed to fetch V2Ray version"
+        echoColor red "无法获取 V2Ray 最新版本，请检查网络或 GitHub API"
         cleanup
         exit 1
     fi
     local url="https://github.com/v2fly/v2ray-core/releases/download/${latest_version}/v2ray-linux-${cpu_arch}.zip"
-    wget -q "${url}" -O /tmp/v2ray.zip || { echoColor red "V2Ray download failed"; cleanup; exit 1; }
-    unzip -o /tmp/v2ray.zip -d "${config_dir}/v2ray" || { echoColor red "V2Ray extraction failed"; cleanup; exit 1; }
+    wget -q "${url}" -O /tmp/v2ray.zip || { echoColor red "V2Ray 下载失败，请检查网络"; cleanup; exit 1; }
+    unzip -o /tmp/v2ray.zip -d "${config_dir}/v2ray" || { echoColor red "V2Ray 解压失败，请检查 unzip 工具"; cleanup; exit 1; }
     chmod +x "${v2ray_bin}"
     rm -f /tmp/v2ray.zip
 }
 
 # 配置 V2Ray 服务
 installV2RayService() {
-    echoColor blue "Configuring V2Ray service..."
+    echoColor blue "配置 V2Ray 服务..."
     cat <<EOF >/etc/systemd/system/v2ray.service
 [Unit]
-Description=V2Ray Service
+Description=V2Ray 服务
 After=network.target
 
 [Service]
@@ -161,13 +164,13 @@ LimitNOFILE=65535
 [Install]
 WantedBy=multi-user.target
 EOF
-    systemctl daemon-reload || { echoColor red "systemd configuration failed"; cleanup; exit 1; }
+    systemctl daemon-reload || { echoColor red "systemd 配置失败"; cleanup; exit 1; }
     systemctl enable v2ray
 }
 
 # 管理防火墙
 manageFirewall() {
-    echoColor blue "Configuring firewall..."
+    echoColor blue "配置防火墙..."
     if command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active firewalld >/dev/null 2>&1; then
         firewall-cmd --permanent --add-port=80/tcp
         firewall-cmd --permanent --add-port=443/tcp
@@ -186,16 +189,16 @@ manageFirewall() {
 
 # 初始化 TLS 证书并配置 Nginx
 initTLSandNginx() {
-    echoColor blue "Configuring TLS and Nginx..."
+    echoColor blue "配置 TLS 和 Nginx..."
     if [[ -f "${nginx_conf}" || -f "${v2ray_config}" ]]; then
-        echoColor yellow "Existing configuration detected, reinstalling will overwrite."
-        read -r -p "Continue? [y/N]: " overwrite_choice
-        [[ ! "${overwrite_choice}" =~ ^[Yy]$ ]] && { echoColor red "Installation aborted"; exit 1; }
+        echoColor yellow "检测到现有配置，重新安装将覆盖。"
+        read -r -p "是否继续? [y/N]: " overwrite_choice
+        [[ ! "${overwrite_choice}" =~ ^[Yy]$ ]] && { echoColor red "安装已中止"; exit 1; }
     fi
 
-    read -r -p "Enter domain (must resolve to this server with Cloudflare orange cloud): " domain
+    read -r -p "请输入域名 (必须解析到此服务器并启用 Cloudflare 橙云): " domain
     if [[ -z "${domain}" ]]; then
-        echoColor red "Domain cannot be empty"
+        echoColor red "域名不能为空"
         exit 1
     fi
     current_domain="${domain}"
@@ -203,23 +206,23 @@ initTLSandNginx() {
     local server_ip=$(curl -s -m 5 "https://api.cloudflare.com/cdn-cgi/trace" | grep "ip=" | cut -d'=' -f2)
     local resolved_ip=$(dig +short "${current_domain}" A | grep -v '\.$' | tail -n1)
     if [[ -z "${resolved_ip}" || "${resolved_ip}" != "${server_ip}" ]]; then
-        echoColor red "Domain not resolved to local IP (${server_ip}), resolved: ${resolved_ip}"
+        echoColor red "域名未解析到本地 IP (${server_ip})，解析结果: ${resolved_ip}"
         exit 1
     fi
     if ! curl -s -m 5 -I "http://${current_domain}" | grep -qi "cf-ray"; then
-        echoColor red "Cloudflare proxy not enabled"
+        echoColor red "Cloudflare 橙云未启用或未生效"
         exit 1
     fi
 
     ~/.acme.sh/acme.sh --issue -d "${current_domain}" --nginx --force --server letsencrypt || {
-        echoColor red "Certificate issuance failed, check logs (~/.acme.sh/acme.sh.log)"
+        echoColor red "证书申请失败，请检查 Cloudflare 设置、网络或 acme.sh 日志 (~/.acme.sh/acme.sh.log)"
         cleanup
         exit 1
     }
     ~/.acme.sh/acme.sh --install-cert -d "${current_domain}" \
         --key-file "${tls_dir}/${current_domain}.key" \
         --fullchain-file "${tls_dir}/${current_domain}.crt" || {
-        echoColor red "Certificate installation failed"
+        echoColor red "证书安装失败"
         cleanup
         exit 1
     }
@@ -259,13 +262,13 @@ EOF
     echo "<h1>V2Ray Agent</h1>" >/var/www/html/index.html
     chmod 644 /var/www/html/index.html
 
-    nginx -t || { echoColor red "Nginx config validation failed"; cleanup; exit 1; }
-    systemctl restart nginx || { echoColor red "Nginx restart failed"; cleanup; exit 1; }
+    nginx -t || { echoColor red "Nginx 配置校验失败，请检查 ${nginx_conf}"; cleanup; exit 1; }
+    systemctl restart nginx || { echoColor red "Nginx 重启失败，请检查日志 (/var/log/nginx/error.log)"; cleanup; exit 1; }
 }
 
 # 初始化 V2Ray 配置（支持多端口和 API）
 initV2RayConfig() {
-    echoColor blue "Initializing V2Ray configuration..."
+    echoColor blue "初始化 V2Ray 配置..."
     cat <<EOF >"${v2ray_config}"
 {
   "log": {
@@ -352,7 +355,7 @@ initV2RayConfig() {
 EOF
     chmod 600 "${v2ray_config}"
     "${v2ray_bin}" -test -config "${v2ray_config}" || {
-        echoColor red "V2Ray configuration test failed"
+        echoColor red "V2Ray 配置测试失败"
         cleanup
         exit 1
     }
@@ -360,17 +363,17 @@ EOF
 
 # 添加用户（支持多端口）
 addUser() {
-    echoColor blue "Adding user..."
+    echoColor blue "添加用户..."
     if [[ ! -f "${v2ray_config}" ]]; then
-        echoColor red "V2Ray not installed"
+        echoColor red "V2Ray 未安装，请先安装"
         return 1
     fi
     local retry=1
     while [[ ${retry} -eq 1 ]]; do
-        read -r -p "Enter user email: " email
+        read -r -p "请输入用户 email: " email
         if [[ -z "${email}" ]] || ! echo "${email}" | grep -q "@" || jq -r ".inbounds[].settings.clients[] | select(.email == \"${email}\")" "${v2ray_config}" | grep -q .; then
-            echoColor red "Email is invalid, empty, or exists"
-            read -r -p "Retry? [y/N]: " retry_choice
+            echoColor red "email 无效、空或已存在"
+            read -r -p "是否重试? [y/N]: " retry_choice
             [[ ! "${retry_choice}" =~ ^[Yy]$ ]] && retry=0 || retry=1
         else
             retry=0
@@ -380,10 +383,10 @@ addUser() {
 
     retry=1
     while [[ ${retry} -eq 1 ]]; do
-        read -r -p "Enter expiration date (YYYY-MM-DD): " exp_date
+        read -r -p "请输入到期时间 (YYYY-MM-DD): " exp_date
         if ! date -d "${exp_date}" >/dev/null 2>&1; then
-            echoColor red "Expiration date format error, should be YYYY-MM-DD"
-            read -r -p "Retry? [y/N]: " retry_choice
+            echoColor red "到期时间格式错误，应为 YYYY-MM-DD"
+            read -r -p "是否重试? [y/N]: " retry_choice
             [[ ! "${retry_choice}" =~ ^[Yy]$ ]] && retry=0 || retry=1
         else
             retry=0
@@ -391,10 +394,10 @@ addUser() {
     done
     [[ ${retry} -eq 0 && -z "${exp_date}" ]] && return 1
 
-    read -r -p "Enter port (default ${default_port}, or new port): " port
+    read -r -p "请输入端口 (默认 ${default_port}，或新端口): " port
     [[ -z "${port}" ]] && port=${default_port}
     if ! [[ "${port}" =~ ^[0-9]+$ ]] || [[ "${port}" -lt 1 || "${port}" -gt 65535 ]]; then
-        echoColor red "Invalid port number"
+        echoColor red "端口号无效"
         return 1
     fi
 
@@ -403,10 +406,10 @@ addUser() {
     local inbound_exists=$(jq -r ".inbounds[] | select(.port == ${port})" "${v2ray_config}")
     if [[ -z "${inbound_exists}" ]]; then
         local new_inbound=$(jq -r ".inbounds += [{\"port\": ${port}, \"protocol\": \"vless\", \"settings\": {\"clients\": [{\"id\": \"${uuid}\", \"email\": \"${email}\"}], \"decryption\": \"none\"}, \"streamSettings\": {\"network\": \"tcp\", \"security\": \"tls\", \"tlsSettings\": {\"alpn\": [\"http/1.1\"], \"certificates\": [{\"certificateFile\": \"${tls_dir}/${current_domain}.crt\", \"keyFile\": \"${tls_dir}/${current_domain}.key\"}]}}}]" "${v2ray_config}")
-        echo "${new_inbound}" | jq . >"${v2ray_config}" || { echoColor red "Configuration update failed"; return 1; }
+        echo "${new_inbound}" | jq . >"${v2ray_config}" || { echoColor red "配置更新失败"; return 1; }
     else
         local clients=$(jq -r "(.inbounds[] | select(.port == ${port}) | .settings.clients) += [{\"id\": \"${uuid}\", \"email\": \"${email}\"}]" "${v2ray_config}")
-        echo "${clients}" | jq . >"${v2ray_config}" || { echoColor red "Configuration update failed"; return 1; }
+        echo "${clients}" | jq . >"${v2ray_config}" || { echoColor red "配置更新失败"; return 1; }
     fi
 
     if [[ ! -f "${expiration_file}" ]]; then
@@ -414,27 +417,27 @@ addUser() {
     fi
     local exp_timestamp=$(date -d "${exp_date}" +%s)
     local expiration_data=$(jq -r ".users += [{\"email\": \"${email}\", \"expiration\": ${exp_timestamp}, \"port\": ${port}}]" "${expiration_file}")
-    echo "${expiration_data}" | jq . >"${expiration_file}" || { echoColor red "Expiration update failed"; return 1; }
+    echo "${expiration_data}" | jq . >"${expiration_file}" || { echoColor red "到期信息更新失败"; return 1; }
     chmod 600 "${expiration_file}"
 
-    echoColor green "User ${email} added successfully on port ${port}, expires on: ${exp_date}"
+    echoColor green "用户 ${email} 添加成功，端口 ${port}，到期时间: ${exp_date}"
     generateSubscription "${email}" "${uuid}" "${port}"
     reloadCore
 }
 
 # 删除用户
 removeUser() {
-    echoColor blue "Deleting user..."
+    echoColor blue "删除用户..."
     if [[ ! -f "${v2ray_config}" ]]; then
-        echoColor red "V2Ray not installed"
+        echoColor red "V2Ray 未安装"
         return 1
     fi
     local retry=1
     while [[ ${retry} -eq 1 ]]; do
-        read -r -p "Enter email of user to delete: " email
+        read -r -p "请输入要删除的用户 email: " email
         if ! jq -r ".inbounds[].settings.clients[] | select(.email == \"${email}\")" "${v2ray_config}" | grep -q .; then
-            echoColor red "User does not exist"
-            read -r -p "Retry? [y/N]: " retry_choice
+            echoColor red "用户不存在"
+            read -r -p "是否重试? [y/N]: " retry_choice
             [[ ! "${retry_choice}" =~ ^[Yy]$ ]] && retry=0 || retry=1
         else
             retry=0
@@ -445,37 +448,37 @@ removeUser() {
     backupConfig
     local port=$(jq -r ".users[] | select(.email == \"${email}\") | .port" "${expiration_file}")
     local clients=$(jq -r "(.inbounds[] | select(.port == ${port}) | .settings.clients) -= [(.settings.clients[] | select(.email == \"${email}\"))]" "${v2ray_config}")
-    echo "${clients}" | jq . >"${v2ray_config}" || { echoColor red "Configuration update failed"; return 1; }
+    echo "${clients}" | jq . >"${v2ray_config}" || { echoColor red "配置更新失败"; return 1; }
     local expiration_data=$(jq -r "del(.users[] | select(.email == \"${email}\"))" "${expiration_file}")
     echo "${expiration_data}" | jq . >"${expiration_file}"
     rm -f "${sub_dir}/${email}.txt" "${sub_dir}/${email}.base64"
-    echoColor green "User ${email} deleted successfully from port ${port}"
+    echoColor green "用户 ${email} 已从端口 ${port} 删除"
     reloadCore
 }
 
 # 续期用户
 renewUser() {
-    echoColor blue "Renewing user expiration..."
+    echoColor blue "续期用户..."
     if [[ ! -f "${v2ray_config}" ]]; then
-        echoColor red "V2Ray not installed"
+        echoColor red "V2Ray 未安装"
         return 1
     fi
-    read -r -p "Enter email of user to renew: " email
+    read -r -p "请输入要续期的用户 email: " email
     if ! jq -r ".inbounds[].settings.clients[] | select(.email == \"${email}\")" "${v2ray_config}" | grep -q .; then
-        echoColor red "User does not exist"
+        echoColor red "用户不存在"
         return 1
     fi
-    read -r -p "Enter new expiration date (YYYY-MM-DD): " exp_date
+    read -r -p "请输入新的到期时间 (YYYY-MM-DD): " exp_date
     if ! date -d "${exp_date}" >/dev/null 2>&1; then
-        echoColor red "Expiration date format error"
+        echoColor red "到期时间格式错误，应为 YYYY-MM-DD"
         return 1
     fi
 
     backupConfig
     local exp_timestamp=$(date -d "${exp_date}" +%s)
     local expiration_data=$(jq -r "(.users[] | select(.email == \"${email}\") | .expiration) |= ${exp_timestamp}" "${expiration_file}")
-    echo "${expiration_data}" | jq . >"${expiration_file}" || { echoColor red "Expiration update failed"; return 1; }
-    echoColor green "User ${email} expiration renewed to: ${exp_date}"
+    echo "${expiration_data}" | jq . >"${expiration_file}" || { echoColor red "到期信息更新失败"; return 1; }
+    echoColor green "用户 ${email} 到期时间更新为: ${exp_date}"
 }
 
 # 生成订阅
@@ -483,37 +486,37 @@ generateSubscription() {
     local email=$1
     local uuid=$2
     local port=$3
-    echoColor blue "Generating subscription for ${email}..."
+    echoColor blue "为 ${email} 生成订阅链接..."
     local sub_config="vless://${uuid}@${current_domain}:${port}?encryption=none&security=tls&type=tcp#${email}"
     echo "${sub_config}" >"${sub_dir}/${email}.txt"
     local base64_sub=$(echo -n "${sub_config}" | base64 -w 0)
-    echoColor yellow "Subscription URL: https://${current_domain}/sub/${email}.txt"
-    echoColor yellow "Base64 Subscription: ${base64_sub}"
+    echoColor yellow "订阅链接: https://${current_domain}/sub/${email}.txt"
+    echoColor yellow "Base64 订阅: ${base64_sub}"
     echo "${base64_sub}" >"${sub_dir}/${email}.base64"
     chmod 640 "${sub_dir}/${email}.txt" "${sub_dir}/${email}.base64"
     if command -v qrencode >/dev/null 2>&1; then
         qrencode -t UTF8 "${sub_config}"
-        echoColor green "QR Code generated above"
+        echoColor green "二维码已生成，见上方"
     fi
     updateSubscriptionSummary
 }
 
 # 更新订阅汇总
 updateSubscriptionSummary() {
-    echoColor blue "Updating subscription summary..."
+    echoColor blue "更新订阅汇总..."
     > "${sub_all_file}"
     for sub_file in "${sub_dir}"/*.txt; do
         [[ -f "${sub_file}" ]] && cat "${sub_file}" >> "${sub_all_file}"
     done
     chmod 640 "${sub_all_file}"
-    echoColor green "Subscription summary updated: https://${current_domain}/sub/all_subscriptions.txt"
+    echoColor green "订阅汇总已更新: https://${current_domain}/sub/all_subscriptions.txt"
 }
 
 # 查看所有用户及订阅
 showUsers() {
-    echoColor blue "Current user list:"
+    echoColor blue "当前用户列表:"
     if [[ ! -f "${v2ray_config}" ]]; then
-        echoColor red "V2Ray not installed"
+        echoColor red "V2Ray 未安装"
         return
     fi
     jq -r '.inbounds[] | [.port, (.settings.clients[] | [.email, .id] | join(" - "))] | join(": ")' "${v2ray_config}" | while read -r line; do
@@ -521,18 +524,18 @@ showUsers() {
         local user_info=$(echo "${line}" | cut -d':' -f2-)
         local email=$(echo "${user_info}" | cut -d' ' -f2)
         local exp_time=$(jq -r ".users[] | select(.email == \"${email}\") | .expiration" "${expiration_file}" | xargs -I {} date -d @{} +%Y-%m-%d)
-        echoColor yellow "Port ${port}: ${user_info} (Expires: ${exp_time})"
+        echoColor yellow "端口 ${port}: ${user_info} (到期时间: ${exp_time})"
         if [[ -f "${sub_dir}/${email}.txt" ]]; then
-            echoColor green "  Subscription: $(cat "${sub_dir}/${email}.txt")"
+            echoColor green "  订阅: $(cat "${sub_dir}/${email}.txt")"
         fi
     done
 }
 
 # 检查到期用户
 checkExpiration() {
-    echoColor blue "Checking expired users..."
+    echoColor blue "检查过期用户..."
     if [[ ! -f "${expiration_file}" ]]; then
-        echoColor yellow "No expiration records found"
+        echoColor yellow "未找到到期记录"
         return
     fi
 
@@ -544,7 +547,7 @@ checkExpiration() {
         local email=$(echo "${user}" | jq -r '.email')
         local exp_timestamp=$(echo "${user}" | jq -r '.expiration')
         if [[ "${current_timestamp}" -ge "${exp_timestamp}" ]]; then
-            echoColor yellow "User ${email} has expired, disabling..."
+            echoColor yellow "用户 ${email} 已过期，正在禁用..."
             expired_users+=("${email}")
             updated=1
         fi
@@ -558,59 +561,59 @@ checkExpiration() {
             clients=$(echo "${clients}" | jq -r "(.inbounds[] | select(.port == ${port}) | .settings.clients) -= [(.settings.clients[] | select(.email == \"${email}\"))]")
             rm -f "${sub_dir}/${email}.txt" "${sub_dir}/${email}.base64"
         done
-        echo "${clients}" | jq . >"${v2ray_config}" || { echoColor red "Configuration update failed"; return 1; }
+        echo "${clients}" | jq . >"${v2ray_config}" || { echoColor red "配置更新失败"; return 1; }
         local expiration_data=$(jq -r "del(.users[] | select(.email == \"${expired_users[*]}\"))" "${expiration_file}")
         echo "${expiration_data}" | jq . >"${expiration_file}"
         reloadCore
-        echoColor green "Expired users disabled"
+        echoColor green "过期用户已禁用"
     else
-        echoColor green "No expired users"
+        echoColor green "无过期用户"
     fi
 }
 
 # 重载核心
 reloadCore() {
     if systemctl is-active v2ray >/dev/null 2>&1; then
-        systemctl restart v2ray || { echoColor red "V2Ray restart failed, check logs (${log_file})"; return 1; }
+        systemctl restart v2ray || { echoColor red "V2Ray 重启失败，请检查日志 (${log_file})"; return 1; }
     else
-        systemctl start v2ray || { echoColor red "V2Ray start failed, check logs (${log_file})"; return 1; }
+        systemctl start v2ray || { echoColor red "V2Ray 启动失败，请检查日志 (${log_file})"; return 1; }
     fi
 }
 
 # 服务管理
 manageService() {
-    echoColor blue "Managing V2Ray service..."
-    echoColor yellow "1. Start V2Ray"
-    echoColor yellow "2. Stop V2Ray"
-    echoColor yellow "3. Restart V2Ray"
-    read -r -p "Select action: " action
+    echoColor blue "管理 V2Ray 服务..."
+    echoColor yellow "1. 启动 V2Ray"
+    echoColor yellow "2. 停止 V2Ray"
+    echoColor yellow "3. 重启 V2Ray"
+    read -r -p "选择操作: " action
     case ${action} in
-        1) systemctl start v2ray && echoColor green "V2Ray started" || echoColor red "Start failed" ;;
-        2) systemctl stop v2ray && echoColor green "V2Ray stopped" || echoColor red "Stop failed" ;;
-        3) reloadCore && echoColor green "V2Ray restarted" || echoColor red "Restart failed" ;;
-        *) echoColor red "Invalid action" ;;
+        1) systemctl start v2ray && echoColor green "V2Ray 已启动" || echoColor red "启动失败" ;;
+        2) systemctl stop v2ray && echoColor green "V2Ray 已停止" || echoColor red "停止失败" ;;
+        3) reloadCore && echoColor green "V2Ray 已重启" || echoColor red "重启失败" ;;
+        *) echoColor red "无效操作" ;;
     esac
 }
 
 # 监控状态
 monitorStatus() {
-    echoColor blue "Monitoring V2Ray status..."
+    echoColor blue "监控 V2Ray 状态..."
     if ! systemctl is-active v2ray >/dev/null 2>&1; then
-        echoColor red "V2Ray is not running"
+        echoColor red "V2Ray 未运行"
         return
     fi
     local uptime=$(systemctl status v2ray | grep "Active:" | awk '{print $4" "$5" "$6}')
     local connections=$(ss -tn | grep ":${default_port}" | wc -l)
-    echoColor green "Status: Running"
-    echoColor yellow "Uptime: ${uptime}"
-    echoColor yellow "Active Connections: ${connections}"
+    echoColor green "状态: 运行中"
+    echoColor yellow "运行时间: ${uptime}"
+    echoColor yellow "活动连接数: ${connections}"
 }
 
 # 流量统计
 trafficStats() {
-    echoColor blue "Traffic statistics..."
+    echoColor blue "流量统计..."
     if [[ ! -f "${v2ray_config}" ]]; then
-        echoColor red "V2Ray not installed"
+        echoColor red "V2Ray 未安装"
         return
     fi
     grpcurl -plaintext -d '{"name": "api"}' 127.0.0.1:${api_port} v2ray.core.app.stats.command.StatsService.GetStats | jq -r '.stat[] | [.name, .value] | join(": ")' | while read -r stat; do
@@ -620,55 +623,59 @@ trafficStats() {
             local email=$(echo "${name}" | cut -d'>' -f2 | cut -d'_' -f1)
             local type=$(echo "${name}" | cut -d'_' -f2)
             local size=$(numfmt --to=iec-i --suffix=B "${value}")
-            echoColor yellow "User: ${email}, ${type}: ${size}"
+            if [[ "${type}" == "uplink" ]]; then
+                echoColor yellow "用户: ${email}, 上行流量: ${size}"
+            elif [[ "${type}" == "downlink" ]]; then
+                echoColor yellow "用户: ${email}, 下行流量: ${size}"
+            fi
         fi
     done
 }
 
 # 导出配置
 exportConfig() {
-    echoColor blue "Exporting configuration..."
+    echoColor blue "导出配置..."
     local timestamp=$(date +%Y%m%d_%H%M%S)
     local export_file="${backup_dir}/export_${timestamp}.tar.gz"
     tar -czf "${export_file}" "${v2ray_config}" "${expiration_file}" "${sub_dir}" || {
-        echoColor red "Export failed"
+        echoColor red "导出失败"
         return 1
     }
     chmod 600 "${export_file}"
-    echoColor green "Configuration exported to: ${export_file}"
+    echoColor green "配置已导出至: ${export_file}"
 }
 
 # 导入配置
 importConfig() {
-    echoColor blue "Importing configuration..."
-    read -r -p "Enter path to exported configuration file: " import_file
+    echoColor blue "导入配置..."
+    read -r -p "请输入导出的配置文件路径: " import_file
     if [[ ! -f "${import_file}" || ! "${import_file}" =~ \.tar\.gz$ ]]; then
-        echoColor red "Invalid or missing export file"
+        echoColor red "无效或不存在的导出文件"
         return 1
     fi
     backupConfig
     tar -xzf "${import_file}" -C "${config_dir}" || {
-        echoColor red "Import failed"
+        echoColor red "导入失败"
         return 1
     }
     reloadCore
-    echoColor green "Configuration imported successfully"
+    echoColor green "配置导入成功"
 }
 
 # 安装定时任务
 installCron() {
-    echoColor blue "Installing cron jobs..."
+    echoColor blue "安装定时任务..."
     if ! command -v crontab >/dev/null 2>&1; then
-        ${install_cmd} cron || { echoColor red "Cron installation failed"; cleanup; exit 1; }
+        ${install_cmd} cron || { echoColor red "Cron 安装失败"; cleanup; exit 1; }
     fi
     crontab -l > /tmp/cron_backup 2>/dev/null || touch /tmp/cron_backup
     sed -i '/v2ray-agent/d' /tmp/cron_backup
     echo "0 2 * * * /bin/bash \"$(realpath "$0")\" check_expiration >> ${log_file} 2>&1" >> /tmp/cron_backup
     echo "0 3 * * * ~/.acme.sh/acme.sh --cron --home ~/.acme.sh >> ${log_file} 2>&1" >> /tmp/cron_backup
     echo "0 0 * * * truncate -s 0 ${log_file}" >> /tmp/cron_backup
-    crontab /tmp/cron_backup || { echoColor red "Cron job installation failed"; cleanup; exit 1; }
+    crontab /tmp/cron_backup || { echoColor red "定时任务安装失败"; cleanup; exit 1; }
     rm -f /tmp/cron_backup
-    echoColor green "Cron jobs installed successfully"
+    echoColor green "定时任务安装成功"
 }
 
 # 备份配置
@@ -687,9 +694,9 @@ cleanup() {
 checkStatus() {
     if [[ ${installed} -eq 1 ]]; then
         local status=$(systemctl is-active v2ray)
-        echoColor green "V2Ray installed, status: ${status}"
+        echoColor green "V2Ray 已安装，状态: ${status}"
     else
-        echoColor yellow "V2Ray not installed"
+        echoColor yellow "V2Ray 未安装"
     fi
 }
 
@@ -697,19 +704,19 @@ checkStatus() {
 menu() {
     echoColor red "===== V2Ray-Agent v${VERSION} ====="
     checkStatus
-    echoColor yellow "1. Install V2Ray and Nginx"
-    echoColor yellow "2. Add user"
-    echoColor yellow "3. Delete user"
-    echoColor yellow "4. Renew user expiration"
-    echoColor yellow "5. View users and subscriptions"
-    echoColor yellow "6. Check expired users"
-    echoColor yellow "7. Manage V2Ray service"
-    echoColor yellow "8. Monitor status"
-    echoColor yellow "9. Traffic statistics"
-    echoColor yellow "10. Export configuration"
-    echoColor yellow "11. Import configuration"
-    echoColor yellow "12. Exit"
-    read -r -p "Select: " choice
+    echoColor yellow "1. 安装 V2Ray 和 Nginx"
+    echoColor yellow "2. 添加用户"
+    echoColor yellow "3. 删除用户"
+    echoColor yellow "4. 续期用户"
+    echoColor yellow "5. 查看用户和订阅"
+    echoColor yellow "6. 检查过期用户"
+    echoColor yellow "7. 管理 V2Ray 服务"
+    echoColor yellow "8. 监控状态"
+    echoColor yellow "9. 流量统计"
+    echoColor yellow "10. 导出配置"
+    echoColor yellow "11. 导入配置"
+    echoColor yellow "12. 退出"
+    read -r -p "请选择: " choice
 
     case ${choice} in
         1)
@@ -727,8 +734,8 @@ menu() {
             initV2RayConfig
             installCron
             reloadCore
-            echoColor green "Installation completed"
-            echoColor yellow "Subscription URL: https://${current_domain}/sub/<email>.txt"
+            echoColor green "安装完成"
+            echoColor yellow "订阅地址: https://${current_domain}/sub/<email>.txt"
             ;;
         2)
             addUser
@@ -761,11 +768,11 @@ menu() {
             importConfig
             ;;
         12)
-            echoColor green "Exiting script"
+            echoColor green "退出脚本"
             exit 0
             ;;
         *)
-            echoColor red "Invalid option"
+            echoColor red "无效选项"
             ;;
     esac
     menu
