@@ -4,7 +4,7 @@
 # 作者: 基于 sinian-liu 的 v2ray-agent-2.5.73 重新设计并优化
 
 # 版本号
-VERSION="1.0.3"
+VERSION="1.0.4"
 
 # 颜色输出函数
 echoColor() {
@@ -94,9 +94,9 @@ installTools() {
     }
     # 安装 grpc-tools 通过 pip
     if ! command -v grpcurl >/dev/null 2>&1; then
-        python3 -m pip install grpcio-tools || {
+        python3 -m pip install grpcio-tools --break-system-packages || {
             echoColor red "grpc-tools 安装失败，请检查 pip 或网络"
-            echoColor yellow "尝试运行 'sudo python3 -m pip install grpcio-tools' 手动安装"
+            echoColor yellow "尝试运行 'sudo python3 -m pip install grpcio-tools --break-system-packages' 手动安装"
             cleanup
             exit 1
         }
@@ -142,6 +142,8 @@ checkUpdate() {
             echoColor green "已更新至版本 ${remote_version}"
             exec "$(realpath "$0")"
         fi
+    else
+        echoColor green "当前已是最新版本"
     fi
 }
 
@@ -202,6 +204,9 @@ manageFirewall() {
         iptables -A INPUT -p tcp --dport 80 -j ACCEPT
         iptables -A INPUT -p tcp --dport 443 -j ACCEPT
         iptables -A INPUT -p tcp --dport ${api_port} -j ACCEPT
+        iptables-save > /etc/iptables/rules.v4 2>/dev/null
+    else
+        echoColor yellow "未检测到支持的防火墙工具，请手动开放 80、443 和 ${api_port} 端口"
     fi
 }
 
@@ -214,7 +219,7 @@ initTLSandNginx() {
         [[ ! "${overwrite_choice}" =~ ^[Yy]$ ]] && { echoColor red "安装已中止"; exit 1; }
     fi
 
-    read -r -p "请输入域名 (必须解析到此服务器并启用 Cloudflare 橙云): " domain
+    read -r -p "请输入域名 (必须解析到此服务器): " domain
     if [[ -z "${domain}" ]]; then
         echoColor red "域名不能为空"
         exit 1
@@ -222,18 +227,19 @@ initTLSandNginx() {
     current_domain="${domain}"
 
     local server_ip=$(curl -s -m 5 "https://api.cloudflare.com/cdn-cgi/trace" | grep "ip=" | cut -d'=' -f2)
+    if [[ -z "${server_ip}" ]]; then
+        echoColor red "无法获取服务器 IP，请检查网络连接"
+        exit 1
+    fi
     local resolved_ip=$(dig +short "${current_domain}" A | grep -v '\.$' | tail -n1)
     if [[ -z "${resolved_ip}" || "${resolved_ip}" != "${server_ip}" ]]; then
         echoColor red "域名未解析到本地 IP (${server_ip})，解析结果: ${resolved_ip}"
-        exit 1
-    fi
-    if ! curl -s -m 5 -I "http://${current_domain}" | grep -qi "cf-ray"; then
-        echoColor red "Cloudflare 橙云未启用或未生效"
+        echoColor yellow "请在 Cloudflare 设置 A 记录指向 ${server_ip}，并暂时关闭橙云"
         exit 1
     fi
 
     ~/.acme.sh/acme.sh --issue -d "${current_domain}" --nginx --force --server letsencrypt || {
-        echoColor red "证书申请失败，请检查 Cloudflare 设置、网络或 acme.sh 日志 (~/.acme.sh/acme.sh.log)"
+        echoColor red "证书申请失败，请检查网络或 acme.sh 日志 (~/.acme.sh/acme.sh.log)"
         cleanup
         exit 1
     }
@@ -282,6 +288,7 @@ EOF
 
     nginx -t || { echoColor red "Nginx 配置校验失败，请检查 ${nginx_conf}"; cleanup; exit 1; }
     systemctl restart nginx || { echoColor red "Nginx 重启失败，请检查日志 (/var/log/nginx/error.log)"; cleanup; exit 1; }
+    echoColor yellow "安装完成后，请在 Cloudflare 启用橙云以使用完整功能"
 }
 
 # 初始化 V2Ray 配置（支持多端口和 API）
@@ -373,7 +380,7 @@ initV2RayConfig() {
 EOF
     chmod 600 "${v2ray_config}"
     "${v2ray_bin}" -test -config "${v2ray_config}" || {
-        echoColor red "V2Ray 配置测试失败"
+        echoColor red "V2Ray 配置测试失败，请检查配置 ${v2ray_config}"
         cleanup
         exit 1
     }
@@ -415,7 +422,12 @@ addUser() {
     read -r -p "请输入端口 (默认 ${default_port}，或新端口): " port
     [[ -z "${port}" ]] && port=${default_port}
     if ! [[ "${port}" =~ ^[0-9]+$ ]] || [[ "${port}" -lt 1 || "${port}" -gt 65535 ]]; then
-        echoColor red "端口号无效"
+        echoColor red "端口号无效，必须为 1-65535"
+        return 1
+    fi
+    # 检查端口是否已被占用
+    if ss -tuln | grep -q ":${port} "; then
+        echoColor red "端口 ${port} 已被占用，请选择其他端口"
         return 1
     fi
 
@@ -699,8 +711,8 @@ installCron() {
 # 备份配置
 backupConfig() {
     local timestamp=$(date +%Y%m%d_%H%M%S)
-    cp "${v2ray_config}" "${backup_dir}/config_${timestamp}.json"
-    cp "${expiration_file}" "${backup_dir}/expiration_${timestamp}.json"
+    cp "${v2ray_config}" "${backup_dir}/config_${timestamp}.json" 2>/dev/null
+    cp "${expiration_file}" "${backup_dir}/expiration_${timestamp}.json" 2>/dev/null
 }
 
 # 清理残留
