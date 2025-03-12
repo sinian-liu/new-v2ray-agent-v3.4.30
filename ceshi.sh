@@ -271,17 +271,87 @@ show_menu() {
             echo "3) 安装宝塔国际版"
             echo "4) 安装宝塔国内版"
             echo "5) 安装青龙面板"
-            echo "6) 卸载1Panel面板"
-            echo "7) 卸载宝塔面板（纯净版/国际版/国内版）"
-            echo "8) 卸载青龙面板"
-            echo "9) 一键卸载所有面板"
+            echo "6) 安装飞牛系统（Docker 方式）"
+            echo "7) 安装飞牛系统（直接安装）"
+            echo "8) 卸载1Panel面板"
+            echo "9) 卸载宝塔面板（纯净版/国际版/国内版）"
+            echo "10) 卸载青龙面板"
+            echo "11) 卸载飞牛系统（Docker 方式）"
+            echo "12) 卸载飞牛系统（直接安装）"
+            echo "13) 一键卸载所有面板"
             echo "0) 返回主菜单"
             read -p "请输入选项：" panel_choice
+
+            # 获取当前服务器的 IP 地址
+            get_server_ip() {
+                SERVER_IP=$(curl -s ifconfig.me)
+                if [ -z "$SERVER_IP" ]; then
+                    SERVER_IP=$(hostname -I | awk '{print $1}')
+                fi
+                echo "$SERVER_IP"
+            }
+
+            # 检查端口是否被占用
+            check_port() {
+                local port=$1
+                if netstat -tuln | grep ":$port" > /dev/null; then
+                    return 1  # 端口被占用
+                else
+                    return 0  # 端口可用
+                fi
+            }
+
+            # 放行防火墙端口
+            allow_firewall_port() {
+                local port=$1
+                if command -v ufw > /dev/null 2>&1; then
+                    ufw status | grep -q "Status: active"
+                    if [ $? -eq 0 ]; then
+                        echo -e "${YELLOW}检测到 UFW 防火墙正在运行...${RESET}"
+                        ufw status | grep -q "$port"
+                        if [ $? -ne 0 ]; then
+                            echo -e "${YELLOW}正在放行端口 $port...${RESET}"
+                            sudo ufw allow "$port/tcp"
+                            sudo ufw reload
+                        fi
+                    fi
+                elif command -v iptables > /dev/null 2>&1; then
+                    echo -e "${YELLOW}检测到 iptables 防火墙...${RESET}"
+                    iptables -C INPUT -p tcp --dport "$port" -j ACCEPT 2>/dev/null
+                    if [ $? -ne 0 ]; then
+                        echo -e "${YELLOW}正在放行端口 $port...${RESET}"
+                        sudo iptables -A INPUT -p tcp --dport "$port" -j ACCEPT
+                        sudo iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
+                    fi
+                fi
+            }
+
+            # 手动输入端口
+            input_port() {
+                local default_port=$1
+                local port
+                while true; do
+                    read -p "请输入端口号（默认 $default_port）： " port
+                    port=${port:-$default_port}
+                    if ! [[ "$port" =~ ^[0-9]+$ ]] || [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
+                        echo -e "${RED}无效端口，请输入 1-65535 之间的数字！${RESET}"
+                    else
+                        check_port "$port"
+                        if [ $? -eq 0 ]; then
+                            echo "$port"
+                            break
+                        else
+                            echo -e "${RED}端口 $port 已被占用，请选择其他端口！${RESET}"
+                        fi
+                    fi
+                done
+            }
 
             case $panel_choice in
                 1)
                     # 安装1Panel面板
                     echo -e "${GREEN}正在安装1Panel面板...${RESET}"
+                    PORT=$(input_port 80)
                     check_system
                     case $SYSTEM in
                         ubuntu)
@@ -294,12 +364,17 @@ show_menu() {
                             echo -e "${RED}不支持的系统类型！${RESET}"
                             ;;
                     esac
-                    read -p "安装完成，按回车键返回上一级..."
+                    allow_firewall_port "$PORT"
+                    SERVER_IP=$(get_server_ip)
+                    echo -e "${GREEN}1Panel面板安装完成！${RESET}"
+                    echo -e "${YELLOW}访问 http://$SERVER_IP:$PORT 进行初始化设置${RESET}"
+                    read -p "按回车键返回上一级..."
                     ;;
 
                 2)
                     # 安装宝塔纯净版
                     echo -e "${GREEN}正在安装宝塔纯净版...${RESET}"
+                    PORT=$(input_port 8888)
                     check_system
                     if [ "$SYSTEM" == "ubuntu" ] || [ "$SYSTEM" == "debian" ]; then
                         wget -O install.sh https://install.baota.sbs/install/install_6.0.sh && bash install.sh
@@ -308,12 +383,17 @@ show_menu() {
                     else
                         echo -e "${RED}不支持的系统类型！${RESET}"
                     fi
-                    read -p "安装完成，按回车键返回上一级..."
+                    allow_firewall_port "$PORT"
+                    SERVER_IP=$(get_server_ip)
+                    echo -e "${GREEN}宝塔纯净版安装完成！${RESET}"
+                    echo -e "${YELLOW}访问 http://$SERVER_IP:$PORT 进行初始化设置${RESET}"
+                    read -p "按回车键返回上一级..."
                     ;;
 
                 3)
                     # 安装宝塔国际版
                     echo -e "${GREEN}正在安装宝塔国际版...${RESET}"
+                    PORT=$(input_port 8888)
                     URL="https://www.aapanel.com/script/install_7.0_en.sh"
                     if [ -f /usr/bin/curl ]; then
                         curl -ksSO "$URL"
@@ -321,24 +401,34 @@ show_menu() {
                         wget --no-check-certificate -O install_7.0_en.sh "$URL"
                     fi
                     bash install_7.0_en.sh aapanel
-                    read -p "安装完成，按回车键返回上一级..."
+                    allow_firewall_port "$PORT"
+                    SERVER_IP=$(get_server_ip)
+                    echo -e "${GREEN}宝塔国际版安装完成！${RESET}"
+                    echo -e "${YELLOW}访问 http://$SERVER_IP:$PORT 进行初始化设置${RESET}"
+                    read -p "按回车键返回上一级..."
                     ;;
 
                 4)
                     # 安装宝塔国内版
                     echo -e "${GREEN}正在安装宝塔国内版...${RESET}"
+                    PORT=$(input_port 8888)
                     if [ -f /usr/bin/curl ]; then
                         curl -sSO https://download.bt.cn/install/install_panel.sh
                     else
                         wget -O install_panel.sh https://download.bt.cn/install/install_panel.sh
                     fi
                     bash install_panel.sh ed8484bec
-                    read -p "安装完成，按回车键返回上一级..."
+                    allow_firewall_port "$PORT"
+                    SERVER_IP=$(get_server_ip)
+                    echo -e "${GREEN}宝塔国内版安装完成！${RESET}"
+                    echo -e "${YELLOW}访问 http://$SERVER_IP:$PORT 进行初始化设置${RESET}"
+                    read -p "按回车键返回上一级..."
                     ;;
 
                 5)
                     # 安装青龙面板
                     echo -e "${GREEN}正在安装青龙面板...${RESET}"
+                    PORT=$(input_port 5700)
 
                     # 检查 Docker 是否安装
                     if ! command -v docker > /dev/null 2>&1; then
@@ -355,65 +445,6 @@ show_menu() {
                         chmod +x /usr/local/bin/docker-compose
                     fi
 
-                    # 端口选择
-                    DEFAULT_PORT=5700
-                    check_port() {
-                        local port=$1
-                        if netstat -tuln | grep ":$port" > /dev/null; then
-                            return 1  # 端口被占用
-                        else
-                            return 0  # 端口可用
-                        fi
-                    }
-
-                    check_port "$DEFAULT_PORT"
-                    if [ $? -eq 1 ]; then
-                        echo -e "${RED}端口 $DEFAULT_PORT 已被占用！${RESET}"
-                        read -p "是否更换端口？（y/n，默认 y）： " change_port
-                        if [ "$change_port" != "n" ] && [ "$change_port" != "N" ]; then
-                            while true; do
-                                read -p "请输入新的端口号（例如 5800）： " new_port
-                                while ! [[ "$new_port" =~ ^[0-9]+$ ]] || [ "$new_port" -lt 1 ] || [ "$new_port" -gt 65535 ]; do
-                                    echo -e "${RED}无效端口，请输入 1-65535 之间的数字！${RESET}"
-                                    read -p "请输入新的端口号（例如 5800）： " new_port
-                                done
-                                check_port "$new_port"
-                                if [ $? -eq 0 ]; then
-                                    DEFAULT_PORT=$new_port
-                                    break
-                                else
-                                    echo -e "${RED}端口 $new_port 已被占用，请选择其他端口！${RESET}"
-                                fi
-                            done
-                        else
-                            echo -e "${RED}端口 $DEFAULT_PORT 被占用，无法继续安装！${RESET}"
-                            read -p "按回车键返回上一级..."
-                            continue
-                        fi
-                    fi
-
-                    # 检查并放行防火墙端口
-                    if command -v ufw > /dev/null 2>&1; then
-                        ufw status | grep -q "Status: active"
-                        if [ $? -eq 0 ]; then
-                            echo -e "${YELLOW}检测到 UFW 防火墙正在运行...${RESET}"
-                            ufw status | grep -q "$DEFAULT_PORT"
-                            if [ $? -ne 0 ]; then
-                                echo -e "${YELLOW}正在放行端口 $DEFAULT_PORT...${RESET}"
-                                sudo ufw allow "$DEFAULT_PORT/tcp"
-                                sudo ufw reload
-                            fi
-                        fi
-                    elif command -v iptables > /dev/null 2>&1; then
-                        echo -e "${YELLOW}检测到 iptables 防火墙...${RESET}"
-                        iptables -C INPUT -p tcp --dport "$DEFAULT_PORT" -j ACCEPT 2>/dev/null
-                        if [ $? -ne 0 ]; then
-                            echo -e "${YELLOW}正在放行端口 $DEFAULT_PORT...${RESET}"
-                            sudo iptables -A INPUT -p tcp --dport "$DEFAULT_PORT" -j ACCEPT
-                            sudo iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
-                        fi
-                    fi
-
                     # 创建目录和配置 docker-compose.yml
                     mkdir -p /home/qinglong && cd /home/qinglong
                     cat > docker-compose.yml <<EOF
@@ -424,7 +455,7 @@ services:
     container_name: qinglong
     restart: unless-stopped
     ports:
-      - "$DEFAULT_PORT:5700"
+      - "$PORT:5700"
     volumes:
       - ./config:/ql/config
       - ./log:/ql/log
@@ -433,12 +464,156 @@ services:
       - ./jbot:/ql/jbot
 EOF
                     docker-compose up -d
+                    allow_firewall_port "$PORT"
+                    SERVER_IP=$(get_server_ip)
                     echo -e "${GREEN}青龙面板安装完成！${RESET}"
-                    echo -e "${YELLOW}访问 http://<服务器IP>:$DEFAULT_PORT 进行初始化设置${RESET}"
+                    echo -e "${YELLOW}访问 http://$SERVER_IP:$PORT 进行初始化设置${RESET}"
                     read -p "按回车键返回上一级..."
                     ;;
 
                 6)
+                    # 安装飞牛系统（Docker 方式）
+                    echo -e "${GREEN}正在安装飞牛系统（Docker 方式）...${RESET}"
+                    PORT=$(input_port 8080)
+
+                    # 检查 Docker 是否安装
+                    if ! command -v docker > /dev/null 2>&1; then
+                        echo -e "${YELLOW}正在安装 Docker...${RESET}"
+                        curl -fsSL https://get.docker.com | sh
+                        systemctl start docker
+                        systemctl enable docker
+                    fi
+
+                    # 检查 Docker Compose 是否安装
+                    if ! command -v docker-compose > /dev/null 2>&1; then
+                        echo -e "${YELLOW}正在安装 Docker Compose...${RESET}"
+                        curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+                        chmod +x /usr/local/bin/docker-compose
+                    fi
+
+                    # 创建目录和配置 docker-compose.yml
+                    mkdir -p /home/feiniu && cd /home/feiniu
+                    cat > docker-compose.yml <<EOF
+version: '3'
+services:
+  feiniu:
+    image: feiniu/feiniu:latest
+    container_name: feiniu
+    restart: unless-stopped
+    ports:
+      - "$PORT:80"
+    volumes:
+      - ./data:/app/data
+EOF
+                    docker-compose up -d
+                    allow_firewall_port "$PORT"
+                    SERVER_IP=$(get_server_ip)
+                    echo -e "${GREEN}飞牛系统（Docker 方式）安装完成！${RESET}"
+                    echo -e "${YELLOW}访问 http://$SERVER_IP:$PORT 进行初始化设置${RESET}"
+                    read -p "按回车键返回上一级..."
+                    ;;
+
+                7)
+                    # 安装飞牛系统（直接安装）
+                    echo -e "${GREEN}正在安装飞牛系统（直接安装）...${RESET}"
+                    PORT=$(input_port 80)
+
+                    # 安装系统依赖
+                    echo -e "${YELLOW}正在安装系统依赖...${RESET}"
+                    if [ "$SYSTEM" == "ubuntu" ] || [ "$SYSTEM" == "debian" ]; then
+                        sudo apt-get update
+                        sudo apt-get install -y python3 python3-pip python3-venv git nginx
+                    elif [ "$SYSTEM" == "centos" ]; then
+                        sudo yum install -y python3 python3-pip git nginx
+                    else
+                        echo -e "${RED}不支持的系统类型！${RESET}"
+                        read -p "按回车键返回上一级..."
+                        continue
+                    fi
+
+                    # 安装 Node.js（飞牛系统前端依赖）
+                    echo -e "${YELLOW}正在安装 Node.js...${RESET}"
+                    curl -fsSL https://deb.nodesource.com/setup_16.x | sudo -E bash -
+                    sudo apt-get install -y nodejs
+
+                    # 创建飞牛系统目录
+                    FEINIU_DIR="/home/feiniu"
+                    echo -e "${YELLOW}正在创建飞牛系统目录...${RESET}"
+                    mkdir -p "$FEINIU_DIR"
+                    cd "$FEINIU_DIR"
+
+                    # 克隆飞牛系统源码
+                    echo -e "${YELLOW}正在克隆飞牛系统源码...${RESET}"
+                    git clone https://github.com/feiniu/feiniu-system.git .
+                    if [ $? -ne 0 ]; then
+                        echo -e "${RED}克隆飞牛系统源码失败，请检查网络！${RESET}"
+                        read -p "按回车键返回上一级..."
+                        continue
+                    fi
+
+                    # 创建 Python 虚拟环境
+                    echo -e "${YELLOW}正在创建 Python 虚拟环境...${RESET}"
+                    python3 -m venv venv
+                    source venv/bin/activate
+
+                    # 安装 Python 依赖
+                    echo -e "${YELLOW}正在安装 Python 依赖...${RESET}"
+                    pip install -r requirements.txt
+                    if [ $? -ne 0 ]; then
+                        echo -e "${RED}安装 Python 依赖失败！${RESET}"
+                        read -p "按回车键返回上一级..."
+                        continue
+                    fi
+
+                    # 配置数据库（默认使用 SQLite）
+                    echo -e "${YELLOW}正在配置数据库...${RESET}"
+                    python manage.py migrate
+
+                    # 编译前端代码
+                    echo -e "${YELLOW}正在编译前端代码...${RESET}"
+                    cd frontend
+                    npm install
+                    npm run build
+                    cd ..
+
+                    # 配置 Nginx
+                    echo -e "${YELLOW}正在配置 Nginx...${RESET}"
+                    cat > /etc/nginx/sites-available/feiniu <<EOF
+server {
+    listen $PORT;
+    server_name _;
+
+    location / {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+    }
+
+    location /static/ {
+        alias $FEINIU_DIR/static/;
+    }
+
+    location /media/ {
+        alias $FEINIU_DIR/media/;
+    }
+}
+EOF
+                    sudo ln -sf /etc/nginx/sites-available/feiniu /etc/nginx/sites-enabled/
+                    sudo nginx -t && sudo systemctl restart nginx
+
+                    # 启动飞牛系统
+                    echo -e "${YELLOW}正在启动飞牛系统...${RESET}"
+                    nohup python manage.py runserver 0.0.0.0:8000 > feiniu.log 2>&1 &
+
+                    allow_firewall_port "$PORT"
+                    SERVER_IP=$(get_server_ip)
+                    echo -e "${GREEN}飞牛系统（直接安装）安装完成！${RESET}"
+                    echo -e "${YELLOW}访问 http://$SERVER_IP:$PORT 使用飞牛系统${RESET}"
+                    read -p "按回车键返回上一级..."
+                    ;;
+
+                8)
                     # 卸载1Panel面板
                     echo -e "${GREEN}正在卸载1Panel面板...${RESET}"
                     if command -v 1pctl > /dev/null 2>&1; then
@@ -450,7 +625,7 @@ EOF
                     read -p "按回车键返回上一级..."
                     ;;
 
-                7)
+                9)
                     # 卸载宝塔面板
                     echo -e "${GREEN}正在卸载宝塔面板...${RESET}"
                     if [ -f /usr/bin/bt ] || [ -f /usr/bin/aapanel ]; then
@@ -467,7 +642,7 @@ EOF
                     read -p "按回车键返回上一级..."
                     ;;
 
-                8)
+                10)
                     # 卸载青龙面板
                     echo -e "${GREEN}正在卸载青龙面板...${RESET}"
                     if docker ps -a | grep -q "qinglong"; then
@@ -481,7 +656,48 @@ EOF
                     read -p "按回车键返回上一级..."
                     ;;
 
-                9)
+                11)
+                    # 卸载飞牛系统（Docker 方式）
+                    echo -e "${GREEN}正在卸载飞牛系统（Docker 方式）...${RESET}"
+                    if docker ps -a | grep -q "feiniu"; then
+                        cd /home/feiniu
+                        docker-compose down -v
+                        rm -rf /home/feiniu
+                        echo -e "${YELLOW}飞牛系统（Docker 方式）已卸载${RESET}"
+                    else
+                        echo -e "${RED}未检测到飞牛系统安装！${RESET}"
+                    fi
+                    read -p "按回车键返回上一级..."
+                    ;;
+
+                12)
+                    # 卸载飞牛系统（直接安装）
+                    echo -e "${GREEN}正在卸载飞牛系统（直接安装）...${RESET}"
+
+                    # 停止飞牛系统进程
+                    echo -e "${YELLOW}正在停止飞牛系统进程...${RESET}"
+                    pkill -f "python manage.py runserver"
+
+                    # 删除飞牛系统目录
+                    FEINIU_DIR="/home/feiniu"
+                    if [ -d "$FEINIU_DIR" ]; then
+                        echo -e "${YELLOW}正在删除飞牛系统目录...${RESET}"
+                        rm -rf "$FEINIU_DIR"
+                    else
+                        echo -e "${RED}未检测到飞牛系统安装！${RESET}"
+                    fi
+
+                    # 删除 Nginx 配置
+                    echo -e "${YELLOW}正在删除 Nginx 配置...${RESET}"
+                    sudo rm -f /etc/nginx/sites-available/feiniu
+                    sudo rm -f /etc/nginx/sites-enabled/feiniu
+                    sudo nginx -t && sudo systemctl restart nginx
+
+                    echo -e "${YELLOW}飞牛系统（直接安装）已卸载${RESET}"
+                    read -p "按回车键返回上一级..."
+                    ;;
+
+                13)
                     # 一键卸载所有面板
                     echo -e "${GREEN}正在卸载所有面板...${RESET}"
                     # 卸载1Panel
@@ -511,6 +727,27 @@ EOF
                         echo -e "${YELLOW}青龙面板已卸载${RESET}"
                     else
                         echo -e "${RED}未检测到青龙面板安装！${RESET}"
+                    fi
+                    # 卸载飞牛（Docker 方式）
+                    if docker ps -a | grep -q "feiniu"; then
+                        cd /home/feiniu
+                        docker-compose down -v
+                        rm -rf /home/feiniu
+                        echo -e "${YELLOW}飞牛系统（Docker 方式）已卸载${RESET}"
+                    else
+                        echo -e "${RED}未检测到飞牛系统安装！${RESET}"
+                    fi
+                    # 卸载飞牛（直接安装）
+                    FEINIU_DIR="/home/feiniu"
+                    if [ -d "$FEINIU_DIR" ]; then
+                        pkill -f "python manage.py runserver"
+                        rm -rf "$FEINIU_DIR"
+                        sudo rm -f /etc/nginx/sites-available/feiniu
+                        sudo rm -f /etc/nginx/sites-enabled/feiniu
+                        sudo nginx -t && sudo systemctl restart nginx
+                        echo -e "${YELLOW}飞牛系统（直接安装）已卸载${RESET}"
+                    else
+                        echo -e "${RED}未检测到飞牛系统安装！${RESET}"
                     fi
                     read -p "按回车键返回上一级..."
                     ;;
