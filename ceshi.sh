@@ -751,6 +751,82 @@ EOF
                     fi
                     read -p "按回车键返回上一级..."
                     ;;
+            14)
+                # 飞牛NAS全自动安装（dd方式）
+                echo -e "${GREEN}=== 飞牛NAS全自动安装 ===${RESET}"
+
+                # 定义配置
+                ISO_URL="https://iso.liveupdate.fnnas.com/x86_64/trim/TRIM-0.8.39-685.iso"
+                ISO_NAME="fn-nas.iso"
+
+                # 检查依赖
+                if ! command -v isohybrid >/dev/null; then
+                    echo -e "${YELLOW}正在安装依赖工具...${RESET}"
+                    if [ "$SYSTEM" == "ubuntu" ] || [ "$SYSTEM" == "debian" ]; then
+                        sudo apt-get install -y syslinux-utils
+                    elif [ "$SYSTEM" == "centos" ]; then
+                        sudo yum install -y syslinux
+                    else
+                        echo -e "${RED}不支持的系统类型！${RESET}"
+                        read -p "按回车键返回上一级..."
+                        continue
+                    fi
+                fi
+
+                # 下载镜像
+                if [ ! -f "$ISO_NAME" ]; then
+                    echo -e "${YELLOW}正在下载飞牛NAS镜像...${RESET}"
+                    wget -q --show-progress -O "$ISO_NAME" "$ISO_URL" || {
+                        echo -e "${RED}下载失败！请检查网络或镜像地址。${RESET}"
+                        read -p "按回车键返回上一级..."
+                        continue
+                    }
+                fi
+
+                # 转换混合镜像
+                echo -e "${YELLOW}正在转换ISO为可启动镜像...${RESET}"
+                isohybrid "$ISO_NAME" || {
+                    echo -e "${RED}镜像转换失败！${RESET}"
+                    read -p "按回车键返回上一级..."
+                    continue
+                }
+
+                # 选择目标磁盘
+                echo -e "${YELLOW}可用磁盘列表：${RESET}"
+                lsblk -d -o NAME,SIZE,MODEL | grep -v "loop"
+                while true; do
+                    read -p "请输入目标磁盘设备（例如 /dev/sdX）： " target_disk
+                    if [ -b "$target_disk" ]; then
+                        break
+                    else
+                        echo -e "${RED}错误：设备 $target_disk 不存在！${RESET}"
+                    fi
+                done
+
+                # 安全确认
+                echo -e "${RED}警告：这将永久擦除磁盘 $target_disk 上的所有数据！${RESET}"
+                read -p "确认继续？(输入大写 YES 继续): " confirm
+                if [ "$confirm" != "YES" ]; then
+                    echo -e "${YELLOW}安装已取消。${RESET}"
+                    read -p "按回车键返回上一级..."
+                    continue
+                fi
+
+                # 写入镜像
+                echo -e "${YELLOW}正在写入镜像到 $target_disk ...${RESET}"
+                sudo dd if="$ISO_NAME" of="$target_disk" bs=4M status=progress && sync
+                if [ $? -ne 0 ]; then
+                    echo -e "${RED}镜像写入失败！请检查磁盘状态。${RESET}"
+                    read -p "按回车键返回上一级..."
+                    continue
+                fi
+
+                # 完成提示
+                SERVER_IP=$(get_server_ip)
+                echo -e "${GREEN}飞牛NAS安装完成！${RESET}"
+                echo -e "${YELLOW}请重启并从 $target_disk 启动，访问 http://$SERVER_ip 进行初始化。${RESET}"
+                read -p "按回车键返回上一级..."
+                ;;
 
                 0)
                     break  # 返回主菜单
