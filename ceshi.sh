@@ -261,7 +261,6 @@ show_menu() {
                 read -p "按回车键返回主菜单..."
                 ;;
             5)
-            5)
                 # 面板管理子菜单
                 panel_management() {
                     while true; do
