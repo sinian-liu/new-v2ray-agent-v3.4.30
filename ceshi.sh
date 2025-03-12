@@ -279,6 +279,7 @@ show_menu() {
             echo "11) 卸载飞牛系统（Docker 方式）"
             echo "12) 卸载飞牛系统（直接安装）"
             echo "13) 一键卸载所有面板"
+            echo "13) 飞牛NAS全自动安装（dd方式）"
             echo "0) 返回主菜单"
             read -p "请输入选项：" panel_choice
 
