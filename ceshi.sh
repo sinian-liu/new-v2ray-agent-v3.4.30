@@ -271,15 +271,10 @@ show_menu() {
             echo "3) 安装宝塔国际版"
             echo "4) 安装宝塔国内版"
             echo "5) 安装青龙面板"
-            echo "6) 安装飞牛系统（Docker 方式）"
-            echo "7) 安装飞牛系统（直接安装）"
-            echo "8) 卸载1Panel面板"
-            echo "9) 卸载宝塔面板（纯净版/国际版/国内版）"
-            echo "10) 卸载青龙面板"
-            echo "11) 卸载飞牛系统（Docker 方式）"
-            echo "12) 卸载飞牛系统（直接安装）"
-            echo "13) 一键卸载所有面板"
-            echo "13) 飞牛NAS全自动安装（dd方式）"
+            echo "6) 卸载1Panel面板"
+            echo "7) 卸载宝塔面板（纯净版/国际版/国内版）"
+            echo "8) 卸载青龙面板"
+            echo "9) 一键卸载所有面板"
             echo "0) 返回主菜单"
             read -p "请输入选项：" panel_choice
 
@@ -473,125 +468,6 @@ EOF
                     ;;
 
                 6)
-                    # 安装飞牛系统（Docker 方式）
-                    echo -e "${GREEN}正在安装飞牛系统（Docker 方式）...${RESET}"
-                    PORT=$(input_port 8080)
-
-                    # 检查 Docker 是否安装
-                    if ! command -v docker > /dev/null 2>&1; then
-                        echo -e "${YELLOW}正在安装 Docker...${RESET}"
-                        curl -fsSL https://get.docker.com | sh
-                        systemctl start docker
-                        systemctl enable docker
-                    fi
-
-                    # 检查 Docker Compose 是否安装
-                    if ! command -v docker-compose > /dev/null 2>&1; then
-                        echo -e "${YELLOW}正在安装 Docker Compose...${RESET}"
-                        curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-                        chmod +x /usr/local/bin/docker-compose
-                    fi
-
-                    # 创建目录和配置 docker-compose.yml
-                    mkdir -p /home/feiniu && cd /home/feiniu
-                    cat > docker-compose.yml <<EOF
-version: '3'
-services:
-  feiniu:
-    image: feiniu/feiniu:latest
-    container_name: feiniu
-    restart: unless-stopped
-    ports:
-      - "$PORT:80"
-    volumes:
-      - ./data:/app/data
-EOF
-                    docker-compose up -d
-                    allow_firewall_port "$PORT"
-                    SERVER_IP=$(get_server_ip)
-                    echo -e "${GREEN}飞牛系统（Docker 方式）安装完成！${RESET}"
-                    echo -e "${YELLOW}访问 http://$SERVER_IP:$PORT 进行初始化设置${RESET}"
-                    read -p "按回车键返回上一级..."
-                    ;;
-
-                7)
-                # 飞牛NAS全自动安装（dd方式）原选项14内容
-                echo -e "${GREEN}=== 飞牛NAS全自动安装 ===${RESET}"
-
-                # 定义配置
-                ISO_URL="https://iso.liveupdate.fnnas.com/x86_64/trim/TRIM-0.8.39-685.iso"
-                ISO_NAME="fn-nas.iso"
-
-                # 检查依赖
-                if ! command -v isohybrid >/dev/null; then
-                    echo -e "${YELLOW}正在安装依赖工具...${RESET}"
-                    if [ "$SYSTEM" == "ubuntu" ] || [ "$SYSTEM" == "debian" ]; then
-                        sudo apt-get install -y syslinux-utils
-                    elif [ "$SYSTEM" == "centos" ]; then
-                        sudo yum install -y syslinux
-                    else
-                        echo -e "${RED}不支持的系统类型！${RESET}"
-                        read -p "按回车键返回上一级..."
-                        continue
-                    fi
-                fi
-
-                # 下载镜像
-                if [ ! -f "$ISO_NAME" ]; then
-                    echo -e "${YELLOW}正在下载飞牛NAS镜像...${RESET}"
-                    wget -q --show-progress -O "$ISO_NAME" "$ISO_URL" || {
-                        echo -e "${RED}下载失败！请检查网络或镜像地址。${RESET}"
-                        read -p "按回车键返回上一级..."
-                        continue
-                    }
-                fi
-
-                # 转换混合镜像
-                echo -e "${YELLOW}正在转换ISO为可启动镜像...${RESET}"
-                isohybrid "$ISO_NAME" || {
-                    echo -e "${RED}镜像转换失败！${RESET}"
-                    read -p "按回车键返回上一级..."
-                    continue
-                }
-
-                # 选择目标磁盘
-                echo -e "${YELLOW}可用磁盘列表：${RESET}"
-                lsblk -d -o NAME,SIZE,MODEL | grep -v "loop"
-                while true; do
-                    read -p "请输入目标磁盘设备（例如 /dev/sdX）： " target_disk
-                    if [ -b "$target_disk" ]; then
-                        break
-                    else
-                        echo -e "${RED}错误：设备 $target_disk 不存在！${RESET}"
-                    fi
-                done
-
-                # 安全确认
-                echo -e "${RED}警告：这将永久擦除磁盘 $target_disk 上的所有数据！${RESET}"
-                read -p "确认继续？(输入大写 YES 继续): " confirm
-                if [ "$confirm" != "YES" ]; then
-                    echo -e "${YELLOW}安装已取消。${RESET}"
-                    read -p "按回车键返回上一级..."
-                    continue
-                fi
-
-                # 写入镜像
-                echo -e "${YELLOW}正在写入镜像到 $target_disk ...${RESET}"
-                sudo dd if="$ISO_NAME" of="$target_disk" bs=4M status=progress && sync
-                if [ $? -ne 0 ]; then
-                    echo -e "${RED}镜像写入失败！请检查磁盘状态。${RESET}"
-                    read -p "按回车键返回上一级..."
-                    continue
-                fi
-
-                # 完成提示
-                SERVER_IP=$(get_server_ip)
-                echo -e "${GREEN}飞牛NAS安装完成！${RESET}"
-                echo -e "${YELLOW}请重启并从 $target_disk 启动，访问 http://$SERVER_IP 进行初始化。${RESET}"
-                read -p "按回车键返回上一级..."
-                ;;
-
-                8)
                     # 卸载1Panel面板
                     echo -e "${GREEN}正在卸载1Panel面板...${RESET}"
                     if command -v 1pctl > /dev/null 2>&1; then
@@ -603,7 +479,7 @@ EOF
                     read -p "按回车键返回上一级..."
                     ;;
 
-                9)
+                7)
                     # 卸载宝塔面板
                     echo -e "${GREEN}正在卸载宝塔面板...${RESET}"
                     if [ -f /usr/bin/bt ] || [ -f /usr/bin/aapanel ]; then
@@ -620,7 +496,7 @@ EOF
                     read -p "按回车键返回上一级..."
                     ;;
 
-                10)
+                8)
                     # 卸载青龙面板
                     echo -e "${GREEN}正在卸载青龙面板...${RESET}"
                     if docker ps -a | grep -q "qinglong"; then
@@ -634,48 +510,7 @@ EOF
                     read -p "按回车键返回上一级..."
                     ;;
 
-                11)
-                    # 卸载飞牛系统（Docker 方式）
-                    echo -e "${GREEN}正在卸载飞牛系统（Docker 方式）...${RESET}"
-                    if docker ps -a | grep -q "feiniu"; then
-                        cd /home/feiniu
-                        docker-compose down -v
-                        rm -rf /home/feiniu
-                        echo -e "${YELLOW}飞牛系统（Docker 方式）已卸载${RESET}"
-                    else
-                        echo -e "${RED}未检测到飞牛系统安装！${RESET}"
-                    fi
-                    read -p "按回车键返回上一级..."
-                    ;;
-
-                12)
-                    # 卸载飞牛系统（直接安装）
-                    echo -e "${GREEN}正在卸载飞牛系统（直接安装）...${RESET}"
-
-                    # 停止飞牛系统进程
-                    echo -e "${YELLOW}正在停止飞牛系统进程...${RESET}"
-                    pkill -f "python manage.py runserver"
-
-                    # 删除飞牛系统目录
-                    FEINIU_DIR="/home/feiniu"
-                    if [ -d "$FEINIU_DIR" ]; then
-                        echo -e "${YELLOW}正在删除飞牛系统目录...${RESET}"
-                        rm -rf "$FEINIU_DIR"
-                    else
-                        echo -e "${RED}未检测到飞牛系统安装！${RESET}"
-                    fi
-
-                    # 删除 Nginx 配置
-                    echo -e "${YELLOW}正在删除 Nginx 配置...${RESET}"
-                    sudo rm -f /etc/nginx/sites-available/feiniu
-                    sudo rm -f /etc/nginx/sites-enabled/feiniu
-                    sudo nginx -t && sudo systemctl restart nginx
-
-                    echo -e "${YELLOW}飞牛系统（直接安装）已卸载${RESET}"
-                    read -p "按回车键返回上一级..."
-                    ;;
-
-                13)
+                9)
                     # 一键卸载所有面板
                     echo -e "${GREEN}正在卸载所有面板...${RESET}"
                     # 卸载1Panel
@@ -706,27 +541,6 @@ EOF
                     else
                         echo -e "${RED}未检测到青龙面板安装！${RESET}"
                     fi
-                    # 卸载飞牛（Docker 方式）
-                    if docker ps -a | grep -q "feiniu"; then
-                        cd /home/feiniu
-                        docker-compose down -v
-                        rm -rf /home/feiniu
-                        echo -e "${YELLOW}飞牛系统（Docker 方式）已卸载${RESET}"
-                    else
-                        echo -e "${RED}未检测到飞牛系统安装！${RESET}"
-                    fi
-                    # 卸载飞牛（直接安装）
-                    FEINIU_DIR="/home/feiniu"
-                    if [ -d "$FEINIU_DIR" ]; then
-                        pkill -f "python manage.py runserver"
-                        rm -rf "$FEINIU_DIR"
-                        sudo rm -f /etc/nginx/sites-available/feiniu
-                        sudo rm -f /etc/nginx/sites-enabled/feiniu
-                        sudo nginx -t && sudo systemctl restart nginx
-                        echo -e "${YELLOW}飞牛系统（直接安装）已卸载${RESET}"
-                    else
-                        echo -e "${RED}未检测到飞牛系统安装！${RESET}"
-                    fi
                     read -p "按回车键返回上一级..."
                     ;;
 
@@ -745,7 +559,6 @@ EOF
     # 进入面板管理子菜单
     panel_management
     ;;
-
             6)
                 # 系统更新命令
                 echo -e "${GREEN}正在更新系统...${RESET}"
