@@ -262,188 +262,120 @@ show_menu() {
                 ;;
             5)
                 # 面板管理
-                panel_management
+                while true; do
+                    echo -e "\033[32m=============================================\033[0m"
+                    echo -e "\033[32m面板管理\033[0m"
+                    echo -e "\033[32m=============================================\033[0m"
+                    echo "请选择要执行的操作："
+                    echo -e "\033[33m1. 安装宝塔面板\033[0m"
+                    echo -e "\033[33m2. 安装1Panel\033[0m"
+                    echo -e "\033[33m3. 卸载面板\033[0m"
+                    echo -e "\033[33m4. 返回主菜单\033[0m"
+                    read -p "请输入选项 (输入 'q' 退出): " panel_option
+
+                    if [ "$panel_option" = "q" ]; then
+                        echo -e "\033[32m退出面板管理，感谢使用！\033[0m"
+                        break
+                    fi
+
+                    case $panel_option in
+                        1)
+                            # 安装宝塔面板
+                            echo -e "\033[32m正在安装宝塔面板...\033[0m"
+                            check_system
+                            if [ "$SYSTEM" == "ubuntu" ] || [ "$SYSTEM" == "debian" ]; then
+                                if [ -f /usr/bin/curl ]; then
+                                    curl -sSO https://download.bt.cn/install/install_panel.sh
+                                else
+                                    wget -O install_panel.sh https://download.bt.cn/install/install_panel.sh
+                                fi
+                                if [ $? -eq 0 ]; then
+                                    bash install_panel.sh ed8484bec
+                                    rm -f install_panel.sh
+                                else
+                                    echo -e "\033[31m下载宝塔安装脚本失败，请检查网络！\033[0m"
+                                fi
+                            elif [ "$SYSTEM" == "centos" ]; then
+                                yum install -y wget
+                                if [ $? -eq 0 ]; then
+                                    if [ -f /usr/bin/curl ]; then
+                                        curl -sSO https://download.bt.cn/install/install_panel.sh
+                                    else
+                                        wget -O install_panel.sh https://download.bt.cn/install/install_panel.sh
+                                    fi
+                                    if [ $? -eq 0 ]; then
+                                        bash install_panel.sh ed8484bec
+                                        rm -f install_panel.sh
+                                    else
+                                        echo -e "\033[31m下载宝塔安装脚本失败，请检查网络！\033[0m"
+                                    fi
+                                else
+                                    echo -e "\033[31mwget 安装失败，无法下载宝塔脚本！\033[0m"
+                                fi
+                            else
+                                echo -e "\033[31m无法识别您的操作系统，无法安装宝塔面板。\033[0m"
+                            fi
+                            read -p "按回车键返回面板管理菜单..."
+                            ;;
+                        2)
+                            # 安装1Panel
+                            echo -e "\033[32m正在安装1Panel...\033[0m"
+                            check_system
+                            if [ "$SYSTEM" == "ubuntu" ]; then
+                                curl -sSL https://resource.fit2cloud.com/1panel/package/quick_start.sh -o /tmp/quick_start.sh && sudo bash /tmp/quick_start.sh
+                            elif [ "$SYSTEM" == "debian" ]; then
+                                curl -sSL https://resource.fit2cloud.com/1panel/package/quick_start.sh -o /tmp/quick_start.sh && bash /tmp/quick_start.sh
+                            elif [ "$SYSTEM" == "centos" ]; then
+                                curl -sSL https://resource.fit2cloud.com/1panel/package/quick_start.sh -o /tmp/quick_start.sh && sh /tmp/quick_start.sh
+                            else
+                                echo -e "\033[31m无法识别您的操作系统，无法安装1Panel。\033[0m"
+                            fi
+                            rm -f /tmp/quick_start.sh
+                            read -p "按回车键返回面板管理菜单..."
+                            ;;
+                        3)
+                            # 卸载面板
+                            echo -e "\033[32m正在卸载面板...\033[0m"
+                            echo -e "\033[33m请选择要卸载的面板：\033[0m"
+                            echo "1) 宝塔面板"
+                            echo "2) 1Panel"
+                            read -p "请输入选项 (1 或 2): " uninstall_choice
+
+                            case $uninstall_choice in
+                                1)
+                                    # 卸载宝塔面板
+                                    if [ -f /www/server/panel/uninstall.sh ]; then
+                                        bash /www/server/panel/uninstall.sh
+                                        echo -e "\033[32m宝塔面板卸载完成！\033[0m"
+                                    else
+                                        echo -e "\033[31m未找到宝塔面板卸载脚本，可能未安装或已手动删除！\033[0m"
+                                    fi
+                                    ;;
+                                2)
+                                    # 卸载1Panel
+                                    if command -v 1pctl &> /dev/null; then
+                                        1pctl uninstall
+                                        echo -e "\033[32m1Panel卸载完成！\033[0m"
+                                    else
+                                        echo -e "\033[31m未找到1Panel卸载命令，可能未安装或已手动删除！\033[0m"
+                                    fi
+                                    ;;
+                                *)
+                                    echo -e "\033[31m无效选项，请输入 1 或 2！\033[0m"
+                                    ;;
+                            esac
+                            read -p "按回车键返回面板管理菜单..."
+                            ;;
+                        4)
+                            # 返回主菜单
+                            break
+                            ;;
+                        *)
+                            echo -e "\033[31m无效选项，请输入 1、2、3 或 4！\033[0m"
+                            ;;
+                    esac
+                done
                 ;;
-                #!/bin/bash
-
-# 设置颜色
-GREEN="\033[32m"
-RED="\033[31m"
-YELLOW="\033[33m"
-RESET="\033[0m"
-
-# 系统检测函数
-check_system() {
-    if [ -f /etc/os-release ]; then
-        . /etc/os-release
-        case $ID in
-            ubuntu)
-                SYSTEM="ubuntu"
-                ;;
-            debian)
-                SYSTEM="debian"
-                ;;
-            centos|rhel)
-                SYSTEM="centos"
-                ;;
-            fedora)
-                SYSTEM="fedora"
-                ;;
-            *)
-                SYSTEM="unknown"
-                ;;
-        esac
-    elif [ -f /etc/lsb-release ]; then
-        SYSTEM="ubuntu"
-    elif [ -f /etc/redhat-release ]; then
-        SYSTEM="centos"
-    elif [ -f /etc/fedora-release ]; then
-        SYSTEM="fedora"
-    else
-        SYSTEM="unknown"
-    fi
-}
-
-# 安装宝塔纯净版
-install_bt_pure() {
-    echo -e "${GREEN}正在安装宝塔纯净版...${RESET}"
-    check_system
-    if [ "$SYSTEM" == "ubuntu" ] || [ "$SYSTEM" == "debian" ]; then
-        wget -O /tmp/install.sh https://install.baota.sbs/install/install_6.0.sh
-        if [ $? -eq 0 ]; then
-            bash /tmp/install.sh
-            rm -f /tmp/install.sh
-        else
-            echo -e "${RED}下载宝塔纯净版脚本失败，请检查网络！${RESET}"
-        fi
-    elif [ "$SYSTEM" == "centos" ] || [ "$SYSTEM" == "fedora" ]; then
-        yum install -y wget || dnf install -y wget
-        wget -O /tmp/install.sh https://install.baota.sbs/install/install_6.0.sh
-        if [ $? -eq 0 ]; then
-            sh /tmp/install.sh
-            rm -f /tmp/install.sh
-        else
-            echo -e "${RED}下载宝塔纯净版脚本失败，请检查网络！${RESET}"
-        fi
-    else
-        echo -e "${RED}不支持的系统，无法安装宝塔纯净版！${RESET}"
-    fi
-    read -p "安装完成，按回车键返回面板管理菜单..."
-}
-
-# 安装宝塔正常版
-install_bt_normal() {
-    echo -e "${GREEN}正在安装宝塔正常版...${RESET}"
-    if [ -f /usr/bin/curl ]; then
-        curl -sSO https://download.bt.cn/install/install_panel.sh
-    else
-        wget -O install_panel.sh https://download.bt.cn/install/install_panel.sh
-    fi
-    if [ $? -eq 0 ]; then
-        bash install_panel.sh ed8484bec
-        rm -f install_panel.sh
-    else
-        echo -e "${RED}下载宝塔正常版脚本失败，请检查网络！${RESET}"
-    fi
-    read -p "安装完成，按回车键返回面板管理菜单..."
-}
-
-# 安装宝塔国际版
-install_bt_international() {
-    echo -e "${GREEN}正在安装宝塔国际版...${RESET}"
-    check_system
-    if [ "$SYSTEM" == "ubuntu" ]; then
-        wget -O install.sh http://www.aapanel.com/script/install-ubuntu-en.sh && sudo bash install.sh
-    elif [ "$SYSTEM" == "debian" ] || [ "$SYSTEM" == "centos" ] || [ "$SYSTEM" == "fedora" ]; then
-        wget -O install.sh http://www.aapanel.com/script/install-en.sh && bash install.sh
-    else
-        echo -e "${RED}不支持的系统，无法安装宝塔国际版！${RESET}"
-    fi
-    rm -f install.sh
-    read -p "安装完成，按回车键返回面板管理菜单..."
-}
-
-# 安装1Panel
-install_1panel() {
-    echo -e "${GREEN}正在安装1Panel...${RESET}"
-    check_system
-    if [ "$SYSTEM" == "ubuntu" ] || [ "$SYSTEM" == "debian" ] || [ "$SYSTEM" == "centos" ]; then
-        curl -sSL https://resource.fit2cloud.com/1panel/package/quick_start.sh -o /tmp/quick_start.sh && bash /tmp/quick_start.sh
-    elif [ "$SYSTEM" == "fedora" ]; then
-        curl -sSL https://resource.fit2cloud.com/1panel/package/quick_start.sh -o /tmp/quick_start.sh && sh /tmp/quick_start.sh
-    else
-        echo -e "${RED}不支持的系统，无法安装1Panel！${RESET}"
-    fi
-    rm -f /tmp/quick_start.sh
-    read -p "安装完成，按回车键返回面板管理菜单..."
-}
-
-# 卸载面板
-uninstall_panel() {
-    echo -e "${GREEN}请选择要卸载的面板：${RESET}"
-    echo "1) 宝塔纯净版"
-    echo "2) 宝塔正常版"
-    echo "3) 宝塔国际版"
-    echo "4) 1Panel"
-    read -p "请输入选项 (1、2、3 或 4): " uninstall_choice
-
-    case $uninstall_choice in
-        1|2|3)
-            # 卸载宝塔面板（纯净版、正常版、国际版）
-            if [ -f /www/server/panel/uninstall.sh ]; then
-                bash /www/server/panel/uninstall.sh
-                echo -e "${GREEN}宝塔面板卸载完成！${RESET}"
-            else
-                echo -e "${RED}未找到宝塔卸载脚本，可能未安装！${RESET}"
-            fi
-            ;;
-        4)
-            # 卸载1Panel
-            if command -v 1pctl &> /dev/null; then
-                1pctl uninstall
-                echo -e "${GREEN}1Panel卸载完成！${RESET}"
-            else
-                echo -e "${RED}未找到1Panel卸载命令，可能未安装！${RESET}"
-            fi
-            ;;
-        *)
-            echo -e "${RED}无效选项，请输入 1、2、3 或 4！${RESET}"
-            ;;
-    esac
-    read -p "卸载完成，按回车键返回面板管理菜单..."
-}
-
-# 面板管理菜单
-panel_management() {
-    while true; do
-        echo -e "${GREEN}=============================================${RESET}"
-        echo -e "${GREEN}面板管理${RESET}"
-        echo -e "${GREEN}=============================================${RESET}"
-        echo "请选择操作："
-        echo -e "${YELLOW}1. 安装宝塔纯净版${RESET}"
-        echo -e "${YELLOW}2. 安装宝塔正常版${RESET}"
-        echo -e "${YELLOW}3. 安装宝塔国际版${RESET}"
-        echo -e "${YELLOW}4. 安装1Panel${RESET}"
-        echo -e "${YELLOW}5. 卸载面板${RESET}"
-        echo -e "${YELLOW}6. 返回主菜单${RESET}"
-        read -p "请输入选项 (输入 'q' 退出): " panel_option
-
-        if [ "$panel_option" = "q" ]; then
-            echo -e "${GREEN}退出面板管理，感谢使用！${RESET}"
-            break
-        fi
-
-        case $panel_option in
-            1) install_bt_pure ;;
-            2) install_bt_normal ;;
-            3) install_bt_international ;;
-            4) install_1panel ;;
-            5) uninstall_panel ;;
-            6) break ;;
-            *) echo -e "${RED}无效选项，请输入 1-6！${RESET}" ;;
-        esac
-    done
-}
                 
             6)
                 # 系统更新命令
