@@ -270,9 +270,11 @@ show_menu() {
             echo "2) 安装宝塔纯净版"
             echo "3) 安装宝塔国际版"
             echo "4) 安装宝塔国内版"
-            echo "5) 卸载1Panel面板"
-            echo "6) 卸载宝塔面板（纯净版/国际版/国内版）"
-            echo "7) 一键卸载所有面板"
+            echo "5) 安装青龙面板"
+            echo "6) 卸载1Panel面板"
+            echo "7) 卸载宝塔面板（纯净版/国际版/国内版）"
+            echo "8) 卸载青龙面板"
+            echo "9) 一键卸载所有面板"
             echo "0) 返回主菜单"
             read -p "请输入选项：" panel_choice
 
@@ -335,6 +337,108 @@ show_menu() {
                     ;;
 
                 5)
+                    # 安装青龙面板
+                    echo -e "${GREEN}正在安装青龙面板...${RESET}"
+
+                    # 检查 Docker 是否安装
+                    if ! command -v docker > /dev/null 2>&1; then
+                        echo -e "${YELLOW}正在安装 Docker...${RESET}"
+                        curl -fsSL https://get.docker.com | sh
+                        systemctl start docker
+                        systemctl enable docker
+                    fi
+
+                    # 检查 Docker Compose 是否安装
+                    if ! command -v docker-compose > /dev/null 2>&1; then
+                        echo -e "${YELLOW}正在安装 Docker Compose...${RESET}"
+                        curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+                        chmod +x /usr/local/bin/docker-compose
+                    fi
+
+                    # 端口选择
+                    DEFAULT_PORT=5700
+                    check_port() {
+                        local port=$1
+                        if netstat -tuln | grep ":$port" > /dev/null; then
+                            return 1  # 端口被占用
+                        else
+                            return 0  # 端口可用
+                        fi
+                    }
+
+                    check_port "$DEFAULT_PORT"
+                    if [ $? -eq 1 ]; then
+                        echo -e "${RED}端口 $DEFAULT_PORT 已被占用！${RESET}"
+                        read -p "是否更换端口？（y/n，默认 y）： " change_port
+                        if [ "$change_port" != "n" ] && [ "$change_port" != "N" ]; then
+                            while true; do
+                                read -p "请输入新的端口号（例如 5800）： " new_port
+                                while ! [[ "$new_port" =~ ^[0-9]+$ ]] || [ "$new_port" -lt 1 ] || [ "$new_port" -gt 65535 ]; do
+                                    echo -e "${RED}无效端口，请输入 1-65535 之间的数字！${RESET}"
+                                    read -p "请输入新的端口号（例如 5800）： " new_port
+                                done
+                                check_port "$new_port"
+                                if [ $? -eq 0 ]; then
+                                    DEFAULT_PORT=$new_port
+                                    break
+                                else
+                                    echo -e "${RED}端口 $new_port 已被占用，请选择其他端口！${RESET}"
+                                fi
+                            done
+                        else
+                            echo -e "${RED}端口 $DEFAULT_PORT 被占用，无法继续安装！${RESET}"
+                            read -p "按回车键返回上一级..."
+                            continue
+                        fi
+                    fi
+
+                    # 检查并放行防火墙端口
+                    if command -v ufw > /dev/null 2>&1; then
+                        ufw status | grep -q "Status: active"
+                        if [ $? -eq 0 ]; then
+                            echo -e "${YELLOW}检测到 UFW 防火墙正在运行...${RESET}"
+                            ufw status | grep -q "$DEFAULT_PORT"
+                            if [ $? -ne 0 ]; then
+                                echo -e "${YELLOW}正在放行端口 $DEFAULT_PORT...${RESET}"
+                                sudo ufw allow "$DEFAULT_PORT/tcp"
+                                sudo ufw reload
+                            fi
+                        fi
+                    elif command -v iptables > /dev/null 2>&1; then
+                        echo -e "${YELLOW}检测到 iptables 防火墙...${RESET}"
+                        iptables -C INPUT -p tcp --dport "$DEFAULT_PORT" -j ACCEPT 2>/dev/null
+                        if [ $? -ne 0 ]; then
+                            echo -e "${YELLOW}正在放行端口 $DEFAULT_PORT...${RESET}"
+                            sudo iptables -A INPUT -p tcp --dport "$DEFAULT_PORT" -j ACCEPT
+                            sudo iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
+                        fi
+                    fi
+
+                    # 创建目录和配置 docker-compose.yml
+                    mkdir -p /home/qinglong && cd /home/qinglong
+                    cat > docker-compose.yml <<EOF
+version: '3'
+services:
+  qinglong:
+    image: whyour/qinglong:latest
+    container_name: qinglong
+    restart: unless-stopped
+    ports:
+      - "$DEFAULT_PORT:5700"
+    volumes:
+      - ./config:/ql/config
+      - ./log:/ql/log
+      - ./db:/ql/db
+      - ./scripts:/ql/scripts
+      - ./jbot:/ql/jbot
+EOF
+                    docker-compose up -d
+                    echo -e "${GREEN}青龙面板安装完成！${RESET}"
+                    echo -e "${YELLOW}访问 http://<服务器IP>:$DEFAULT_PORT 进行初始化设置${RESET}"
+                    read -p "按回车键返回上一级..."
+                    ;;
+
+                6)
                     # 卸载1Panel面板
                     echo -e "${GREEN}正在卸载1Panel面板...${RESET}"
                     if command -v 1pctl > /dev/null 2>&1; then
@@ -346,7 +450,7 @@ show_menu() {
                     read -p "按回车键返回上一级..."
                     ;;
 
-                6)
+                7)
                     # 卸载宝塔面板
                     echo -e "${GREEN}正在卸载宝塔面板...${RESET}"
                     if [ -f /usr/bin/bt ] || [ -f /usr/bin/aapanel ]; then
@@ -363,7 +467,21 @@ show_menu() {
                     read -p "按回车键返回上一级..."
                     ;;
 
-                7)
+                8)
+                    # 卸载青龙面板
+                    echo -e "${GREEN}正在卸载青龙面板...${RESET}"
+                    if docker ps -a | grep -q "qinglong"; then
+                        cd /home/qinglong
+                        docker-compose down -v
+                        rm -rf /home/qinglong
+                        echo -e "${YELLOW}青龙面板已卸载${RESET}"
+                    else
+                        echo -e "${RED}未检测到青龙面板安装！${RESET}"
+                    fi
+                    read -p "按回车键返回上一级..."
+                    ;;
+
+                9)
                     # 一键卸载所有面板
                     echo -e "${GREEN}正在卸载所有面板...${RESET}"
                     # 卸载1Panel
@@ -384,6 +502,15 @@ show_menu() {
                         echo -e "${YELLOW}宝塔面板已卸载${RESET}"
                     else
                         echo -e "${RED}未检测到宝塔面板安装！${RESET}"
+                    fi
+                    # 卸载青龙
+                    if docker ps -a | grep -q "qinglong"; then
+                        cd /home/qinglong
+                        docker-compose down -v
+                        rm -rf /home/qinglong
+                        echo -e "${YELLOW}青龙面板已卸载${RESET}"
+                    else
+                        echo -e "${RED}未检测到青龙面板安装！${RESET}"
                     fi
                     read -p "按回车键返回上一级..."
                     ;;
