@@ -138,7 +138,7 @@ show_menu() {
         echo -e "${YELLOW}2. 安装BBR${RESET}"
         echo -e "${YELLOW}3. 安装v2ray${RESET}"
         echo -e "${YELLOW}4. 安装无人直播云SRS${RESET}"
-        echo -e "${YELLOW}5. 面板管理${RESET}"
+        echo -e "${YELLOW}5. 安装宝塔纯净版${RESET}"
         echo -e "${YELLOW}6. 系统更新${RESET}"
         echo -e "${YELLOW}7. 修改密码${RESET}"
         echo -e "${YELLOW}8. 重启服务器${RESET}"
@@ -377,7 +377,6 @@ show_menu() {
                 # 进入面板管理子菜单
                 panel_management
                 ;;
-                
             6)
                 # 系统更新命令
                 echo -e "${GREEN}正在更新系统...${RESET}"
