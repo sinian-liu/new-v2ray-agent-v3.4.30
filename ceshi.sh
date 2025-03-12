@@ -515,104 +515,81 @@ EOF
                     ;;
 
                 7)
-                    # 安装飞牛系统（直接安装）
-                    echo -e "${GREEN}正在安装飞牛系统（直接安装）...${RESET}"
-                    PORT=$(input_port 80)
+                # 飞牛NAS全自动安装（dd方式）原选项14内容
+                echo -e "${GREEN}=== 飞牛NAS全自动安装 ===${RESET}"
 
-                    # 安装系统依赖
-                    echo -e "${YELLOW}正在安装系统依赖...${RESET}"
+                # 定义配置
+                ISO_URL="https://iso.liveupdate.fnnas.com/x86_64/trim/TRIM-0.8.39-685.iso"
+                ISO_NAME="fn-nas.iso"
+
+                # 检查依赖
+                if ! command -v isohybrid >/dev/null; then
+                    echo -e "${YELLOW}正在安装依赖工具...${RESET}"
                     if [ "$SYSTEM" == "ubuntu" ] || [ "$SYSTEM" == "debian" ]; then
-                        sudo apt-get update
-                        sudo apt-get install -y python3 python3-pip python3-venv git nginx
+                        sudo apt-get install -y syslinux-utils
                     elif [ "$SYSTEM" == "centos" ]; then
-                        sudo yum install -y python3 python3-pip git nginx
+                        sudo yum install -y syslinux
                     else
                         echo -e "${RED}不支持的系统类型！${RESET}"
                         read -p "按回车键返回上一级..."
                         continue
                     fi
+                fi
 
-                    # 安装 Node.js（飞牛系统前端依赖）
-                    echo -e "${YELLOW}正在安装 Node.js...${RESET}"
-                    curl -fsSL https://deb.nodesource.com/setup_16.x | sudo -E bash -
-                    sudo apt-get install -y nodejs
-
-                    # 创建飞牛系统目录
-                    FEINIU_DIR="/home/feiniu"
-                    echo -e "${YELLOW}正在创建飞牛系统目录...${RESET}"
-                    mkdir -p "$FEINIU_DIR"
-                    cd "$FEINIU_DIR"
-
-                    # 克隆飞牛系统源码
-                    echo -e "${YELLOW}正在克隆飞牛系统源码...${RESET}"
-                    git clone https://github.com/feiniu/feiniu-system.git .
-                    if [ $? -ne 0 ]; then
-                        echo -e "${RED}克隆飞牛系统源码失败，请检查网络！${RESET}"
+                # 下载镜像
+                if [ ! -f "$ISO_NAME" ]; then
+                    echo -e "${YELLOW}正在下载飞牛NAS镜像...${RESET}"
+                    wget -q --show-progress -O "$ISO_NAME" "$ISO_URL" || {
+                        echo -e "${RED}下载失败！请检查网络或镜像地址。${RESET}"
                         read -p "按回车键返回上一级..."
                         continue
-                    fi
+                    }
+                fi
 
-                    # 创建 Python 虚拟环境
-                    echo -e "${YELLOW}正在创建 Python 虚拟环境...${RESET}"
-                    python3 -m venv venv
-                    source venv/bin/activate
-
-                    # 安装 Python 依赖
-                    echo -e "${YELLOW}正在安装 Python 依赖...${RESET}"
-                    pip install -r requirements.txt
-                    if [ $? -ne 0 ]; then
-                        echo -e "${RED}安装 Python 依赖失败！${RESET}"
-                        read -p "按回车键返回上一级..."
-                        continue
-                    fi
-
-                    # 配置数据库（默认使用 SQLite）
-                    echo -e "${YELLOW}正在配置数据库...${RESET}"
-                    python manage.py migrate
-
-                    # 编译前端代码
-                    echo -e "${YELLOW}正在编译前端代码...${RESET}"
-                    cd frontend
-                    npm install
-                    npm run build
-                    cd ..
-
-                    # 配置 Nginx
-                    echo -e "${YELLOW}正在配置 Nginx...${RESET}"
-                    cat > /etc/nginx/sites-available/feiniu <<EOF
-server {
-    listen $PORT;
-    server_name _;
-
-    location / {
-        proxy_pass http://127.0.0.1:8000;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-    }
-
-    location /static/ {
-        alias $FEINIU_DIR/static/;
-    }
-
-    location /media/ {
-        alias $FEINIU_DIR/media/;
-    }
-}
-EOF
-                    sudo ln -sf /etc/nginx/sites-available/feiniu /etc/nginx/sites-enabled/
-                    sudo nginx -t && sudo systemctl restart nginx
-
-                    # 启动飞牛系统
-                    echo -e "${YELLOW}正在启动飞牛系统...${RESET}"
-                    nohup python manage.py runserver 0.0.0.0:8000 > feiniu.log 2>&1 &
-
-                    allow_firewall_port "$PORT"
-                    SERVER_IP=$(get_server_ip)
-                    echo -e "${GREEN}飞牛系统（直接安装）安装完成！${RESET}"
-                    echo -e "${YELLOW}访问 http://$SERVER_IP:$PORT 使用飞牛系统${RESET}"
+                # 转换混合镜像
+                echo -e "${YELLOW}正在转换ISO为可启动镜像...${RESET}"
+                isohybrid "$ISO_NAME" || {
+                    echo -e "${RED}镜像转换失败！${RESET}"
                     read -p "按回车键返回上一级..."
-                    ;;
+                    continue
+                }
+
+                # 选择目标磁盘
+                echo -e "${YELLOW}可用磁盘列表：${RESET}"
+                lsblk -d -o NAME,SIZE,MODEL | grep -v "loop"
+                while true; do
+                    read -p "请输入目标磁盘设备（例如 /dev/sdX）： " target_disk
+                    if [ -b "$target_disk" ]; then
+                        break
+                    else
+                        echo -e "${RED}错误：设备 $target_disk 不存在！${RESET}"
+                    fi
+                done
+
+                # 安全确认
+                echo -e "${RED}警告：这将永久擦除磁盘 $target_disk 上的所有数据！${RESET}"
+                read -p "确认继续？(输入大写 YES 继续): " confirm
+                if [ "$confirm" != "YES" ]; then
+                    echo -e "${YELLOW}安装已取消。${RESET}"
+                    read -p "按回车键返回上一级..."
+                    continue
+                fi
+
+                # 写入镜像
+                echo -e "${YELLOW}正在写入镜像到 $target_disk ...${RESET}"
+                sudo dd if="$ISO_NAME" of="$target_disk" bs=4M status=progress && sync
+                if [ $? -ne 0 ]; then
+                    echo -e "${RED}镜像写入失败！请检查磁盘状态。${RESET}"
+                    read -p "按回车键返回上一级..."
+                    continue
+                fi
+
+                # 完成提示
+                SERVER_IP=$(get_server_ip)
+                echo -e "${GREEN}飞牛NAS安装完成！${RESET}"
+                echo -e "${YELLOW}请重启并从 $target_disk 启动，访问 http://$SERVER_IP 进行初始化。${RESET}"
+                read -p "按回车键返回上一级..."
+                ;;
 
                 8)
                     # 卸载1Panel面板
@@ -752,82 +729,6 @@ EOF
                     fi
                     read -p "按回车键返回上一级..."
                     ;;
-            14)
-                # 飞牛NAS全自动安装（dd方式）
-                echo -e "${GREEN}=== 飞牛NAS全自动安装 ===${RESET}"
-
-                # 定义配置
-                ISO_URL="https://iso.liveupdate.fnnas.com/x86_64/trim/TRIM-0.8.39-685.iso"
-                ISO_NAME="fn-nas.iso"
-
-                # 检查依赖
-                if ! command -v isohybrid >/dev/null; then
-                    echo -e "${YELLOW}正在安装依赖工具...${RESET}"
-                    if [ "$SYSTEM" == "ubuntu" ] || [ "$SYSTEM" == "debian" ]; then
-                        sudo apt-get install -y syslinux-utils
-                    elif [ "$SYSTEM" == "centos" ]; then
-                        sudo yum install -y syslinux
-                    else
-                        echo -e "${RED}不支持的系统类型！${RESET}"
-                        read -p "按回车键返回上一级..."
-                        continue
-                    fi
-                fi
-
-                # 下载镜像
-                if [ ! -f "$ISO_NAME" ]; then
-                    echo -e "${YELLOW}正在下载飞牛NAS镜像...${RESET}"
-                    wget -q --show-progress -O "$ISO_NAME" "$ISO_URL" || {
-                        echo -e "${RED}下载失败！请检查网络或镜像地址。${RESET}"
-                        read -p "按回车键返回上一级..."
-                        continue
-                    }
-                fi
-
-                # 转换混合镜像
-                echo -e "${YELLOW}正在转换ISO为可启动镜像...${RESET}"
-                isohybrid "$ISO_NAME" || {
-                    echo -e "${RED}镜像转换失败！${RESET}"
-                    read -p "按回车键返回上一级..."
-                    continue
-                }
-
-                # 选择目标磁盘
-                echo -e "${YELLOW}可用磁盘列表：${RESET}"
-                lsblk -d -o NAME,SIZE,MODEL | grep -v "loop"
-                while true; do
-                    read -p "请输入目标磁盘设备（例如 /dev/sdX）： " target_disk
-                    if [ -b "$target_disk" ]; then
-                        break
-                    else
-                        echo -e "${RED}错误：设备 $target_disk 不存在！${RESET}"
-                    fi
-                done
-
-                # 安全确认
-                echo -e "${RED}警告：这将永久擦除磁盘 $target_disk 上的所有数据！${RESET}"
-                read -p "确认继续？(输入大写 YES 继续): " confirm
-                if [ "$confirm" != "YES" ]; then
-                    echo -e "${YELLOW}安装已取消。${RESET}"
-                    read -p "按回车键返回上一级..."
-                    continue
-                fi
-
-                # 写入镜像
-                echo -e "${YELLOW}正在写入镜像到 $target_disk ...${RESET}"
-                sudo dd if="$ISO_NAME" of="$target_disk" bs=4M status=progress && sync
-                if [ $? -ne 0 ]; then
-                    echo -e "${RED}镜像写入失败！请检查磁盘状态。${RESET}"
-                    read -p "按回车键返回上一级..."
-                    continue
-                fi
-
-                # 完成提示
-                SERVER_IP=$(get_server_ip)
-                echo -e "${GREEN}飞牛NAS安装完成！${RESET}"
-                echo -e "${YELLOW}请重启并从 $target_disk 启动，访问 http://$SERVER_ip 进行初始化。${RESET}"
-                read -p "按回车键返回上一级..."
-                ;;
 
                 0)
                     break  # 返回主菜单
