@@ -312,12 +312,13 @@ show_menu() {
                 3)
                     # 安装宝塔国际版
                     echo -e "${GREEN}正在安装宝塔国际版...${RESET}"
-                    check_system
-                    if [ "$SYSTEM" == "ubuntu" ]; then
-                        wget -O install.sh http://www.aapanel.com/script/install-ubuntu-en.sh && sudo bash install.sh
+                    URL="https://www.aapanel.com/script/install_7.0_en.sh"
+                    if [ -f /usr/bin/curl ]; then
+                        curl -ksSO "$URL"
                     else
-                        wget -O install.sh http://www.aapanel.com/script/install-en.sh && bash install.sh
+                        wget --no-check-certificate -O install_7.0_en.sh "$URL"
                     fi
+                    bash install_7.0_en.sh aapanel
                     read -p "安装完成，按回车键返回上一级..."
                     ;;
 
@@ -402,6 +403,7 @@ show_menu() {
     # 进入面板管理子菜单
     panel_management
     ;;
+
             6)
                 # 系统更新命令
                 echo -e "${GREEN}正在更新系统...${RESET}"
