@@ -1063,7 +1063,8 @@ EOF
         echo "4) 启动 Docker 容器"
         echo "5) 停止 Docker 容器"
         echo "6) 查看已安装镜像"
-        echo "7) 删除 Docker 镜像"
+        echo "7) 删除 Docker 容器"
+        echo "8) 删除 Docker 镜像"
         echo "0) 返回主菜单"
         read -p "请输入选项：" docker_choice
 
@@ -1268,19 +1269,15 @@ EOF
             if docker start "$container_id" &> /dev/null; then
                 echo -e "${GREEN}容器已启动！${RESET}"
                 # 显示容器的访问地址和端口
-                container_info=$(docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}} {{range $p, $conf := .NetworkSettings.Ports}}{{if $conf}}{{range $conf}}{{.HostIp}}:{{.HostPort}} {{end}}{{end}}{{end}}' "$container_id")
+                container_info=$(docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}} {{range $p, $conf := .NetworkSettings.Ports}}{{(index $conf 0).HostPort}} {{end}}' "$container_id")
                 ip=$(echo "$container_info" | awk '{print $1}')
                 ports=$(echo "$container_info" | awk '{for (i=2; i<=NF; i++) print $i}')
-                echo -e "${YELLOW}容器访问地址：${RESET}"
-                if [ -n "$ip" ]; then
+                if [ -z "$ip" ] && [ -z "$ports" ]; then
+                    echo -e "${YELLOW}该容器未暴露端口，请手动检查容器配置。${RESET}"
+                else
+                    echo -e "${YELLOW}容器访问地址：${RESET}"
                     echo -e "${YELLOW}IP: $ip${RESET}"
-                else
-                    echo -e "${YELLOW}IP: 未分配${RESET}"
-                fi
-                if [ -n "$ports" ]; then
                     echo -e "${YELLOW}端口: $ports${RESET}"
-                else
-                    echo -e "${YELLOW}端口: 未映射${RESET}"
                 fi
             else
                 echo -e "${RED}容器启动失败！${RESET}"
@@ -1308,6 +1305,20 @@ EOF
             echo -e "${YELLOW}====== 已安装镜像 ======${RESET}"
             docker images --format "table {{.Repository}}\t{{.Tag}}\t{{.ID}}\t{{.CreatedSince}}\t{{.Size}}" | sed 's/REPOSITORY/仓库名称/; s/TAG/标签/; s/IMAGE ID/镜像ID/; s/CREATED/创建时间/; s/SIZE/大小/; s/ago/前/'
             echo -e "${YELLOW}========================${RESET}"
+        }
+
+        # 删除 Docker 容器
+        delete_container() {
+            if ! check_docker_status; then return; fi
+
+            echo -e "${YELLOW}所有容器：${RESET}"
+            docker ps -a --format "table {{.ID}}\t{{.Image}}\t{{.Names}}" | sed 's/CONTAINER ID/容器ID/; s/IMAGE/镜像名称/; s/NAMES/容器名称/'
+            read -p "请输入要删除的容器ID： " container_id
+            if docker rm -f "$container_id" &> /dev/null; then
+                echo -e "${GREEN}容器已删除！${RESET}"
+            else
+                echo -e "${RED}容器删除失败！${RESET}"
+            fi
         }
 
         # 删除 Docker 镜像
@@ -1339,7 +1350,8 @@ EOF
             4) start_container ;;
             5) stop_container ;;
             6) manage_images ;;
-            7) delete_image ;;
+            7) delete_container ;;
+            8) delete_image ;;
             0) break ;;
             *) echo -e "${RED}无效选项！${RESET}" ;;
         esac
