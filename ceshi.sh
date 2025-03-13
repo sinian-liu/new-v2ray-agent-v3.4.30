@@ -1159,13 +1159,14 @@ EOF
             sudo rm -f /usr/bin/dockerd
             sudo rm -f /usr/bin/docker-init
             sudo rm -f /usr/bin/docker-proxy
-            sudo rm -f /usr/bin/docker-compose
+            sudo rm -f /usr/local/bin/docker-compose
 
             # 删除 Docker 相关目录和文件
             echo -e "${YELLOW}正在删除 Docker 相关目录和文件...${RESET}"
             sudo rm -rf /var/lib/docker
             sudo rm -rf /etc/docker
             sudo rm -rf /var/run/docker.sock
+            sudo rm -rf ~/.docker
 
             # 删除 Docker 服务文件
             echo -e "${YELLOW}正在删除 Docker 服务文件...${RESET}"
@@ -1183,12 +1184,8 @@ EOF
 
             # 卸载 Docker 包（如果通过包管理器安装）
             echo -e "${YELLOW}正在卸载 Docker 包...${RESET}"
-            if dpkg -S /usr/bin/docker &>/dev/null; then
-                sudo apt purge -y docker.io docker-ce docker-ce-cli containerd.io
-                sudo apt autoremove -y
-            else
-                echo -e "${YELLOW}Docker 不是通过包管理器安装的，跳过包卸载。${RESET}"
-            fi
+            sudo apt purge -y docker.io docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-ce-rootless-extras docker-compose-plugin
+            sudo apt autoremove -y
 
             # 检查是否通过 Snap 安装
             if snap list | grep -q docker; then
