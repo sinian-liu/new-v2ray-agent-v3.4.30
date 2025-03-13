@@ -1060,8 +1060,10 @@ EOF
         echo "1) 安装 Docker 环境"
         echo "2) 彻底卸载 Docker"
         echo "3) 配置 Docker 镜像加速"
-        echo "4) 删除 Docker 镜像"
-        echo "5) 查看已安装镜像"
+        echo "4) 启动 Docker 容器"
+        echo "5) 停止 Docker 容器"
+        echo "6) 查看已安装镜像"
+        echo "7) 删除 Docker 镜像"
         echo "0) 返回主菜单"
         read -p "请输入选项：" docker_choice
 
@@ -1256,46 +1258,85 @@ EOF
             esac
         }
 
+        # 启动 Docker 容器
+        start_container() {
+            if ! check_docker_status; then return; fi
+
+            echo -e "${YELLOW}已停止的容器：${RESET}"
+            docker ps -a --filter "status=exited" --format "table {{.ID}}\t{{.Image}}\t{{.Names}}" | sed 's/CONTAINER ID/容器ID/; s/IMAGE/镜像名称/; s/NAMES/容器名称/'
+            read -p "请输入要启动的容器ID： " container_id
+            if docker start "$container_id" &> /dev/null; then
+                echo -e "${GREEN}容器已启动！${RESET}"
+                # 显示容器的访问地址和端口
+                container_info=$(docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}} {{range $p, $conf := .NetworkSettings.Ports}}{{(index $conf 0).HostPort}} {{end}}' "$container_id")
+                ip=$(echo "$container_info" | awk '{print $1}')
+                ports=$(echo "$container_info" | awk '{for (i=2; i<=NF; i++) print $i}')
+                echo -e "${YELLOW}容器访问地址：${RESET}"
+                echo -e "${YELLOW}IP: $ip${RESET}"
+                echo -e "${YELLOW}端口: $ports${RESET}"
+            else
+                echo -e "${RED}容器启动失败！${RESET}"
+            fi
+        }
+
+        # 停止 Docker 容器
+        stop_container() {
+            if ! check_docker_status; then return; fi
+
+            echo -e "${YELLOW}正在运行的容器：${RESET}"
+            docker ps --format "table {{.ID}}\t{{.Image}}\t{{.Names}}" | sed 's/CONTAINER ID/容器ID/; s/IMAGE/镜像名称/; s/NAMES/容器名称/'
+            read -p "请输入要停止的容器ID： " container_id
+            if docker stop "$container_id" &> /dev/null; then
+                echo -e "${GREEN}容器已停止！${RESET}"
+            else
+                echo -e "${RED}容器停止失败！${RESET}"
+            fi
+        }
+
         # 查看已安装镜像
         manage_images() {
             if ! check_docker_status; then return; fi
 
-            case $docker_choice in
-                4)
-                    echo -e "${YELLOW}已安装镜像列表：${RESET}"
-                    docker images --format "table {{.Repository}}\t{{.Tag}}\t{{.ID}}\t{{.CreatedSince}}\t{{.Size}}" | sed 's/REPOSITORY/仓库名称/; s/TAG/标签/; s/IMAGE ID/镜像ID/; s/CREATED/创建时间/; s/SIZE/大小/'
-                    read -p "请输入要删除的镜像ID： " image_id
-                    docker rmi $image_id 2>/dev/null && \
-                    echo -e "${GREEN}镜像删除成功！${RESET}" || \
-                    echo -e "${RED}镜像删除失败（可能被容器使用）${RESET}"
-                    ;;
-                5)
-                    echo -e "${YELLOW}====== 已安装镜像 ======${RESET}"
-                    echo -e "${YELLOW}正在运行的容器：${RESET}"
-                    docker ps --format "table {{.Image}}\t{{.Status}}\t{{.RunningFor}}" | sed 's/IMAGE/镜像名称/; s/STATUS/状态/; s/RUNNINGFOR/运行时间/; s/Up \([0-9]\+\) minutes\?/\1 分钟/; s/Up \([0-9]\+\) seconds\?/\1 秒/'
-                    echo -e "${YELLOW}已安装但未运行的镜像：${RESET}"
-                    docker images --format "table {{.Repository}}\t{{.Tag}}\t{{.ID}}" | sed 's/REPOSITORY/仓库名称/; s/TAG/标签/; s/IMAGE ID/镜像ID/' | while read -r line; do
-                        image=$(echo "$line" | awk '{print $1}')
-                        if ! docker ps --format "{{.Image}}" | grep -q "$image"; then
-                            echo "$line"
-                        fi
-                    done
-                    echo -e "${YELLOW}========================${RESET}"
-                    ;;
-            esac
+            echo -e "${YELLOW}====== 已安装镜像 ======${RESET}"
+            docker images --format "table {{.Repository}}\t{{.Tag}}\t{{.ID}}\t{{.CreatedSince}}\t{{.Size}}" | sed 's/REPOSITORY/仓库名称/; s/TAG/标签/; s/IMAGE ID/镜像ID/; s/CREATED/创建时间/; s/SIZE/大小/; s/ago/前/'
+            echo -e "${YELLOW}========================${RESET}"
+        }
+
+        # 删除 Docker 镜像
+        delete_image() {
+            if ! check_docker_status; then return; fi
+
+            echo -e "${YELLOW}已安装镜像列表：${RESET}"
+            docker images --format "table {{.Repository}}\t{{.Tag}}\t{{.ID}}\t{{.CreatedSince}}\t{{.Size}}" | sed 's/REPOSITORY/仓库名称/; s/TAG/标签/; s/IMAGE ID/镜像ID/; s/CREATED/创建时间/; s/SIZE/大小/; s/ago/前/'
+            read -p "请输入要删除的镜像ID： " image_id
+            # 停止并删除使用该镜像的容器
+            running_containers=$(docker ps -q --filter "ancestor=$image_id")
+            if [ -n "$running_containers" ]; then
+                echo -e "${YELLOW}发现使用该镜像的容器，正在停止并删除...${RESET}"
+                docker stop $running_containers 2>/dev/null
+                docker rm $running_containers 2>/dev/null
+            fi
+            # 删除镜像
+            if docker rmi "$image_id" &> /dev/null; then
+                echo -e "${GREEN}镜像删除成功！${RESET}"
+            else
+                echo -e "${RED}镜像删除失败！${RESET}"
+            fi
         }
 
         case $docker_choice in
             1) install_docker ;;
             2) uninstall_docker ;;
             3) configure_mirror ;;
-            4|5) manage_images ;;
+            4) start_container ;;
+            5) stop_container ;;
+            6) manage_images ;;
+            7) delete_image ;;
             0) break ;;
             *) echo -e "${RED}无效选项！${RESET}" ;;
         esac
         read -p "按回车键继续..."
     done
-    read -p "按回车键返回主菜单..."
     ;;
             19)
                 # SSH 防暴力破解检测与防护
