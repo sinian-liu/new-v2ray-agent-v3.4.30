@@ -1148,32 +1148,67 @@ EOF
                 echo -e "${YELLOW}已跳过删除所有镜像。${RESET}"
             fi
 
-            # 卸载 Docker
-            if [[ $stop_choice =~ [Yy] ]] || [[ $delete_images =~ [Yy] ]]; then
-                check_system
-                case $SYSTEM in
-                    ubuntu|debian)
-                        # 卸载 apt 安装的 Docker
-                        sudo apt purge -y docker.io docker-ce docker-ce-cli containerd.io
-                        # 卸载 snap 安装的 Docker
-                        if snap list | grep -q docker; then
-                            sudo snap remove docker
-                        fi
-                        sudo rm -rf /var/lib/docker /etc/docker
-                        ;;
-                    centos|fedora)
-                        sudo yum remove -y docker-ce docker-ce-cli containerd.io
-                        sudo rm -rf /var/lib/docker
-                        ;;
-                esac
+            # 停止并禁用 Docker 服务
+            echo -e "${YELLOW}正在停止并禁用 Docker 服务...${RESET}"
+            sudo systemctl stop docker 2>/dev/null
+            sudo systemctl disable docker 2>/dev/null
 
-                # 清理残留
-                sudo rm -rf /etc/apt/keyrings/docker.gpg 2>/dev/null
-                sudo rm -rf /etc/yum.repos.d/docker-ce* 2>/dev/null
-                echo -e "${GREEN}Docker 已彻底卸载！${RESET}"
+            # 删除 Docker 二进制文件
+            echo -e "${YELLOW}正在删除 Docker 二进制文件...${RESET}"
+            sudo rm -f /usr/bin/docker
+            sudo rm -f /usr/bin/dockerd
+            sudo rm -f /usr/bin/docker-init
+            sudo rm -f /usr/bin/docker-proxy
+            sudo rm -f /usr/bin/docker-compose
+
+            # 删除 Docker 相关目录和文件
+            echo -e "${YELLOW}正在删除 Docker 相关目录和文件...${RESET}"
+            sudo rm -rf /var/lib/docker
+            sudo rm -rf /etc/docker
+            sudo rm -rf /var/run/docker.sock
+
+            # 删除 Docker 服务文件
+            echo -e "${YELLOW}正在删除 Docker 服务文件...${RESET}"
+            sudo rm -f /etc/systemd/system/docker.service
+            sudo rm -f /etc/systemd/system/docker.socket
+            sudo systemctl daemon-reload
+
+            # 删除 Docker 用户组
+            echo -e "${YELLOW}正在删除 Docker 用户组...${RESET}"
+            if grep -q docker /etc/group; then
+                sudo groupdel docker
             else
-                echo -e "${YELLOW}Docker 仍在运行，未执行彻底卸载。${RESET}"
+                echo -e "${YELLOW}Docker 用户组不存在，无需删除。${RESET}"
             fi
+
+            # 卸载 Docker 包（如果通过包管理器安装）
+            echo -e "${YELLOW}正在卸载 Docker 包...${RESET}"
+            if dpkg -S /usr/bin/docker &>/dev/null; then
+                sudo apt purge -y docker.io docker-ce docker-ce-cli containerd.io
+                sudo apt autoremove -y
+            else
+                echo -e "${YELLOW}Docker 不是通过包管理器安装的，跳过包卸载。${RESET}"
+            fi
+
+            # 检查是否通过 Snap 安装
+            if snap list | grep -q docker; then
+                echo -e "${YELLOW}正在卸载 Snap 安装的 Docker...${RESET}"
+                sudo snap remove docker
+            else
+                echo -e "${YELLOW}Docker 不是通过 Snap 安装的，跳过 Snap 卸载。${RESET}"
+            fi
+
+            # 检查是否通过官方脚本安装
+            if [ -f /usr/bin/docker ] && ! dpkg -S /usr/bin/docker &>/dev/null && ! snap list | grep -q docker; then
+                echo -e "${YELLOW}检测到 Docker 是通过官方脚本安装的，尝试卸载...${RESET}"
+                if sudo /usr/bin/docker uninstall &>/dev/null; then
+                    echo -e "${GREEN}Docker 已通过官方脚本卸载！${RESET}"
+                else
+                    echo -e "${RED}无法通过官方脚本卸载 Docker，请手动检查。${RESET}"
+                fi
+            fi
+
+            echo -e "${GREEN}Docker 已彻底卸载！${RESET}"
         }
 
         # 配置 Docker 镜像加速
