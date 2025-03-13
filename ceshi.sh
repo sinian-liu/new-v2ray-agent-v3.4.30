@@ -1148,7 +1148,7 @@ EOF
             fi
 
             # 卸载 Docker
-            if [[ $stop_choice =~ [Yy] ]] && [[ $delete_images =~ [Yy] ]]; then
+            if [[ $stop_choice =~ [Yy] ]] || [[ $delete_images =~ [Yy] ]]; then
                 check_system
                 case $SYSTEM in
                     ubuntu|debian)
@@ -1268,12 +1268,20 @@ EOF
             if docker start "$container_id" &> /dev/null; then
                 echo -e "${GREEN}容器已启动！${RESET}"
                 # 显示容器的访问地址和端口
-                container_info=$(docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}} {{range $p, $conf := .NetworkSettings.Ports}}{{(index $conf 0).HostPort}} {{end}}' "$container_id")
+                container_info=$(docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}} {{range $p, $conf := .NetworkSettings.Ports}}{{if $conf}}{{range $conf}}{{.HostIp}}:{{.HostPort}} {{end}}{{end}}{{end}}' "$container_id")
                 ip=$(echo "$container_info" | awk '{print $1}')
                 ports=$(echo "$container_info" | awk '{for (i=2; i<=NF; i++) print $i}')
                 echo -e "${YELLOW}容器访问地址：${RESET}"
-                echo -e "${YELLOW}IP: $ip${RESET}"
-                echo -e "${YELLOW}端口: $ports${RESET}"
+                if [ -n "$ip" ]; then
+                    echo -e "${YELLOW}IP: $ip${RESET}"
+                else
+                    echo -e "${YELLOW}IP: 未分配${RESET}"
+                fi
+                if [ -n "$ports" ]; then
+                    echo -e "${YELLOW}端口: $ports${RESET}"
+                else
+                    echo -e "${YELLOW}端口: 未映射${RESET}"
+                fi
             else
                 echo -e "${RED}容器启动失败！${RESET}"
             fi
