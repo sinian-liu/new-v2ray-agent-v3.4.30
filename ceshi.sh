@@ -1051,227 +1051,251 @@ EOF
                 read -p "按回车键返回主菜单..."
                 ;;
             18)
-                # 安装 Docker
-docker_management() {
-    while true; do
-        echo -e "${GREEN}=== Docker 管理 ===${RESET}"
-        echo "1) 安装 Docker 环境"
-        echo "2) 彻底卸载 Docker"
-        echo "3) 配置 Docker 镜像加速"
-        echo "4) 删除 Docker 镜像"
-        echo "5) 查看已安装镜像"
-        echo "0) 返回主菜单"
-        read -p "请输入选项：" docker_choice
+    # Docker 管理子菜单
+    echo -e "${GREEN}正在进入 Docker 管理子菜单...${RESET}"
 
-        # 检查 Docker 状态
-        check_docker_status() {
-            if ! command -v docker &> /dev/null; then
-                echo -e "${RED}Docker 未安装，请先安装！${RESET}"
-                return 1
+    # 检查系统类型
+    check_system
+    if [ "$SYSTEM" == "unknown" ]; then
+        echo -e "${RED}无法识别系统，无法继续操作！${RESET}"
+        read -p "按回车键返回主菜单..."
+    else
+        # 检测运行中的 Docker 服务
+        echo -e "${YELLOW}正在检测运行中的 Docker 服务...${RESET}"
+        DOCKER_RUNNING=false
+        if command -v docker > /dev/null 2>&1 && systemctl is-active docker > /dev/null 2>&1; then
+            DOCKER_RUNNING=true
+            echo -e "${YELLOW}检测到 Docker 服务正在运行${RESET}"
+            if docker ps -q | grep -q "."; then
+                echo -e "${YELLOW}检测到运行中的 Docker 容器${RESET}"
             fi
-            return 0
-        }
+        fi
 
-        # 安装 Docker
-        install_docker() {
-            echo -e "${GREEN}正在安装 Docker...${RESET}"
-            if command -v docker &> /dev/null; then
-                echo -e "${YELLOW}Docker 已经安装，当前版本：$(docker --version | awk '{print $3}')${RESET}"
-                return
+        # 询问用户是否停止运行中的 Docker 服务
+        if [ "$DOCKER_RUNNING" = true ] && docker ps -q | grep -q "."; then
+            read -p "是否停止并移除运行中的 Docker 容器以继续操作？（y/n，默认 n）： " stop_containers
+            if [ "$stop_containers" == "y" ] || [ "$stop_containers" == "Y" ]; then
+                echo -e "${YELLOW}正在停止并移除运行中的 Docker 容器...${RESET}"
+                docker stop $(docker ps -q) || true
+                docker rm $(docker ps -aq) || true
+            else
+                echo -e "${RED}保留运行中的容器，可能导致操作冲突，建议手动清理后再试！${RESET}"
             fi
+        fi
 
-            check_system
-            case $SYSTEM in
-                ubuntu|debian)
-                    sudo apt update && sudo apt install -y docker.io || {
-                        echo -e "${RED}APT 源更新失败，尝试官方脚本安装...${RESET}"
-                        curl -fsSL https://get.docker.com | sh
-                    }
-                    ;;
-                centos|fedora)
-                    sudo yum install -y yum-utils
-                    sudo yum-config-manager --add-repo https://download.docker.com/linux/$SYSTEM/docker-ce.repo
-                    sudo yum install -y docker-ce docker-ce-cli containerd.io
-                    ;;
-                *)
-                    echo -e "${RED}不支持的 Linux 发行版！${RESET}"
+        # Docker 管理子菜单
+        while true; do
+            echo -e "${GREEN}=== Docker 管理 ===${RESET}"
+            echo "1) 安装 Docker 环境"
+            echo "2) 彻底卸载 Docker"
+            echo "3) 配置 Docker 镜像加速"
+            echo "4) 删除 Docker 镜像"
+            echo "5) 查看已安装镜像"
+            echo "0) 返回主菜单"
+            read -p "请输入选项：" docker_choice
+
+            # 检查 Docker 状态
+            check_docker_status() {
+                if ! command -v docker &> /dev/null; then
+                    echo -e "${RED}Docker 未安装，请先安装！${RESET}"
                     return 1
-                    ;;
-            esac
-
-            if command -v docker &> /dev/null; then
-                sudo systemctl enable --now docker
-                echo -e "${GREEN}Docker 安装成功！版本：$(docker --version | awk '{print $3}')${RESET}"
-
-                # 将当前用户加入 docker 组
-                if ! groups $USER | grep -q '\bdocker\b'; then
-                    sudo usermod -aG docker $USER
-                    echo -e "${YELLOW}已将当前用户加入 docker 组，请重新登录以生效。${RESET}"
                 fi
-            else
-                echo -e "${RED}Docker 安装失败！请检查日志。${RESET}"
-            fi
-        }
+                return 0
+            }
 
-        # 彻底卸载 Docker
-        uninstall_docker() {
-            if ! check_docker_status; then return; fi
-
-            # 备份 Docker 配置文件
-            if [ -f /etc/docker/daemon.json ]; then
-                sudo cp /etc/docker/daemon.json /etc/docker/daemon.json.bak
-                echo -e "${YELLOW}已备份 Docker 配置文件到 /etc/docker/daemon.json.bak${RESET}"
-            fi
-
-            # 检查运行中的容器
-            running_containers=$(docker ps -q)
-            if [ -n "$running_containers" ]; then
-                echo -e "${YELLOW}发现运行中的容器：${RESET}"
-                docker ps
-                read -p "是否停止并删除所有容器？(y/n，默认 n): " stop_choice
-                if [[ $stop_choice =~ [Yy] ]]; then
-                    docker stop $(docker ps -aq) 2>/dev/null
-                    docker rm $(docker ps -aq) 2>/dev/null
+            # 安装 Docker
+            install_docker() {
+                echo -e "${GREEN}正在安装 Docker...${RESET}"
+                if command -v docker &> /dev/null; then
+                    echo -e "${YELLOW}Docker 已经安装，当前版本：$(docker --version | awk '{print $3}')${RESET}"
+                    return
                 fi
-            fi
 
-            # 删除镜像确认
-            read -p "是否删除所有 Docker 镜像？(y/n，默认 n): " delete_images
-            if [[ $delete_images =~ [Yy] ]]; then
-                docker rmi $(docker images -q) 2>/dev/null
-            fi
+                check_system
+                case $SYSTEM in
+                    ubuntu|debian)
+                        sudo apt update && sudo apt install -y docker.io || {
+                            echo -e "${RED}APT 源更新失败，尝试官方脚本安装...${RESET}"
+                            curl -fsSL https://get.docker.com | sh
+                        }
+                        ;;
+                    centos|fedora)
+                        sudo yum install -y yum-utils
+                        sudo yum-config-manager --add-repo https://download.docker.com/linux/$SYSTEM/docker-ce.repo
+                        sudo yum install -y docker-ce docker-ce-cli containerd.io
+                        ;;
+                    *)
+                        echo -e "${RED}不支持的 Linux 发行版！${RESET}"
+                        return 1
+                        ;;
+                esac
 
-            # 卸载 Docker
-            check_system
-            case $SYSTEM in
-                ubuntu|debian)
-                    sudo apt purge -y docker.io docker-ce docker-ce-cli containerd.io
-                    sudo rm -rf /var/lib/docker /etc/docker
-                    ;;
-                centos|fedora)
-                    sudo yum remove -y docker-ce docker-ce-cli containerd.io
-                    sudo rm -rf /var/lib/docker
-                    ;;
-            esac
+                if command -v docker &> /dev/null; then
+                    sudo systemctl enable --now docker
+                    echo -e "${GREEN}Docker 安装成功！版本：$(docker --version | awk '{print $3}')${RESET}"
 
-            # 清理残留
-            sudo rm -rf /etc/apt/keyrings/docker.gpg 2>/dev/null
-            sudo rm -rf /etc/yum.repos.d/docker-ce* 2>/dev/null
-            echo -e "${GREEN}Docker 已彻底卸载！${RESET}"
-        }
-
-        # 配置 Docker 镜像加速
-        configure_mirror() {
-            if ! check_docker_status; then return; fi
-
-            echo -e "${YELLOW}当前镜像加速配置：${RESET}"
-            if [ -f /etc/docker/daemon.json ]; then
-                cat /etc/docker/daemon.json
-            else
-                echo -e "${RED}未找到镜像加速配置！${RESET}"
-            fi
-
-            echo -e "${GREEN}请选择操作：${RESET}"
-            echo "1) 添加/更换镜像加速地址"
-            echo "2) 删除镜像加速配置"
-            echo "3) 使用预设镜像加速地址"
-            read -p "请输入选项： " mirror_choice
-
-            case $mirror_choice in
-                1)
-                    read -p "请输入镜像加速地址（例如 https://registry.docker-cn.com）： " mirror_url
-                    if [[ ! $mirror_url =~ ^https?:// ]]; then
-                        echo -e "${RED}镜像加速地址格式不正确，请以 http:// 或 https:// 开头！${RESET}"
-                        return
+                    # 将当前用户加入 docker 组
+                    if ! groups $USER | grep -q '\bdocker\b'; then
+                        sudo usermod -aG docker $USER
+                        echo -e "${YELLOW}已将当前用户加入 docker 组，请重新登录以生效。${RESET}"
                     fi
-                    sudo mkdir -p /etc/docker
-                    sudo tee /etc/docker/daemon.json <<-EOF
+                else
+                    echo -e "${RED}Docker 安装失败！请检查日志。${RESET}"
+                fi
+            }
+
+            # 彻底卸载 Docker
+            uninstall_docker() {
+                if ! check_docker_status; then return; fi
+
+                # 检查运行中的容器
+                running_containers=$(docker ps -q)
+                if [ -n "$running_containers" ]; then
+                    echo -e "${YELLOW}发现运行中的容器：${RESET}"
+                    docker ps
+                    read -p "是否停止并删除所有容器？(y/n，默认 n): " stop_choice
+                    if [[ $stop_choice =~ [Yy] ]]; then
+                        docker stop $(docker ps -aq) 2>/dev/null
+                        docker rm $(docker ps -aq) 2>/dev/null
+                    fi
+                fi
+
+                # 删除镜像确认
+                read -p "是否删除所有 Docker 镜像？(y/n，默认 n): " delete_images
+                if [[ $delete_images =~ [Yy] ]]; then
+                    docker rmi $(docker images -q) 2>/dev/null
+                fi
+
+                # 卸载 Docker
+                check_system
+                case $SYSTEM in
+                    ubuntu|debian)
+                        sudo apt purge -y docker.io docker-ce docker-ce-cli containerd.io
+                        sudo rm -rf /var/lib/docker /etc/docker
+                        ;;
+                    centos|fedora)
+                        sudo yum remove -y docker-ce docker-ce-cli containerd.io
+                        sudo rm -rf /var/lib/docker
+                        ;;
+                esac
+
+                # 清理残留
+                sudo rm -rf /etc/apt/keyrings/docker.gpg 2>/dev/null
+                sudo rm -rf /etc/yum.repos.d/docker-ce* 2>/dev/null
+                echo -e "${GREEN}Docker 已彻底卸载！${RESET}"
+            }
+
+            # 配置 Docker 镜像加速
+            configure_mirror() {
+                if ! check_docker_status; then return; fi
+
+                echo -e "${YELLOW}当前镜像加速配置：${RESET}"
+                if [ -f /etc/docker/daemon.json ]; then
+                    cat /etc/docker/daemon.json
+                else
+                    echo -e "${RED}未找到镜像加速配置！${RESET}"
+                fi
+
+                echo -e "${GREEN}请选择操作：${RESET}"
+                echo "1) 添加/更换镜像加速地址"
+                echo "2) 删除镜像加速配置"
+                echo "3) 使用预设镜像加速地址"
+                read -p "请输入选项： " mirror_choice
+
+                case $mirror_choice in
+                    1)
+                        read -p "请输入镜像加速地址（例如 https://registry.docker-cn.com）： " mirror_url
+                        if [[ ! $mirror_url =~ ^https?:// ]]; then
+                            echo -e "${RED}镜像加速地址格式不正确，请以 http:// 或 https:// 开头！${RESET}"
+                            return
+                        fi
+                        sudo mkdir -p /etc/docker
+                        sudo tee /etc/docker/daemon.json <<-EOF
 {
   "registry-mirrors": ["$mirror_url"]
 }
 EOF
-                    sudo systemctl restart docker
-                    echo -e "${GREEN}镜像加速配置已更新！${RESET}"
-                    ;;
-                2)
-                    if [ -f /etc/docker/daemon.json ]; then
-                        sudo rm /etc/docker/daemon.json
                         sudo systemctl restart docker
-                        echo -e "${GREEN}镜像加速配置已删除！${RESET}"
-                    else
-                        echo -e "${RED}未找到镜像加速配置，无需删除。${RESET}"
-                    fi
-                    ;;
-                3)
-                    echo -e "${GREEN}请选择预设镜像加速地址：${RESET}"
-                    echo "1) Docker 官方中国区镜像"
-                    echo "2) 阿里云加速器（需登录阿里云容器镜像服务获取专属地址）"
-                    echo "3) 腾讯云加速器"
-                    echo "4) 华为云加速器"
-                    echo "5) 网易云加速器"
-                    echo "6) DaoCloud 加速器"
-                    read -p "请输入选项： " preset_choice
+                        echo -e "${GREEN}镜像加速配置已更新！${RESET}"
+                        ;;
+                    2)
+                        if [ -f /etc/docker/daemon.json ]; then
+                            sudo rm /etc/docker/daemon.json
+                            sudo systemctl restart docker
+                            echo -e "${GREEN}镜像加速配置已删除！${RESET}"
+                        else
+                            echo -e "${RED}未找到镜像加速配置，无需删除。${RESET}"
+                        fi
+                        ;;
+                    3)
+                        echo -e "${GREEN}请选择预设镜像加速地址：${RESET}"
+                        echo "1) Docker 官方中国区镜像"
+                        echo "2) 阿里云加速器（需登录阿里云容器镜像服务获取专属地址）"
+                        echo "3) 腾讯云加速器"
+                        echo "4) 华为云加速器"
+                        echo "5) 网易云加速器"
+                        echo "6) DaoCloud 加速器"
+                        read -p "请输入选项： " preset_choice
 
-                    case $preset_choice in
-                        1) mirror_url="https://registry.docker-cn.com" ;;
-                        2) mirror_url="https://<your-aliyun-mirror>.mirror.aliyuncs.com" ;;
-                        3) mirror_url="https://mirror.ccs.tencentyun.com" ;;
-                        4) mirror_url="https://05f073ad3c0010ea0f4bc00b7105ec20.mirror.swr.myhuaweicloud.com" ;;
-                        5) mirror_url="https://hub-mirror.c.163.com" ;;
-                        6) mirror_url="https://www.daocloud.io/mirror" ;;
-                        *) echo -e "${RED}无效选项！${RESET}" ; return ;;
-                    esac
+                        case $preset_choice in
+                            1) mirror_url="https://registry.docker-cn.com" ;;
+                            2) mirror_url="https://<your-aliyun-mirror>.mirror.aliyuncs.com" ;;
+                            3) mirror_url="https://mirror.ccs.tencentyun.com" ;;
+                            4) mirror_url="https://05f073ad3c0010ea0f4bc00b7105ec20.mirror.swr.myhuaweicloud.com" ;;
+                            5) mirror_url="https://hub-mirror.c.163.com" ;;
+                            6) mirror_url="https://www.daocloud.io/mirror" ;;
+                            *) echo -e "${RED}无效选项！${RESET}" ; return ;;
+                        esac
 
-                    sudo mkdir -p /etc/docker
-                    sudo tee /etc/docker/daemon.json <<-EOF
+                        sudo mkdir -p /etc/docker
+                        sudo tee /etc/docker/daemon.json <<-EOF
 {
   "registry-mirrors": ["$mirror_url"]
 }
 EOF
-                    sudo systemctl restart docker
-                    echo -e "${GREEN}镜像加速配置已更新！${RESET}"
-                    ;;
-                *)
-                    echo -e "${RED}无效选项！${RESET}"
-                    ;;
-            esac
-        }
+                        sudo systemctl restart docker
+                        echo -e "${GREEN}镜像加速配置已更新！${RESET}"
+                        ;;
+                    *)
+                        echo -e "${RED}无效选项！${RESET}"
+                        ;;
+                esac
+            }
 
-        # 镜像管理
-        manage_images() {
-            if ! check_docker_status; then return; fi
+            # 镜像管理
+            manage_images() {
+                if ! check_docker_status; then return; fi
+
+                case $docker_choice in
+                    4)
+                        echo -e "${YELLOW}已安装镜像列表：${RESET}"
+                        docker images
+                        read -p "请输入要删除的镜像ID： " image_id
+                        docker rmi $image_id 2>/dev/null && \
+                        echo -e "${GREEN}镜像删除成功！${RESET}" || \
+                        echo -e "${RED}镜像删除失败（可能被容器使用）${RESET}"
+                        ;;
+                    5)
+                        echo -e "${YELLOW}====== 已安装镜像 ======${RESET}"
+                        docker images
+                        echo -e "${YELLOW}========================${RESET}"
+                        ;;
+                esac
+            }
 
             case $docker_choice in
-                4)
-                    echo -e "${YELLOW}已安装镜像列表：${RESET}"
-                    docker images
-                    read -p "请输入要删除的镜像ID： " image_id
-                    docker rmi $image_id 2>/dev/null && \
-                    echo -e "${GREEN}镜像删除成功！${RESET}" || \
-                    echo -e "${RED}镜像删除失败（可能被容器使用）${RESET}"
-                    ;;
-                5)
-                    echo -e "${YELLOW}====== 已安装镜像 ======${RESET}"
-                    docker images
-                    echo -e "${YELLOW}========================${RESET}"
-                    ;;
+                1) install_docker ;;
+                2) uninstall_docker ;;
+                3) configure_mirror ;;
+                4|5) manage_images ;;
+                0) break ;;
+                *) echo -e "${RED}无效选项！${RESET}" ;;
             esac
-        }
-
-        case $docker_choice in
-            1) install_docker ;;
-            2) uninstall_docker ;;
-            3) configure_mirror ;;
-            4|5) manage_images ;;
-            0) break ;;
-            *) echo -e "${RED}无效选项！${RESET}" ;;
-        esac
-        read -p "按回车键继续..."
-    done
-}
-
-# 进入 Docker 管理子菜单
-docker_management
+            read -p "按回车键继续..."
+        done
+    fi
+    read -p "按回车键返回主菜单..."
+    ;;
             19)
                 # SSH 防暴力破解检测与防护
                 echo -e "${GREEN}正在处理 SSH 暴力破解检测与防护...${RESET}"
@@ -1566,251 +1590,176 @@ EOF"
                 read -p "按回车键返回主菜单..."
                 ;;
             20)
-    # Docker 管理子菜单
-    echo -e "${GREEN}正在进入 Docker 管理子菜单...${RESET}"
+                # Speedtest测速面板（基于 ALS - Another Looking-glass Server）
+                echo -e "${GREEN}正在准备处理 Speedtest 测速面板...${RESET}"
 
-    # 检查系统类型
-    check_system
-    if [ "$SYSTEM" == "unknown" ]; then
-        echo -e "${RED}无法识别系统，无法继续操作！${RESET}"
-        read -p "按回车键返回主菜单..."
-    else
-        # 检测运行中的 Docker 服务
-        echo -e "${YELLOW}正在检测运行中的 Docker 服务...${RESET}"
-        DOCKER_RUNNING=false
-        if command -v docker > /dev/null 2>&1 && systemctl is-active docker > /dev/null 2>&1; then
-            DOCKER_RUNNING=true
-            echo -e "${YELLOW}检测到 Docker 服务正在运行${RESET}"
-            if docker ps -q | grep -q "."; then
-                echo -e "${YELLOW}检测到运行中的 Docker 容器${RESET}"
-            fi
-        fi
-
-        # 询问用户是否停止运行中的 Docker 服务
-        if [ "$DOCKER_RUNNING" = true ] && docker ps -q | grep -q "."; then
-            read -p "是否停止并移除运行中的 Docker 容器以继续操作？（y/n，默认 n）： " stop_containers
-            if [ "$stop_containers" == "y" ] || [ "$stop_containers" == "Y" ]; then
-                echo -e "${YELLOW}正在停止并移除运行中的 Docker 容器...${RESET}"
-                docker stop $(docker ps -q) || true
-                docker rm $(docker ps -aq) || true
-            else
-                echo -e "${RED}保留运行中的容器，可能导致操作冲突，建议手动清理后再试！${RESET}"
-            fi
-        fi
-
-        # Docker 管理子菜单
-        while true; do
-            echo -e "${GREEN}=== Docker 管理 ===${RESET}"
-            echo "1) 安装 Docker 环境"
-            echo "2) 彻底卸载 Docker"
-            echo "3) 配置 Docker 镜像加速"
-            echo "4) 删除 Docker 镜像"
-            echo "5) 查看已安装镜像"
-            echo "0) 返回主菜单"
-            read -p "请输入选项：" docker_choice
-
-            # 检查 Docker 状态
-            check_docker_status() {
-                if ! command -v docker &> /dev/null; then
-                    echo -e "${RED}Docker 未安装，请先安装！${RESET}"
-                    return 1
-                fi
-                return 0
-            }
-
-            # 安装 Docker
-            install_docker() {
-                echo -e "${GREEN}正在安装 Docker...${RESET}"
-                if command -v docker &> /dev/null; then
-                    echo -e "${YELLOW}Docker 已经安装，当前版本：$(docker --version | awk '{print $3}')${RESET}"
-                    return
-                fi
-
+                # 检查系统类型
                 check_system
-                case $SYSTEM in
-                    ubuntu|debian)
-                        sudo apt update && sudo apt install -y docker.io || {
-                            echo -e "${RED}APT 源更新失败，尝试官方脚本安装...${RESET}"
-                            curl -fsSL https://get.docker.com | sh
-                        }
-                        ;;
-                    centos|fedora)
-                        sudo yum install -y yum-utils
-                        sudo yum-config-manager --add-repo https://download.docker.com/linux/$SYSTEM/docker-ce.repo
-                        sudo yum install -y docker-ce docker-ce-cli containerd.io
-                        ;;
-                    *)
-                        echo -e "${RED}不支持的 Linux 发行版！${RESET}"
-                        return 1
-                        ;;
-                esac
-
-                if command -v docker &> /dev/null; then
-                    sudo systemctl enable --now docker
-                    echo -e "${GREEN}Docker 安装成功！版本：$(docker --version | awk '{print $3}')${RESET}"
-
-                    # 将当前用户加入 docker 组
-                    if ! groups $USER | grep -q '\bdocker\b'; then
-                        sudo usermod -aG docker $USER
-                        echo -e "${YELLOW}已将当前用户加入 docker 组，请重新登录以生效。${RESET}"
-                    fi
+                if [ "$SYSTEM" == "unknown" ]; then
+                    echo -e "${RED}无法识别系统，无法继续操作！${RESET}"
+                    read -p "按回车键返回主菜单..."
                 else
-                    echo -e "${RED}Docker 安装失败！请检查日志。${RESET}"
-                fi
-            }
-
-            # 彻底卸载 Docker
-            uninstall_docker() {
-                if ! check_docker_status; then return; fi
-
-                # 检查运行中的容器
-                running_containers=$(docker ps -q)
-                if [ -n "$running_containers" ]; then
-                    echo -e "${YELLOW}发现运行中的容器：${RESET}"
-                    docker ps
-                    read -p "是否停止并删除所有容器？(y/n，默认 n): " stop_choice
-                    if [[ $stop_choice =~ [Yy] ]]; then
-                        docker stop $(docker ps -aq) 2>/dev/null
-                        docker rm $(docker ps -aq) 2>/dev/null
-                    fi
-                fi
-
-                # 删除镜像确认
-                read -p "是否删除所有 Docker 镜像？(y/n，默认 n): " delete_images
-                if [[ $delete_images =~ [Yy] ]]; then
-                    docker rmi $(docker images -q) 2>/dev/null
-                fi
-
-                # 卸载 Docker
-                check_system
-                case $SYSTEM in
-                    ubuntu|debian)
-                        sudo apt purge -y docker.io docker-ce docker-ce-cli containerd.io
-                        sudo rm -rf /var/lib/docker /etc/docker
-                        ;;
-                    centos|fedora)
-                        sudo yum remove -y docker-ce docker-ce-cli containerd.io
-                        sudo rm -rf /var/lib/docker
-                        ;;
-                esac
-
-                # 清理残留
-                sudo rm -rf /etc/apt/keyrings/docker.gpg 2>/dev/null
-                sudo rm -rf /etc/yum.repos.d/docker-ce* 2>/dev/null
-                echo -e "${GREEN}Docker 已彻底卸载！${RESET}"
-            }
-
-            # 配置 Docker 镜像加速
-            configure_mirror() {
-                if ! check_docker_status; then return; fi
-
-                echo -e "${YELLOW}当前镜像加速配置：${RESET}"
-                if [ -f /etc/docker/daemon.json ]; then
-                    cat /etc/docker/daemon.json
-                else
-                    echo -e "${RED}未找到镜像加速配置！${RESET}"
-                fi
-
-                echo -e "${GREEN}请选择操作：${RESET}"
-                echo "1) 添加/更换镜像加速地址"
-                echo "2) 删除镜像加速配置"
-                echo "3) 使用预设镜像加速地址"
-                read -p "请输入选项： " mirror_choice
-
-                case $mirror_choice in
-                    1)
-                        read -p "请输入镜像加速地址（例如 https://registry.docker-cn.com）： " mirror_url
-                        if [[ ! $mirror_url =~ ^https?:// ]]; then
-                            echo -e "${RED}镜像加速地址格式不正确，请以 http:// 或 https:// 开头！${RESET}"
-                            return
+                    # 检测运行中的 Docker 服务
+                    echo -e "${YELLOW}正在检测运行中的 Docker 服务...${RESET}"
+                    DOCKER_RUNNING=false
+                    if command -v docker > /dev/null 2>&1 && systemctl is-active docker > /dev/null 2>&1; then
+                        DOCKER_RUNNING=true
+                        echo -e "${YELLOW}检测到 Docker 服务正在运行${RESET}"
+                        if docker ps -q | grep -q "."; then
+                            echo -e "${YELLOW}检测到运行中的 Docker 容器${RESET}"
                         fi
-                        sudo mkdir -p /etc/docker
-                        sudo tee /etc/docker/daemon.json <<-EOF
-{
-  "registry-mirrors": ["$mirror_url"]
-}
-EOF
-                        sudo systemctl restart docker
-                        echo -e "${GREEN}镜像加速配置已更新！${RESET}"
-                        ;;
-                    2)
-                        if [ -f /etc/docker/daemon.json ]; then
-                            sudo rm /etc/docker/daemon.json
-                            sudo systemctl restart docker
-                            echo -e "${GREEN}镜像加速配置已删除！${RESET}"
+                    fi
+
+                    # 询问用户是否停止运行中的 Docker 服务
+                    if [ "$DOCKER_RUNNING" = true ] && docker ps -q | grep -q "."; then
+                        read -p "是否停止并移除运行中的 Docker 容器以继续安装？（y/n，默认 n）： " stop_containers
+                        if [ "$stop_containers" == "y" ] || [ "$stop_containers" == "Y" ]; then
+                            echo -e "${YELLOW}正在停止并移除运行中的 Docker 容器...${RESET}"
+                            docker stop $(docker ps -q) || true
+                            docker rm $(docker ps -aq) || true
                         else
-                            echo -e "${RED}未找到镜像加速配置，无需删除。${RESET}"
+                            echo -e "${RED}保留运行中的容器，可能导致安装冲突，建议手动清理后再试！${RESET}"
                         fi
-                        ;;
-                    3)
-                        echo -e "${GREEN}请选择预设镜像加速地址：${RESET}"
-                        echo "1) Docker 官方中国区镜像"
-                        echo "2) 阿里云加速器（需登录阿里云容器镜像服务获取专属地址）"
-                        echo "3) 腾讯云加速器"
-                        echo "4) 华为云加速器"
-                        echo "5) 网易云加速器"
-                        echo "6) DaoCloud 加速器"
-                        read -p "请输入选项： " preset_choice
+                    fi
 
-                        case $preset_choice in
-                            1) mirror_url="https://registry.docker-cn.com" ;;
-                            2) mirror_url="https://<your-aliyun-mirror>.mirror.aliyuncs.com" ;;
-                            3) mirror_url="https://mirror.ccs.tencentyun.com" ;;
-                            4) mirror_url="https://05f073ad3c0010ea0f4bc00b7105ec20.mirror.swr.myhuaweicloud.com" ;;
-                            5) mirror_url="https://hub-mirror.c.163.com" ;;
-                            6) mirror_url="https://www.daocloud.io/mirror" ;;
-                            *) echo -e "${RED}无效选项！${RESET}" ; return ;;
-                        esac
+                    # 提示用户选择操作
+                    echo -e "${YELLOW}请选择操作：${RESET}"
+                    echo "1) 安装 Speedtest 测速面板"
+                    echo "2) 卸载 Speedtest 测速面板"
+                    read -p "请输入选项（1 或 2）： " operation_choice
 
-                        sudo mkdir -p /etc/docker
-                        sudo tee /etc/docker/daemon.json <<-EOF
-{
-  "registry-mirrors": ["$mirror_url"]
-}
-EOF
-                        sudo systemctl restart docker
-                        echo -e "${GREEN}镜像加速配置已更新！${RESET}"
-                        ;;
-                    *)
-                        echo -e "${RED}无效选项！${RESET}"
-                        ;;
-                esac
-            }
+                    case $operation_choice in
+                        1)
+                            # 安装 Speedtest 测速面板
+                            echo -e "${GREEN}正在安装 Speedtest 测速面板...${RESET}"
 
-            # 镜像管理
-            manage_images() {
-                if ! check_docker_status; then return; fi
+                            # 检查端口占用并选择可用端口
+                            DEFAULT_PORT=80
+                            check_port() {
+                                local port=$1
+                                if netstat -tuln | grep ":$port" > /dev/null; then
+                                    return 1
+                                else
+                                    return 0
+                                fi
+                            }
 
-                case $docker_choice in
-                    4)
-                        echo -e "${YELLOW}已安装镜像列表：${RESET}"
-                        docker images
-                        read -p "请输入要删除的镜像ID： " image_id
-                        docker rmi $image_id 2>/dev/null && \
-                        echo -e "${GREEN}镜像删除成功！${RESET}" || \
-                        echo -e "${RED}镜像删除失败（可能被容器使用）${RESET}"
-                        ;;
-                    5)
-                        echo -e "${YELLOW}====== 已安装镜像 ======${RESET}"
-                        docker images
-                        echo -e "${YELLOW}========================${RESET}"
-                        ;;
-                esac
-            }
+                            check_port "$DEFAULT_PORT"
+                            if [ $? -eq 1 ]; then
+                                echo -e "${RED}端口 $DEFAULT_PORT 已被占用！${RESET}"
+                                read -p "是否更换端口？（y/n，默认 y）： " change_port
+                                if [ "$change_port" != "n" ] && [ "$change_port" != "N" ]; then
+                                    while true; do
+                                        read -p "请输入新的端口号（例如 8080）： " new_port
+                                        while ! [[ "$new_port" =~ ^[0-9]+$ ]] || [ "$new_port" -lt 1 ] || [ "$new_port" -gt 65535 ]; do
+                                            echo -e "${RED}无效端口，请输入 1-65535 之间的数字！${RESET}"
+                                            read -p "请输入新的端口号（例如 8080）： " new_port
+                                        done
+                                        check_port "$new_port"
+                                        if [ $? -eq 0 ]; then
+                                            DEFAULT_PORT=$new_port
+                                            break
+                                        else
+                                            echo -e "${RED}端口 $new_port 已被占用，请选择其他端口！${RESET}"
+                                        fi
+                                    done
+                                else
+                                    echo -e "${RED}端口 $DEFAULT_PORT 被占用，无法继续安装！${RESET}"
+                                    read -p "按回车键返回主菜单..."
+                                    continue
+                                fi
+                            fi
 
-            case $docker_choice in
-                1) install_docker ;;
-                2) uninstall_docker ;;
-                3) configure_mirror ;;
-                4|5) manage_images ;;
-                0) break ;;
-                *) echo -e "${RED}无效选项！${RESET}" ;;
-            esac
-            read -p "按回车键继续..."
-        done
-    fi
-    read -p "按回车键返回主菜单..."
-    ;;
+                            # 检查并放行防火墙端口
+                            if command -v ufw > /dev/null 2>&1; then
+                                ufw status | grep -q "Status: active"
+                                if [ $? -eq 0 ]; then
+                                    echo -e "${YELLOW}检测到 UFW 防火墙正在运行...${RESET}"
+                                    ufw status | grep -q "$DEFAULT_PORT"
+                                    if [ $? -ne 0 ]; then
+                                        echo -e "${YELLOW}正在放行端口 $DEFAULT_PORT...${RESET}"
+                                        sudo ufw allow "$DEFAULT_PORT/tcp"
+                                        sudo ufw reload
+                                    fi
+                                fi
+                            elif command -v iptables > /dev/null 2>&1; then
+                                echo -e "${YELLOW}检测到 iptables 防火墙...${RESET}"
+                                iptables -C INPUT -p tcp --dport "$DEFAULT_PORT" -j ACCEPT 2>/dev/null
+                                if [ $? -ne 0 ]; then
+                                    echo -e "${YELLOW}正在放行端口 $DEFAULT_PORT...${RESET}"
+                                    sudo iptables -A INPUT -p tcp --dport "$DEFAULT_PORT" -j ACCEPT
+                                    sudo iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
+                                fi
+                            fi
+
+                            # 安装 Docker 和 Docker Compose
+                            if ! command -v docker > /dev/null 2>&1; then
+                                echo -e "${YELLOW}安装 Docker...${RESET}"
+                                curl -fsSL https://get.docker.com | sh
+                            fi
+                            if ! command -v docker-compose > /dev/null 2>&1; then
+                                echo -e "${YELLOW}安装 Docker Compose...${RESET}"
+                                curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+                                chmod +x /usr/local/bin/docker-compose
+                            fi
+
+                            # 创建目录和配置 docker-compose.yml
+                            cd /home && mkdir -p web && touch web/docker-compose.yml
+                            sudo bash -c "cat > /home/web/docker-compose.yml <<EOF
+version: '3'
+services:
+  als:
+    image: wikihostinc/looking-glass-server:latest
+    container_name: speedtest_panel
+    ports:
+      - \"$DEFAULT_PORT:80\"
+    environment:
+      - HTTP_PORT=$DEFAULT_PORT
+    restart: always
+    network_mode: host
+EOF"
+
+                            # 启动 Docker Compose
+                            cd /home/web && docker-compose up -d
+
+                            server_ip=$(curl -s4 ifconfig.me)
+                            echo -e "${GREEN}Speedtest 测速面板安装完成！${RESET}"
+                            echo -e "${YELLOW}访问 http://$server_ip:$DEFAULT_PORT 查看 Speedtest 测速面板${RESET}"
+                            echo -e "${YELLOW}功能包括：HTML5 速度测试、Ping、iPerf3、Speedtest、下载测速、网卡流量监控、在线 Shell${RESET}"
+                            ;;
+                        2)
+                            # 卸载 Speedtest 测速面板
+                            echo -e "${GREEN}正在卸载 Speedtest 测速面板...${RESET}"
+                            cd /home/web || true
+                            if [ -f docker-compose.yml ]; then
+                                docker-compose down -v || true
+                                echo -e "${YELLOW}已停止并移除 Speedtest 测速面板容器和卷${RESET}"
+                            fi
+                            # 检查并移除任何名为 speedtest_panel 的容器
+                            if docker ps -a | grep -q "speedtest_panel"; then
+                                docker stop speedtest_panel || true
+                                docker rm speedtest_panel || true
+                                echo -e "${YELLOW}已移除独立的 speedtest_panel 容器${RESET}"
+                            fi
+                            sudo rm -rf /home/web
+                            echo -e "${YELLOW}已删除 /home/web 目录${RESET}"
+                            # 询问是否移除 ALS 镜像
+                            if docker images | grep -q "wikihostinc/looking-glass-server"; then
+                                read -p "是否移除 Speedtest 测速面板的 Docker 镜像（wikihostinc/looking-glass-server）？（y/n，默认 n）： " remove_image
+                                if [ "$remove_image" == "y" ] || [ "$remove_image" == "Y" ]; then
+                                    docker rmi wikihostinc/looking-glass-server:latest || true
+                                    echo -e "${YELLOW}已移除 Speedtest 测速面板的 Docker 镜像${RESET}"
+                                fi
+                            fi
+                            echo -e "${GREEN}Speedtest 测速面板卸载完成！${RESET}"
+                            ;;
+                        *)
+                            echo -e "${RED}无效选项，请输入 1 或 2！${RESET}"
+                            ;;
+                    esac
+                fi
+                read -p "按回车键返回主菜单..."
+                ;;
         21)
         # WordPress 安装（基于 Docker，支持域名绑定、HTTPS、迁移、证书查看和定时备份，兼容 CentOS）
         echo -e "${GREEN}正在准备处理 WordPress 安装...${RESET}"
