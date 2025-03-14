@@ -1377,94 +1377,73 @@ EOF
     }
 
     # 安装 sun-panel
-    install_sun_panel() {
-        echo -e "${GREEN}正在安装 sun-panel...${RESET}"
+install_sun_panel() {
+    echo -e "${GREEN}正在安装 sun-panel...${RESET}"
 
-        # 端口处理
-        while true; do
-            read -p "请输入要使用的端口号（默认 3002）： " sun_port
-            sun_port=${sun_port:-3002}
-            
-            # 验证端口格式
-            if ! [[ "$sun_port" =~ ^[0-9]+$ ]] || [ "$sun_port" -lt 1 ] || [ "$sun_port" -gt 65535 ]; then
-                echo -e "${RED}无效端口，请输入 1-65535 之间的数字！${RESET}"
-                continue
-            fi
+    # 端口处理
+    while true; do
+        read -p "请输入要使用的端口号（默认 3002）： " sun_port
+        sun_port=${sun_port:-3002}
+        
+        # 验证端口格式
+        if ! [[ "$sun_port" =~ ^[0-9]+$ ]] || [ "$sun_port" -lt 1 ] || [ "$sun_port" -gt 65535 ]; then
+            echo -e "${RED}无效端口，请输入 1-65535 之间的数字！${RESET}"
+            continue
+        fi
 
-            # 检查端口占用
-            if ss -tuln | grep -q ":${sun_port} "; then
-                echo -e "${RED}端口 ${sun_port} 已被占用，请选择其他端口！${RESET}"
-            else
-                break
-            fi
-        done
-
-        # 处理防火墙
-        open_port() {
-            if command -v ufw > /dev/null 2>&1; then
-                if ! ufw status | grep -q "${sun_port}/tcp"; then
-                    echo -e "${YELLOW}正在放行端口 ${sun_port}..."
-                    sudo ufw allow "${sun_port}/tcp"
-                    sudo ufw reload
-                fi
-            elif command -v firewall-cmd > /dev/null 2>&1; then
-                if ! firewall-cmd --list-ports | grep -q "${sun_port}/tcp"; then
-                    echo -e "${YELLOW}正在放行端口 ${sun_port}..."
-                    sudo firewall-cmd --permanent --add-port=${sun_port}/tcp
-                    sudo firewall-cmd --reload
-                fi
-            else
-                echo -e "${YELLOW}未检测到防火墙工具，请手动放行端口 ${sun_port}"
-            fi
-        }
-        open_port
-
-        # 输入管理员账号和密码
-        while true; do
-            read -p "请输入管理员账号（默认 admin）： " admin_user
-            admin_user=${admin_user:-admin}
-            if [[ -n "$admin_user" ]]; then
-                break
-            else
-                echo -e "${RED}管理员账号不能为空，请重新输入！${RESET}"
-            fi
-        done
-
-        while true; do
-            read -s -p "请输入管理员密码（默认 12345678）： " admin_pass
-            admin_pass=${admin_pass:-12345678}
-            if [[ -n "$admin_pass" ]]; then
-                break
-            else
-                echo -e "${RED}管理员密码不能为空，请重新输入！${RESET}"
-            fi
-        done
-
-        # 拉取最新镜像并运行
-        docker pull hslr/sun-panel:latest && \
-        docker run -d \
-            --name sun-panel \
-            --restart always \
-            -p ${sun_port}:3002 \
-            -v /home/sun-panel/data:/app/data \
-            -v /home/sun-panel/config:/app/config \
-            -e SUNPANEL_ADMIN_USER="$admin_user" \
-            -e SUNPANEL_ADMIN_PASS="$admin_pass" \
-            hslr/sun-panel:latest
-
-        # 显示安装结果
-        if [ $? -eq 0 ]; then
-            server_ip=$(curl -s4 ifconfig.me)
-            echo -e "${GREEN}------------------------------------------------------"
-            echo -e " sun-panel 安装成功！"
-            echo -e " 访问地址：http://${server_ip}:${sun_port}"
-            echo -e " 管理员账号：${admin_user}"
-            echo -e " 管理员密码：${admin_pass}"
-            echo -e "------------------------------------------------------${RESET}"
+        # 检查端口占用
+        if ss -tuln | grep -q ":${sun_port} "; then
+            echo -e "${RED}端口 ${sun_port} 已被占用，请选择其他端口！${RESET}"
         else
-            echo -e "${RED}sun-panel 安装失败，请检查日志！${RESET}"
+            break
+        fi
+    done
+
+    # 处理防火墙
+    open_port() {
+        if command -v ufw > /dev/null 2>&1; then
+            if ! ufw status | grep -q "${sun_port}/tcp"; then
+                echo -e "${YELLOW}正在放行端口 ${sun_port}..."
+                sudo ufw allow "${sun_port}/tcp"
+                sudo ufw reload
+            fi
+        elif command -v firewall-cmd > /dev/null 2>&1; then
+            if ! firewall-cmd --list-ports | grep -q "${sun_port}/tcp"; then
+                echo -e "${YELLOW}正在放行端口 ${sun_port}..."
+                sudo firewall-cmd --permanent --add-port=${sun_port}/tcp
+                sudo firewall-cmd --reload
+            fi
+        else
+            echo -e "${YELLOW}未检测到防火墙工具，请手动放行端口 ${sun_port}"
         fi
     }
+    open_port
+
+    # 拉取最新镜像并运行
+    docker pull hslr/sun-panel:latest && \
+    docker run -d \
+        --name sun-panel \
+        --restart always \
+        -p ${sun_port}:3002 \
+        -v /home/sun-panel/data:/app/data \
+        -v /home/sun-panel/config:/app/config \
+        -e SUNPANEL_ADMIN_USER="admin@sun.cc" \
+        -e SUNPANEL_ADMIN_PASS="12345678" \
+        hslr/sun-panel:latest
+
+    # 显示安装结果
+    if [ $? -eq 0 ]; then
+        server_ip=$(curl -s4 ifconfig.me)
+        echo -e "${GREEN}------------------------------------------------------"
+        echo -e " sun-panel 安装成功！"
+        echo -e " 访问地址：http://${server_ip}:${sun_port}"
+        echo -e " 管理员账号：admin@sun.cc"
+        echo -e " 管理员密码：12345678"
+        echo -e "------------------------------------------------------${RESET}"
+    else
+        echo -e "${RED}sun-panel 安装失败，请检查日志！${RESET}"
+    fi
+}
 
     case $docker_choice in
         1) install_docker ;;
