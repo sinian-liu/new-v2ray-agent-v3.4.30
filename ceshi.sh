@@ -1446,7 +1446,7 @@ EOF
                 echo -e "${RED}sun-panel 安装失败，请检查日志！${RESET}"
             fi
         }
-
+        ;;
         # 拉取 Docker 镜像并自动安装
         10)
             echo -e "${GREEN}正在进入 Docker 镜像拉取与安装功能...${RESET}"
