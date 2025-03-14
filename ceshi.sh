@@ -1065,6 +1065,7 @@ EOF
         echo "6) 查看已安装镜像"
         echo "7) 删除 Docker 容器"
         echo "8) 删除 Docker 镜像"
+        echo "9) 安装 sun-panel"  # 新增选项
         echo "0) 返回主菜单"
         read -p "请输入选项：" docker_choice
 
@@ -1375,6 +1376,51 @@ EOF
             fi
         }
 
+        # ======== 新增 sun-panel 安装函数 ========
+        install_sun_panel() {
+            if ! check_docker_status; then
+                echo -e "${RED}请先安装 Docker！${RESET}"
+                return
+            fi
+
+            # 设置默认值
+            local data_dir="/opt/sun-panel/data"
+            local port=3000
+
+            # 获取用户输入
+            read -p "输入数据存储路径（默认 $data_dir）: " custom_data
+            data_dir=${custom_data:-$data_dir}
+            read -p "输入宿主机端口（默认 $port）: " custom_port
+            port=${custom_port:-$port}
+
+            # 创建数据目录
+            sudo mkdir -p "$data_dir"
+            sudo chmod -R 777 "$data_dir"
+
+            # 检查旧容器
+            if docker ps -a --format "{{.Names}}" | grep -q "sun-panel"; then
+                echo -e "${YELLOW}检测到旧版本 sun-panel，正在清理..."
+                docker stop sun-panel 2>/dev/null
+                docker rm sun-panel 2>/dev/null
+            fi
+
+            # 部署容器
+            echo -e "${GREEN}正在拉取镜像..."
+            docker pull wikihostinc/sun-panel:latest
+
+            docker run -d \
+                --name sun-panel \
+                --restart unless-stopped \
+                -p $port:3000 \
+                -v "$data_dir:/app/data" \
+                wikihostinc/sun-panel:latest
+
+            echo -e "${GREEN}sun-panel 安装完成！"
+            echo -e "访问地址: http://服务器IP:$port"
+            echo -e "数据存储: $data_dir${RESET}"
+        }
+
+        # 主选项处理
         case $docker_choice in
             1) install_docker ;;
             2) uninstall_docker ;;
@@ -1384,6 +1430,7 @@ EOF
             6) manage_images ;;
             7) delete_container ;;
             8) delete_image ;;
+            9) install_sun_panel ;;  # 新增选项
             0) break ;;
             *) echo -e "${RED}无效选项！${RESET}" ;;
         esac
