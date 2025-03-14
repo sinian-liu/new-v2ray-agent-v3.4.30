@@ -1236,9 +1236,9 @@ EOF
 
                     0) break ;;
                     *) echo -e "${RED}无效选项！${RESET}" ;;
-                esac
+                esac  # 闭合 sun-panel 的 case 语句
                 read -p "按回车键继续..."
-            done
+            done  # 闭合 sun-panel 的 while 循环
         }
 
         # 主选项处理
@@ -1254,10 +1254,10 @@ EOF
             9) manage_sun_panel ;;  # 新增 sun-panel 入口
             0) break ;;
             *) echo -e "${RED}无效选项！${RESET}" ;;
-        esac
+        esac  # 闭合主 case 语句
         read -p "按回车键继续..."
-    done
-    ;;
+    done  # 闭合主 while 循环
+    ;;  # 闭合主 case 语句
             19)
                 # SSH 防暴力破解检测与防护
                 echo -e "${GREEN}正在处理 SSH 暴力破解检测与防护...${RESET}"
