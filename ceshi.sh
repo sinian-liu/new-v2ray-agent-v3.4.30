@@ -1446,8 +1446,8 @@ EOF
                 echo -e "${RED}sun-panel 安装失败，请检查日志！${RESET}"
             fi
         }
-        ;;
-        # 拉取 Docker 镜像并自动安装
+
+        # 10) 拉取 Docker 镜像并自动安装
         10)
             echo -e "${GREEN}正在进入 Docker 镜像拉取与安装功能...${RESET}"
 
@@ -1568,7 +1568,7 @@ EOF
             read -p "按回车键返回 Docker 管理菜单..."
             ;;
 
-        # Docker 镜像更新功能
+        # 11) Docker 镜像更新
         11)
             echo -e "${GREEN}正在进入 Docker 镜像更新功能...${RESET}"
 
