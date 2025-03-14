@@ -1419,6 +1419,27 @@ EOF
         }
         open_port
 
+        # 输入管理员账号和密码
+        while true; do
+            read -p "请输入管理员账号（默认 admin）： " admin_user
+            admin_user=${admin_user:-admin}
+            if [[ -n "$admin_user" ]]; then
+                break
+            else
+                echo -e "${RED}管理员账号不能为空，请重新输入！${RESET}"
+            fi
+        done
+
+        while true; do
+            read -s -p "请输入管理员密码（默认 12345678）： " admin_pass
+            admin_pass=${admin_pass:-12345678}
+            if [[ -n "$admin_pass" ]]; then
+                break
+            else
+                echo -e "${RED}管理员密码不能为空，请重新输入！${RESET}"
+            fi
+        done
+
         # 拉取最新镜像并运行
         docker pull hslr/sun-panel:latest && \
         docker run -d \
@@ -1427,6 +1448,8 @@ EOF
             -p ${sun_port}:3002 \
             -v /home/sun-panel/data:/app/data \
             -v /home/sun-panel/config:/app/config \
+            -e SUNPANEL_ADMIN_USER="$admin_user" \
+            -e SUNPANEL_ADMIN_PASS="$admin_pass" \
             hslr/sun-panel:latest
 
         # 显示安装结果
@@ -1435,9 +1458,8 @@ EOF
             echo -e "${GREEN}------------------------------------------------------"
             echo -e " sun-panel 安装成功！"
             echo -e " 访问地址：http://${server_ip}:${sun_port}"
-            echo -e " 默认账号：admin"
-            echo -e " 默认密码：12345678"
-            echo -e " 请及时登录修改默认密码！"
+            echo -e " 管理员账号：${admin_user}"
+            echo -e " 管理员密码：${admin_pass}"
             echo -e "------------------------------------------------------${RESET}"
         else
             echo -e "${RED}sun-panel 安装失败，请检查日志！${RESET}"
@@ -1455,11 +1477,10 @@ EOF
         8) delete_image ;;
         9) install_sun_panel ;;
         0) break ;;
-            *) echo -e "${RED}无效选项！${RESET}" ;;
-        esac
-        read -p "按回车键继续..."
-    done
-    ;;
+        *) echo -e "${RED}无效选项！${RESET}" ;;
+    esac
+    read -p "按回车键继续..."
+done
             19)
                 # SSH 防暴力破解检测与防护
                 echo -e "${GREEN}正在处理 SSH 暴力破解检测与防护...${RESET}"
