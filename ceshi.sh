@@ -2119,7 +2119,6 @@ EOF"
                 echo -e "${YELLOW}检测配置：最大尝试次数=$MAX_ATTEMPTS，统计时间范围=$DETECT_TIME 分钟，高风险阈值=$HIGH_RISK_THRESHOLD，常规扫描=$SCAN_INTERVAL 分钟，高风险扫描=$SCAN_INTERVAL_HIGH 分钟${RESET}"
                 echo -e "${YELLOW}若需自动封禁或管理 IP，请使用选项 3 配置 Fail2Ban 或手动编辑 /etc/hosts.deny。${RESET}"
                 read -p "按回车键返回主菜单..."
-                ;;
             20)
                 # Speedtest测速面板（基于 ALS - Another Looking-glass Server）
                 echo -e "${GREEN}正在准备处理 Speedtest 测速面板...${RESET}"
