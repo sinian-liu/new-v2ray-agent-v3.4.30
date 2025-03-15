@@ -1453,7 +1453,7 @@ EOF
         fi
     }
 
-# 选项10：拉取镜像并安装容器（增强版 - 显示端口映射）
+# 选项10：拉取镜像并安装容器（通用优化版）
 install_image_container() {
     if ! check_docker_status; then return; fi
 
@@ -1491,6 +1491,7 @@ install_image_container() {
         for port in "${!ports[@]}"; do
             port_num="${port%/*}"
             if [ "$port_num" -ge 1 ] && [ "$port_num" -le 65535 ]; then
+                echo -e "${YELLOW}[元数据检测] 发现端口 ${port_num}${RESET}"
                 exposed_ports+=("$port_num")
             fi
         done
@@ -1514,16 +1515,22 @@ install_image_container() {
         docker stop "$temp_container_id" >/dev/null 2>&1
     fi
 
-    # 如果未检测到有效端口，提示用户手动指定
+    # 如果未检测到有效端口，提示用户从常见端口选择
+    common_ports=(80 443 8080 8096 9000)
     if [ ${#exposed_ports[@]} -eq 0 ]; then
+        echo -e "${YELLOW}未检测到有效暴露端口，请从以下常见端口选择：${RESET}"
+        for i in "${!common_ports[@]}"; do
+            echo -e "  ${i}. ${common_ports[$i]}"
+        done
         while true; do
-            read -p "${YELLOW}未检测到有效暴露端口，请手动输入容器端口（默认 80）：${RESET} " manual_port
-            manual_port=${manual_port:-80}
-            if ! [[ "$manual_port" =~ ^[0-9]+$ ]] || [ "$manual_port" -lt 1 ] || [ "$manual_port" -gt 65535 ]; then
-                echo -e "${RED}无效端口，请输入 1-65535 之间的数字！${RESET}"
+            read -p "请输入容器端口编号（0-4，默认 0 即 80）： " port_choice
+            port_choice=${port_choice:-0}
+            if ! [[ "$port_choice" =~ ^[0-4]$ ]]; then
+                echo -e "${RED}无效选择，请输入 0-4 之间的数字！${RESET}"
                 continue
             fi
-            exposed_ports+=("$manual_port")
+            exposed_ports+=("${common_ports[$port_choice]}")
+            echo -e "${GREEN}选择容器端口 ${exposed_ports[0]}${RESET}"
             break
         done
     fi
@@ -1559,9 +1566,10 @@ install_image_container() {
                 fi
             fi
 
-            port_mappings+=("-p ${host_port}:${port}")
+            port_mappings+=("-p" "${host_port}:${port}")
             port_mapping_display+=("${port} -> ${host_port}")
             used_host_ports+=("$host_port")
+            echo -e "${GREEN}端口映射：容器端口 ${port} -> 宿主机端口 ${host_port}${RESET}"
             break
         done
     done
@@ -1580,20 +1588,22 @@ install_image_container() {
 
     # 防火墙处理
     open_port() {
-        for mapping in "${port_mappings[@]}"; do
-            host_port=$(echo "$mapping" | awk -F'[: ]' '{print $2}')
-            echo -e "${YELLOW}处理防火墙，放行端口 ${host_port}...${RESET}"
-            if command -v ufw >/dev/null 2>&1; then
-                if ! ufw status | grep -q "${host_port}/tcp"; then
-                    sudo ufw allow "${host_port}/tcp" && sudo ufw reload
+        for ((i=0; i<${#port_mappings[@]}; i+=2)); do
+            if [[ "${port_mappings[$i]}" == "-p" && "${port_mappings[$i+1]}" =~ ^[0-9]+:[0-9]+$ ]]; then
+                host_port=$(echo "${port_mappings[$i+1]}" | cut -d':' -f1)
+                echo -e "${YELLOW}处理防火墙，放行端口 ${host_port}...${RESET}"
+                if command -v ufw >/dev/null 2>&1; then
+                    if ! ufw status | grep -q "${host_port}/tcp"; then
+                        sudo ufw allow "${host_port}/tcp" && sudo ufw reload
+                    fi
+                elif command -v firewall-cmd >/dev/null 2>&1; then
+                    if ! firewall-cmd --list-ports | grep -qw "${host_port}/tcp"; then
+                        sudo firewall-cmd --permanent --add-port="${host_port}/tcp"
+                        sudo firewall-cmd --reload
+                    fi
+                else
+                    echo -e "${YELLOW}未检测到防火墙工具，请手动放行端口 ${host_port}${RESET}"
                 fi
-            elif command -v firewall-cmd >/dev/null 2>&1; then
-                if ! firewall-cmd --list-ports | grep -qw "${host_port}/tcp"; then
-                    sudo firewall-cmd --permanent --add-port="${host_port}/tcp"
-                    sudo firewall-cmd --reload
-                fi
-            else
-                echo -e "${YELLOW}未检测到防火墙工具，请手动放行端口 ${host_port}${RESET}"
             fi
         done
     }
@@ -1612,14 +1622,17 @@ install_image_container() {
     )
 
     # 捕获详细错误输出
-    if ! error_output=$("${docker_run_cmd[@]}" 2>&1); then
+    if ! output=$("${docker_run_cmd[@]}" 2>&1); then
         echo -e "${RED}容器启动失败！错误信息：${RESET}"
-        echo "$error_output"
+        echo "$output"
         echo -e "${RED}可能原因：${RESET}"
         echo -e "1. 端口配置错误"
-        echo -e "2. 镜像需要特定启动参数（请查看镜像文档）"
+        echo -e "2. 镜像需要特定启动参数（请查看镜像文档，如 -p 端口或 -e 环境变量）"
         echo -e "3. 权限或资源问题"
         echo -e "调试命令：${docker_run_cmd[*]}"
+        # 检查日志以提供更多线索
+        echo -e "${YELLOW}建议运行以下命令查看镜像需求：${RESET}"
+        echo "docker run --rm -it $image_name sh -c 'cat /etc/services || echo 未知'"
     else
         sleep 5
         if ! docker ps | grep -q "$container_name"; then
@@ -1641,8 +1654,8 @@ install_image_container() {
             echo -e "    - ${mapping}"
         done
         [ "$public_ip" != "N/A" ] && echo -e " 公网访问："
-        for mapping in "${port_mappings[@]}"; do
-            host_port=$(echo "$mapping" | awk -F'[: ]' '{print $2}')
+        for mapping in "${port_mapping_display[@]}"; do
+            host_port=$(echo "$mapping" | cut -d' ' -f3)
             [ "$public_ip" != "N/A" ] && echo -e "   - http://${public_ip}:${host_port}"
             echo -e "  内网访问：http://${server_ip}:${host_port}"
         done
