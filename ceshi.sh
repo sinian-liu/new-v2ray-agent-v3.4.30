@@ -1453,146 +1453,295 @@ EOF
         fi
     }
 
-# 选项10：拉取镜像并安装容器（增强版）
+# 选项10：拉取镜像并安装容器（增强完整版）
 install_image_container() {
     if ! check_docker_status; then return; fi
 
-    # 获取镜像名称
+    # 严格镜像名称验证
     while true; do
         read -p "请输入要拉取的 Docker 镜像名称（例如：nginx:latest）：" image_name
         if [[ -z "$image_name" ]]; then
             echo -e "${RED}镜像名称不能为空！${RESET}"
             continue
         fi
+        if [[ ! "$image_name" =~ ^([a-zA-Z0-9-]+(\.[a-zA-Z0-9-]+)*(:[0-9]+)?/)?[a-zA-Z0-9_-]+(/[a-zA-Z0-9_-]+)*(:[a-zA-Z0-9_.-]+)?$ ]]; then
+            echo -e "${RED}格式错误！有效示例：\nnginx:latest\n私有仓库：harbor.example.com/project/image:v1${RESET}"
+            continue
+        fi
         break
     done
 
-    # 拉取镜像
+    # 多架构拉取支持
     echo -e "${GREEN}正在拉取镜像 ${image_name}...${RESET}"
-    if ! docker pull "$image_name"; then
-        echo -e "${RED}镜像拉取失败！请检查：\n1. 镜像名称是否正确\n2. 网络连接是否正常${RESET}"
-        return
-    fi
-
-    # 设置安装路径
-    read -p "请输入容器安装路径（默认：/root/docker/home）：" data_path
-    data_path=${data_path:-/root/docker/home}
-    if [ ! -d "$data_path" ]; then
-        echo -e "${YELLOW}创建数据目录：$data_path${RESET}"
-        mkdir -p "$data_path" || sudo mkdir -p "$data_path"
-        if [ $? -ne 0 ]; then
-            echo -e "${RED}目录创建失败，请检查权限！${RESET}"
+    if ! docker pull --platform linux/amd64 "$image_name"; then
+        echo -e "${YELLOW}尝试不指定架构拉取...${RESET}"
+        if ! docker pull "$image_name"; then
+            echo -e "${RED}镜像拉取失败！请检查：\n1. 镜像名称是否正确\n2. 网络连接是否正常\n3. 仓库登录状态（如需）${RESET}"
             return
         fi
     fi
 
-    # 端口处理
-    while true; do
-        read -p "请输入容器外部端口（默认：8080）：" container_port
-        container_port=${container_port:-8080}
-        
-        # 验证端口格式
-        if ! [[ "$container_port" =~ ^[0-9]+$ ]] || [ "$container_port" -lt 1 ] || [ "$container_port" -gt 65535 ]; then
-            echo -e "${RED}无效端口，请输入 1-65535 之间的数字！${RESET}"
-            continue
-        fi
+    # 三级端口检测机制
+    detected_ports=()
+    # 方法1：元数据检测
+    port_info=$(docker inspect --format='{{json .Config.ExposedPorts}}' "$image_name" 2>/dev/null)
+    if [ $? -eq 0 ] && [ "$port_info" != "null" ]; then
+        eval "declare -A ports=${port_info}"
+        detected_ports=("${!ports[@]//\/*/}")
+    fi
 
-        # 检查端口占用
-        if ss -tuln | grep -q ":${container_port} "; then
-            echo -e "${RED}端口 ${container_port} 已被占用！${RESET}"
-            read -p "是否尝试更换端口？(y/n，默认 y)：" change_port
-            if [[ "${change_port:-y}" =~ [Yy] ]]; then
-                continue
-            else
-                return
+    # 方法2：运行时检测
+    temp_container=$(docker run -d --rm "$image_name" tail -f /dev/null 2>/dev/null)
+    if [ $? -eq 0 ]; then
+        runtime_ports=$(docker exec "$temp_container" sh -c "
+            if command -v ss >/dev/null; then
+                ss -tuln | awk '{print \$5}' | cut -d':' -f2
+            elif command -v netstat >/dev/null; then
+                netstat -tuln | awk '/^tcp|udp/{print \$4}' | cut -d':' -f2
+            fi" 2>/dev/null | sort -un)
+        
+        for port in $runtime_ports; do
+            if [[ ! " ${detected_ports[@]} " =~ " $port " ]]; then
+                detected_ports+=("$port")
             fi
-        else
-            break
+        done
+        docker stop "$temp_container" >/dev/null
+    fi
+
+    # 方法3：常见端口补充
+    common_ports=("80" "443" "8080" "3000" "16601" "3306" "5432" "6379" "27017")
+    for port in "${common_ports[@]}"; do
+        if [[ ! " ${detected_ports[@]} " =~ " $port " ]]; then
+            detected_ports+=("$port")
         fi
     done
 
-    # 获取容器内部端口
-    read -p "请输入容器内部服务端口（默认80，参考镜像文档）：" app_port
-    app_port=${app_port:-80}
+    # 去重排序
+    detected_ports=($(printf "%s\n" "${detected_ports[@]}" | sort -un))
 
-    # 处理防火墙
-    open_port() {
-        local port=$1
-        echo -e "${YELLOW}正在处理防火墙...${RESET}"
-        # 针对不同系统处理
-        if command -v ufw > /dev/null 2>&1; then
-            if ! ufw status | grep -q "${port}/tcp"; then
-                sudo ufw allow "${port}/tcp" && sudo ufw reload
+    # 智能端口映射
+    declare -A port_mapping
+    if [ ${#detected_ports[@]} -gt 0 ]; then
+        echo -e "${GREEN}检测到可能使用的端口：${detected_ports[*]}${RESET}"
+        for port in "${detected_ports[@]}"; do
+            # 智能推荐策略
+            if [[ "$port" == "80" || "$port" == "443" ]]; then
+                recommended_port=$port
+                if ss -tuln | grep -q ":${port}\s"; then
+                    recommended_port=$(comm -23 <(seq 8080 8100 | sort) <(ss -tuln | awk '{print $5}' | cut -d':' -f2 | sort -u | head -n1)
+                fi
+            else
+                recommended_port=$(($port + 10000))
+                while ss -tuln | grep -q ":${recommended_port}\s"; do
+                    ((recommended_port++))
+                done
             fi
-        elif command -v firewall-cmd > /dev/null 2>&1; then
-            if ! firewall-cmd --list-ports | grep -qw "${port}/tcp"; then
-                sudo firewall-cmd --permanent --add-port=${port}/tcp
-                sudo firewall-cmd --reload
+
+            # 端口映射配置
+            while true; do
+                read -p "为容器端口 ${port} 输入宿主机端口（推荐 ${recommended_port}）：" host_port
+                host_port=${host_port:-$recommended_port}
+
+                if ! [[ "$host_port" =~ ^[0-9]+$ ]] || ((host_port < 1 || host_port > 65535)); then
+                    echo -e "${RED}端口号必须为1-65535的整数！${RESET}"
+                    continue
+                fi
+
+                # 冲突检测
+                if ss -tuln | grep -q ":${host_port}\s"; then
+                    process_info=$(ss -tulpn | grep ":${host_port} " | awk '{print $7}')
+                    echo -e "${RED}端口冲突！占用进程：${process_info}${RESET}"
+                    read -p "仍要使用此端口？(y/N)：" force_use
+                    if [[ ! "${force_use}" =~ [Yy] ]]; then
+                        continue
+                    fi
+                fi
+
+                port_mapping["$port"]=$host_port
+                break
+            done
+        done
+    else
+        echo -e "${YELLOW}未检测到开放端口，需要手动配置映射${RESET}"
+        while true; do
+            read -p "请输入端口映射规则（格式：宿主机端口:容器端口，多个用空格分隔）：" mappings
+            if [ -z "$mappings" ]; then
+                echo -e "${RED}必须至少配置一个端口映射！${RESET}"
+                continue
             fi
-        else
-            echo -e "${YELLOW}未检测到防火墙工具，请手动放行端口 ${port}${RESET}"
+            
+            valid=true
+            for map in $mappings; do
+                if ! [[ "$map" =~ ^[0-9]+:[0-9]+$ ]]; then
+                    echo -e "${RED}无效格式：$map，请使用 宿主机端口:容器端口${RESET}"
+                    valid=false
+                    break
+                fi
+                IFS=':' read -r host_port container_port <<< "$map"
+                port_mapping["$container_port"]=$host_port
+            done
+            
+            $valid && break
+        done
+    fi
+
+    # 数据路径设置（增强权限处理）
+    while true; do
+        read -p "请输入容器数据存储路径（默认：/root/docker/data）：" data_path
+        data_path=${data_path:-/root/docker/data}
+
+        if [[ ! "$data_path" =~ ^/ ]]; then
+            echo -e "${RED}必须使用绝对路径！${RESET}"
+            continue
         fi
-    }
-    open_port "$container_port"
 
-    # 生成容器名称
-    container_name="$(echo "$image_name" | tr '/:' '_')_$(date +%s)"
+        if mkdir -p "$data_path" 2>/dev/null; then
+            break
+        else
+            echo -e "${RED}目录创建失败！尝试以下方法："
+            echo -e "1. 使用sudo创建目录：sudo mkdir -p \"$data_path\""
+            echo -e "2. 修改目录权限：sudo chown \$USER \"$data_path\""
+            return
+        fi
+    done
 
-    # 运行容器（增加重启策略）
+    # 多容器支持（反向代理配置）
+    if [[ " ${!port_mapping[@]} " =~ "80" || " ${!port_mapping[@]} " =~ "443" ]]; then
+        read -p "是否为该服务配置域名访问？(y/n)：" need_domain
+        if [[ "$need_domain" =~ [Yy] ]]; then
+            read -p "请输入绑定域名（如：app.example.com）：" domain
+            if [[ "$domain" =~ ^([a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}$ ]]; then
+                echo -e "${GREEN}生成Nginx配置：${RESET}"
+                echo "server {"
+                echo "    listen 80;"
+                echo "    server_name $domain;"
+                echo "    location / {"
+                echo "        proxy_pass http://127.0.0.1:${port_mapping[80]};"
+                echo "        proxy_set_header Host \$host;"
+                echo "        proxy_set_header X-Real-IP \$remote_addr;"
+                echo "    }"
+                echo "    # HTTPS重定向"
+                echo "    # listen 443 ssl;"
+                echo "    # ssl_certificate /path/to/cert.pem;"
+                echo "    # ssl_certificate_key /path/to/privkey.pem;"
+                echo "}"
+            else
+                echo -e "${RED}域名格式无效，跳过配置${RESET}"
+            fi
+        fi
+    fi
+
+    # 容器启动命令
+    container_name="$(echo "$image_name" | tr '/:' '-')-$(date +%s)"
+    docker_run_cmd=(
+        docker run -d
+        --name "$container_name"
+        --restart unless-stopped
+        --log-opt max-size=100m
+    )
+
+    # 添加端口映射
+    for port in "${!port_mapping[@]}"; do
+        docker_run_cmd+=(-p "${port_mapping[$port]}:$port")
+    done
+
+    # 添加数据卷
+    docker_run_cmd+=(-v "${data_path}:/app/data")
+
+    # 资源限制（可选）
+    read -p "是否设置资源限制？(y/n) [n]：" set_limit
+    if [[ "${set_limit:-n}" =~ [Yy] ]]; then
+        read -p "CPU核心限制（如：1.5）：" cpu_limit
+        read -p "内存限制（如：512m）：" mem_limit
+        [ -n "$cpu_limit" ] && docker_run_cmd+=(--cpus="$cpu_limit")
+        [ -n "$mem_limit" ] && docker_run_cmd+=(-m "$mem_limit")
+    fi
+
+    docker_run_cmd+=("$image_name")
+
+    # 运行容器
     echo -e "${GREEN}正在启动容器...${RESET}"
-    if docker run -d \
-        --name "$container_name" \
-        --restart unless-stopped \
-        -p "$container_port:$app_port" \
-        -v "${data_path}:/app/data" \
-        "$image_name"; then
-
+    if "${docker_run_cmd[@]}"; then
         # 等待容器初始化
         echo -e "${YELLOW}等待容器启动（5秒）...${RESET}"
         sleep 5
 
         # 检查容器状态
         if ! docker ps | grep -q "$container_name"; then
-            echo -e "${RED}容器启动后异常退出，请查看日志：${RESET}"
+            echo -e "${RED}容器启动失败！查看日志：${RESET}"
             docker logs "$container_name"
             return
         fi
 
-        # 获取网络信息
+        # 验证服务状态
+        check_service() {
+            for port in "${!port_mapping[@]}"; do
+                if docker exec "$container_name" curl -sSf "http://localhost:$port" >/dev/null; then
+                    echo -e "${GREEN}端口 $port 服务检测成功！${RESET}"
+                else
+                    echo -e "${YELLOW}警告：端口 $port 服务无响应，可能原因："
+                    echo -e "1. 应用启动时间较长"
+                    echo -e "2. 需要特殊访问参数"
+                    echo -e "3. 服务未正确配置${RESET}"
+                fi
+            done
+        }
+        check_service
+
+        # 显示访问信息
         server_ip=$(hostname -I | awk '{print $1}')
         public_ip=$(curl -s4 icanhazip.com || curl -s6 icanhazip.com || echo "N/A")
         
-        # 验证端口连通性
-        echo -e "${YELLOW}正在验证服务可用性...${RESET}"
-        if docker exec "$container_name" curl -sSf http://localhost:$app_port >/dev/null 2>&1; then
-            echo -e "${GREEN}容器内部服务检测成功！${RESET}"
-        else
-            echo -e "${YELLOW}警告：容器内部服务检测失败，可能原因："
-            echo -e "1. 镜像未在 $app_port 端口监听服务"
-            echo -e "2. 容器启动参数需要调整"
-            echo -e "3. 应用初始化时间较长（可稍后手动检测）${RESET}"
-        fi
+        echo -e "${GREEN}\n================ 容器部署成功 ================${RESET}"
+        echo -e "容器名称：$container_name"
+        echo -e "镜像版本：$image_name"
+        echo -e "数据存储：$data_path"
+        echo -e "端口映射："
+        for port in "${!port_mapping[@]}"; do
+            echo -e "  - ${port_mapping[$port]} ➔ $port"
+        done
+        echo -e "\n访问方式："
+        for port in "${!port_mapping[@]}"; do
+            if [[ "$port" == "80" ]]; then
+                [ "$public_ip" != "N/A" ] && echo -e "公网HTTP：http://${public_ip}:${port_mapping[$port]}"
+                echo -e "内网HTTP：http://${server_ip}:${port_mapping[$port]}"
+            elif [[ "$port" == "443" ]]; then
+                [ "$public_ip" != "N/A" ] && echo -e "公网HTTPS：https://${public_ip}:${port_mapping[$port]}"
+                echo -e "内网HTTPS：https://${server_ip}:${port_mapping[$port]}"
+            else
+                [ "$public_ip" != "N/A" ] && echo -e "公网访问：http://${public_ip}:${port_mapping[$port]}"
+                echo -e "内网访问：http://${server_ip}:${port_mapping[$port]}"
+            fi
+        done
+        echo -e "${GREEN}============================================${RESET}"
 
-        # 显示访问信息
-        echo -e "${GREEN}------------------------------------------------------"
-        echo -e " 容器名称：$container_name"
-        echo -e " 镜像名称：$image_name"
-        [ "$public_ip" != "N/A" ] && echo -e " 公网访问：http://${public_ip}:${container_port}"
-        echo -e " 内网访问：http://${server_ip}:${container_port}"
-        echo -e " 数据路径：$data_path"
-        echo -e " 端口映射：$container_port ➔ $app_port"
-        echo -e "------------------------------------------------------${RESET}"
-        
-        # 附加诊断信息
-        echo -e "${YELLOW}诊断命令："
-        echo -e "查看日志：docker logs $container_name"
-        echo -e "进入容器：docker exec -it $container_name sh"
+        # 防火墙处理
+        open_port() {
+            for port in "${port_mapping[@]}"; do
+                echo -e "${YELLOW}处理防火墙端口 $port...${RESET}"
+                if command -v ufw >/dev/null; then
+                    sudo ufw allow "$port/tcp"
+                elif command -v firewall-cmd >/dev/null; then
+                    sudo firewall-cmd --permanent --add-port="$port/tcp"
+                    sudo firewall-cmd --reload
+                fi
+            done
+        }
+        open_port
+
+        # 管理命令提示
+        echo -e "\n${YELLOW}管理命令："
+        echo -e "查看日志：docker logs -f $container_name"
+        echo -e "进入容器：docker exec -it $container_name /bin/bash"
+        echo -e "停止容器：docker stop $container_name"
         echo -e "删除容器：docker rm -f $container_name${RESET}"
     else
-        echo -e "${RED}容器启动失败！请检查以下可能原因："
-        echo -e "1. 端口冲突"
-        echo -e "2. 存储路径权限问题"
-        echo -e "3. 镜像启动参数要求${RESET}"
+        echo -e "${RED}容器启动失败！可能原因："
+        echo -e "1. 端口冲突（即使强制使用）"
+        echo -e "2. 存储路径权限不足"
+        echo -e "3. 镜像需要特殊启动参数"
+        echo -e "\n尝试手动运行命令排查："
+        echo -e "${docker_run_cmd[*]}${RESET}"
     fi
 }
 
