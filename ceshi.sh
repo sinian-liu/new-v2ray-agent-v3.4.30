@@ -1481,27 +1481,80 @@ install_image_container() {
         fi
     done
 
-    # 智能检测镜像暴露端口
+    # 增强版端口检测逻辑
     echo -e "${YELLOW}正在分析镜像配置...${RESET}"
     exposed_ports=()
+    
+    # 方法1：通过镜像元数据检测
     port_info=$(docker inspect --format='{{json .Config.ExposedPorts}}' "$image_name" 2>/dev/null)
     if [ $? -eq 0 ] && [ "$port_info" != "null" ]; then
         eval "declare -A ports=${port_info}"
         for port in "${!ports[@]}"; do
-            exposed_ports+=("${port%/*}")
+            exposed_ports+=("${port%/*}") # 去除协议部分
         done
     fi
 
+    # 方法2：通过常见特殊端口补充检测
+    special_ports=("16601" "3000" "8081" "8888") # 常见但可能未声明的端口
+    for port in "${special_ports[@]}"; do
+        if [[ ! " ${exposed_ports[@]} " =~ " ${port} " ]]; then
+            exposed_ports+=("$port")
+            echo -e "${YELLOW}检测到常见特殊端口 ${port} 可能被使用${RESET}"
+        fi
+    done
+
     # 显示检测结果并配置端口
     port_mappings=()
+    declare -A well_known_ports=(
+        ["80"]="HTTP"
+        ["443"]="HTTPS" 
+        ["16601"]="Lucky服务"
+        ["22"]="SSH"
+        ["3306"]="MySQL"
+        ["5432"]="PostgreSQL"
+        ["6379"]="Redis"
+        ["27017"]="MongoDB"
+    )
+
+    # 获取已占用端口
+    used_host_ports=($(ss -tuln | awk '{print $5}' | cut -d':' -f2 | sort -un))
+
     if [ ${#exposed_ports[@]} -gt 0 ]; then
-        echo -e "${GREEN}检测到镜像暴露的端口：${exposed_ports[*]}${RESET}"
+        echo -e "${GREEN}检测到镜像暴露的端口：${RESET}"
+        for port in "${exposed_ports[@]}"; do
+            service="${well_known_ports[$port]:-自定义服务}"
+            echo -e "端口 ${YELLOW}${port}${RESET} (${service})"
+        done
+
         for port in "${exposed_ports[@]}"; do
             while true; do
-                default_host_port=$(($port + 10000)) # 生成推荐端口
-                read -p "请输入 ${port} 端口要映射的宿主机端口（推荐 ${default_host_port}，留空使用推荐值）：" host_port
-                host_port=${host_port:-$default_host_port}
-                
+                # 智能推荐策略
+                if [[ "$port" == "80" || "$port" == "443" ]]; then
+                    # 标准端口处理
+                    if [[ " ${used_host_ports[@]} " =~ " ${port} " ]]; then
+                        echo -e "${RED}⚠️ 检测到宿主机${port}端口已被占用！${RESET}"
+                        read -p "是否启用智能端口分配？(y/n) [y]：" smart_allocate
+                        if [[ "${smart_allocate:-y}" =~ [Yy] ]]; then
+                            recommended_port=$(comm -23 <(seq 8080 8100 | sort) <(printf "%s\n" "${used_host_ports[@]}" | sort) | head -n1)
+                            echo -e "${YELLOW}推荐使用高位端口：${recommended_port}${RESET}"
+                        else
+                            recommended_port=$port
+                        fi
+                    else
+                        recommended_port=$port
+                    fi
+                else
+                    # 非常用端口处理
+                    recommended_port=$(($port + 10000))
+                    # 确保推荐端口未被占用
+                    while [[ " ${used_host_ports[@]} " =~ " ${recommended_port} " ]]; do
+                        recommended_port=$((recommended_port + 1))
+                    done
+                fi
+
+                read -p "请为容器端口 ${port} 输入宿主机端口（推荐 ${recommended_port}）：" host_port
+                host_port=${host_port:-$recommended_port}
+
                 # 验证端口格式
                 if ! [[ "$host_port" =~ ^[0-9]+$ ]] || [ "$host_port" -lt 1 ] || [ "$host_port" -gt 65535 ]; then
                     echo -e "${RED}无效端口，请输入 1-65535 之间的数字！${RESET}"
@@ -1509,22 +1562,31 @@ install_image_container() {
                 fi
 
                 # 检查端口占用
-                if ss -tuln | grep -q ":${host_port} "; then
+                if [[ " ${used_host_ports[@]} " =~ " ${host_port} " ]]; then
                     echo -e "${RED}端口 ${host_port} 已被占用！${RESET}"
-                    read -p "是否尝试其他端口？(y/n，默认 y)：" retry_port
-                    if [[ "${retry_port:-y}" =~ [Yy] ]]; then
-                        continue
+                    read -p "尝试自动寻找可用端口？(y/n) [y]：" auto_find
+                    if [[ "${auto_find:-y}" =~ [Yy] ]]; then
+                        new_port=$(comm -23 <(seq $((host_port+1)) $((host_port+10)) <(printf "%s\n" "${used_host_ports[@]}" | sort) | head -n1)
+                        if [ -n "$new_port" ]; then
+                            echo -e "${GREEN}找到可用端口：${new_port}${RESET}"
+                            host_port=$new_port
+                        else
+                            echo -e "${RED}附近无可用端口，请手动输入${RESET}"
+                            continue
+                        fi
                     else
-                        break
+                        continue
                     fi
-                else
-                    port_mappings+=("-p ${host_port}:${port}")
-                    break
                 fi
+
+                port_mappings+=("-p ${host_port}:${port}")
+                used_host_ports+=("$host_port")
+                break
             done
         done
     else
         echo -e "${YELLOW}未检测到暴露端口，需要手动配置${RESET}"
+        echo -e "${YELLOW}提示：常见容器端口如 80 (HTTP)、443 (HTTPS)、16601 (Lucky)，请按需配置。${RESET}"
         while true; do
             read -p "请输入端口映射规则（格式：宿主机端口:容器端口，多个用空格分隔）：" mappings
             if [ -z "$mappings" ]; then
@@ -1557,6 +1619,22 @@ install_image_container() {
         IFS=':' read -r host_port container_port <<< "${mapping//-p /}"
         printf "%-30s %-30s\n" "$host_port" "$container_port"
     done
+
+    # 多容器处理建议
+    if [[ "${port_mappings[@]}" =~ ":80" || "${port_mappings[@]}" =~ ":443" ]]; then
+        echo -e "${YELLOW}⚠️ 多容器部署建议："
+        echo -e "1. 推荐使用反向代理统一管理Web服务"
+        echo -e "2. 保持容器内部80/443端口不变"
+        echo -e "3. 示例Nginx配置："
+        echo -e "server {"
+        echo -e "    listen 80;"
+        echo -e "    server_name app1.example.com;"
+        echo -e "    location / {"
+        echo -e "        proxy_pass http://localhost:${host_port};"
+        echo -e "    }"
+        echo -e "}"
+        echo -e "${RESET}"
+    fi
 
     # 设置安装路径
     read -p "请输入容器数据存储路径（默认：/root/docker/data）：" data_path
