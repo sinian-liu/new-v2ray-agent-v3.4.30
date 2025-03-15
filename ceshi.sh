@@ -1453,7 +1453,7 @@ EOF
         fi
     }
 
-# 选项10：拉取镜像并安装容器（自动化版）
+# 选项10：拉取镜像并安装容器（增强版 - 显示端口映射）
 install_image_container() {
     if ! check_docker_status; then return; fi
 
@@ -1474,19 +1474,29 @@ install_image_container() {
         return
     fi
 
+    # 获取系统占用端口
+    echo -e "${YELLOW}当前系统占用的端口：${RESET}"
+    used_host_ports=($(ss -tuln | awk '{print $5}' | cut -d':' -f2 | grep -E '^[0-9]+$' | sort -un))
+    for port in "${used_host_ports[@]}"; do
+        echo -e "  - 端口 ${port}"
+    done
+
     # 自动检测镜像端口
     exposed_ports=()
 
-    # 1. 元数据检测（从镜像配置中获取暴露端口）
+    # 1. 元数据检测
     port_info=$(docker inspect --format='{{json .Config.ExposedPorts}}' "$image_name" 2>/dev/null)
     if [ $? -eq 0 ] && [ "$port_info" != "null" ]; then
         eval "declare -A ports=${port_info}"
         for port in "${!ports[@]}"; do
-            exposed_ports+=("${port%/*}")
+            port_num="${port%/*}"
+            if [ "$port_num" -ge 1 ] && [ "$port_num" -le 65535 ]; then
+                exposed_ports+=("$port_num")
+            fi
         done
     fi
 
-    # 2. 运行时检测（启动临时容器检查实际监听端口）
+    # 2. 运行时检测
     temp_container_id=$(docker run -d --rm "$image_name" tail -f /dev/null 2>/dev/null)
     if [ $? -eq 0 ]; then
         runtime_ports=$(docker exec "$temp_container_id" sh -c "
@@ -1494,11 +1504,9 @@ install_image_container() {
                 ss -tuln | awk '{print \$5}' | cut -d':' -f2 | grep -E '^[0-9]+$' | sort -un
             elif command -v netstat >/dev/null; then
                 netstat -tuln | awk '/^tcp|udp/ {print \$4}' | cut -d':' -f2 | grep -E '^[0-9]+$' | sort -un
-            else
-                echo ''
             fi" 2>/dev/null)
         for port in $runtime_ports; do
-            if [[ ! " ${exposed_ports[@]} " =~ " ${port} " ]]; then
+            if [ "$port" -ge 1 ] && [ "$port" -le 65535 ] && [[ ! " ${exposed_ports[@]} " =~ " ${port} " ]]; then
                 echo -e "${YELLOW}[运行时检测] 发现端口 ${port}${RESET}"
                 exposed_ports+=("$port")
             fi
@@ -1506,23 +1514,30 @@ install_image_container() {
         docker stop "$temp_container_id" >/dev/null 2>&1
     fi
 
-    # 如果未检测到端口，默认使用 80
+    # 如果未检测到有效端口，提示用户手动指定
     if [ ${#exposed_ports[@]} -eq 0 ]; then
-        exposed_ports+=("80")
-        echo -e "${YELLOW}未检测到暴露端口，默认使用 80${RESET}"
+        while true; do
+            read -p "${YELLOW}未检测到有效暴露端口，请手动输入容器端口（默认 80）：${RESET} " manual_port
+            manual_port=${manual_port:-80}
+            if ! [[ "$manual_port" =~ ^[0-9]+$ ]] || [ "$manual_port" -lt 1 ] || [ "$manual_port" -gt 65535 ]; then
+                echo -e "${RED}无效端口，请输入 1-65535 之间的数字！${RESET}"
+                continue
+            fi
+            exposed_ports+=("$manual_port")
+            break
+        done
     fi
 
     # 智能端口映射
     port_mappings=()
-    used_host_ports=($(ss -tuln | awk '{print $5}' | cut -d':' -f2 | sort -un))
+    port_mapping_display=()
 
     for port in "${exposed_ports[@]}"; do
-        # 推荐宿主机端口：优先使用容器端口，若占用则递增查找
         recommended_port=$port
         while [[ " ${used_host_ports[@]} " =~ " ${recommended_port} " ]]; do
             recommended_port=$((recommended_port + 1))
             if [ "$recommended_port" -gt 65535 ]; then
-                recommended_port=8080  # 重置到常见起始端口
+                recommended_port=8080
             fi
         done
 
@@ -1530,15 +1545,13 @@ install_image_container() {
             read -p "映射容器端口 ${port} 到宿主机端口（默认 ${recommended_port}，回车使用默认）： " host_port
             host_port=${host_port:-$recommended_port}
 
-            # 验证端口格式
             if ! [[ "$host_port" =~ ^[0-9]+$ ]] || [ "$host_port" -lt 1 ] || [ "$host_port" -gt 65535 ]; then
                 echo -e "${RED}无效端口，请输入 1-65535 之间的数字！${RESET}"
                 continue
             fi
 
-            # 检查端口占用
             if [[ " ${used_host_ports[@]} " =~ " ${host_port} " ]]; then
-                echo -e "${RED}端口 ${host_port} 已占用！${RESET}"
+                echo -e "${RED}端口 ${host_port} 已占用！建议更换端口：${RESET}"
                 ss -tulpn | grep ":$host_port"
                 read -p "更换端口？(y/N，默认 y)： " change_port
                 if [[ "${change_port:-y}" =~ [Yy] ]]; then
@@ -1547,12 +1560,13 @@ install_image_container() {
             fi
 
             port_mappings+=("-p ${host_port}:${port}")
+            port_mapping_display+=("${port} -> ${host_port}")
             used_host_ports+=("$host_port")
             break
         done
     done
 
-    # 数据路径设置（用户可自由输入，默认提供）
+    # 数据路径设置
     default_data_path="/root/docker/home"
     read -p "请输入容器数据路径（默认：${default_data_path}，回车使用默认）： " data_path
     data_path=${data_path:-$default_data_path}
@@ -1597,8 +1611,17 @@ install_image_container() {
         "$image_name"
     )
 
-    if "${docker_run_cmd[@]}"; then
-        sleep 5  # 等待容器初始化
+    # 捕获详细错误输出
+    if ! error_output=$("${docker_run_cmd[@]}" 2>&1); then
+        echo -e "${RED}容器启动失败！错误信息：${RESET}"
+        echo "$error_output"
+        echo -e "${RED}可能原因：${RESET}"
+        echo -e "1. 端口配置错误"
+        echo -e "2. 镜像需要特定启动参数（请查看镜像文档）"
+        echo -e "3. 权限或资源问题"
+        echo -e "调试命令：${docker_run_cmd[*]}"
+    else
+        sleep 5
         if ! docker ps | grep -q "$container_name"; then
             echo -e "${RED}容器启动后异常退出，请查看日志：${RESET}"
             docker logs "$container_name"
@@ -1613,6 +1636,10 @@ install_image_container() {
         echo -e "${GREEN}------------------------------------------------------"
         echo -e " 容器名称：$container_name"
         echo -e " 镜像名称：$image_name"
+        echo -e " 端口映射（容器内 -> 宿主机）："
+        for mapping in "${port_mapping_display[@]}"; do
+            echo -e "    - ${mapping}"
+        done
         [ "$public_ip" != "N/A" ] && echo -e " 公网访问："
         for mapping in "${port_mappings[@]}"; do
             host_port=$(echo "$mapping" | awk -F'[: ]' '{print $2}')
@@ -1620,7 +1647,6 @@ install_image_container() {
             echo -e "  内网访问：http://${server_ip}:${host_port}"
         done
         echo -e " 数据路径：$data_path"
-        echo -e " 端口映射：${port_mappings[*]}"
         echo -e "------------------------------------------------------${RESET}"
 
         # 诊断命令
@@ -1629,12 +1655,6 @@ install_image_container() {
         echo -e "进入容器：docker exec -it $container_name sh"
         echo -e "停止容器：docker stop $container_name"
         echo -e "删除容器：docker rm -f $container_name"
-    else
-        echo -e "${RED}容器启动失败！可能原因：${RESET}"
-        echo -e "1. 端口冲突"
-        echo -e "2. 路径权限问题"
-        echo -e "3. 镜像启动参数需求"
-        echo -e "调试命令：${docker_run_cmd[*]}"
     fi
 }
 
