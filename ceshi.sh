@@ -1453,7 +1453,7 @@ EOF
         fi
     }
 
-# 选项10：拉取镜像并安装容器（通用优化版）
+# 选项10：拉取镜像并安装容器（增强版 - 优化端口检测）
 install_image_container() {
     if ! check_docker_status; then return; fi
 
@@ -1515,18 +1515,36 @@ install_image_container() {
         docker stop "$temp_container_id" >/dev/null 2>&1
     fi
 
-    # 如果未检测到有效端口，提示用户从常见端口选择
-    common_ports=(80 443 8080 8096 9000)
+    # 3. 日志检测（针对类似 gdy666/lucky 的镜像）
+    if [ ${#exposed_ports[@]} -eq 0 ]; then
+        temp_container_id=$(docker run -d --rm "$image_name" 2>/dev/null)
+        if [ $? -eq 0 ]; then
+            sleep 5  # 等待容器启动并生成日志
+            log_output=$(docker logs "$temp_container_id" 2>/dev/null)
+            docker stop "$temp_container_id" >/dev/null 2>&1
+            # 从日志中提取可能的端口（匹配 "Listen on http://:port" 或类似模式）
+            log_ports=$(echo "$log_output" | grep -oP '(http|https)://[^:]*:\K[0-9]+' | sort -un)
+            for port in $log_ports; do
+                if [ "$port" -ge 1 ] && [ "$port" -le 65535 ] && [[ ! " ${exposed_ports[@]} " =~ " ${port} " ]]; then
+                    echo -e "${YELLOW}[日志检测] 发现端口 ${port}${RESET}"
+                    exposed_ports+=("$port")
+                fi
+            done
+        fi
+    fi
+
+    # 如果仍未检测到有效端口，提示用户从常见端口选择
+    common_ports=(80 443 8080 8096 9000 16601)
     if [ ${#exposed_ports[@]} -eq 0 ]; then
         echo -e "${YELLOW}未检测到有效暴露端口，请从以下常见端口选择：${RESET}"
         for i in "${!common_ports[@]}"; do
             echo -e "  ${i}. ${common_ports[$i]}"
         done
         while true; do
-            read -p "请输入容器端口编号（0-4，默认 0 即 80）： " port_choice
+            read -p "请输入容器端口编号（0-5，默认 0 即 80）： " port_choice
             port_choice=${port_choice:-0}
-            if ! [[ "$port_choice" =~ ^[0-4]$ ]]; then
-                echo -e "${RED}无效选择，请输入 0-4 之间的数字！${RESET}"
+            if ! [[ "$port_choice" =~ ^[0-5]$ ]]; then
+                echo -e "${RED}无效选择，请输入 0-5 之间的数字！${RESET}"
                 continue
             fi
             exposed_ports+=("${common_ports[$port_choice]}")
@@ -1626,13 +1644,10 @@ install_image_container() {
         echo -e "${RED}容器启动失败！错误信息：${RESET}"
         echo "$output"
         echo -e "${RED}可能原因：${RESET}"
-        echo -e "1. 端口配置错误"
+        echo -e "1. 端口配置错误（选择的容器端口可能不正确）"
         echo -e "2. 镜像需要特定启动参数（请查看镜像文档，如 -p 端口或 -e 环境变量）"
         echo -e "3. 权限或资源问题"
         echo -e "调试命令：${docker_run_cmd[*]}"
-        # 检查日志以提供更多线索
-        echo -e "${YELLOW}建议运行以下命令查看镜像需求：${RESET}"
-        echo "docker run --rm -it $image_name sh -c 'cat /etc/services || echo 未知'"
     else
         sleep 5
         if ! docker ps | grep -q "$container_name"; then
