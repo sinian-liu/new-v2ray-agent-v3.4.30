@@ -1453,7 +1453,7 @@ EOF
         fi
     }
 
-# 选项10：拉取镜像并安装容器（通用增强版 - 优化等待时间与通用性）
+# 选项10：拉取镜像并安装容器（增强版 - 支持手动拉取）
 install_image_container() {
     if ! check_docker_status; then return; fi
 
@@ -1471,7 +1471,27 @@ install_image_container() {
     echo -e "${GREEN}正在拉取镜像 ${image_name}...${RESET}"
     if ! docker pull "$image_name"; then
         echo -e "${RED}镜像拉取失败！请检查：\n1. 镜像名称是否正确\n2. 网络连接是否正常\n3. 私有仓库是否需要 docker login${RESET}"
-        return
+        # 提示用户手动输入 docker pull 命令
+        read -p "${YELLOW}是否手动输入 docker pull 命令尝试拉取？（y/N，默认 N）：${RESET} " manual_pull_choice
+        if [[ "${manual_pull_choice:-N}" =~ [Yy] ]]; then
+            read -p "请输入完整的 docker pull 命令（示例：docker pull eyeblue/tank）： " manual_pull_cmd
+            if [[ -z "$manual_pull_cmd" ]]; then
+                echo -e "${RED}命令不能为空！返回主菜单...${RESET}"
+                return
+            fi
+            echo -e "${GREEN}正在执行手动拉取命令：${manual_pull_cmd}${RESET}"
+            # 执行用户输入的命令
+            if ! $manual_pull_cmd; then
+                echo -e "${RED}手动拉取失败！请检查命令或网络，返回主菜单...${RESET}"
+                return
+            fi
+            # 手动拉取成功后，重新设置 image_name 为拉取的镜像名称
+            image_name=$(echo "$manual_pull_cmd" | awk '{print $NF}')
+            echo -e "${GREEN}手动拉取成功！镜像名称更新为：${image_name}${RESET}"
+        else
+            echo -e "${YELLOW}取消手动拉取，返回主菜单...${RESET}"
+            return
+        fi
     fi
 
     # 获取系统占用端口
@@ -1497,11 +1517,11 @@ install_image_container() {
         done
     fi
 
-    # 2. 运行时检测（增加等待时间并添加提示）
+    # 2. 运行时检测
     temp_container_id=$(docker run -d --rm "$image_name" tail -f /dev/null 2>/dev/null)
     if [ $? -eq 0 ]; then
         echo -e "${YELLOW}正在检测容器端口，请稍候（可能需要 30 秒）...${RESET}"
-        sleep 30  # 等待 30 秒以确保服务启动
+        sleep 30
         runtime_ports=$(docker exec "$temp_container_id" sh -c "
             if command -v ss >/dev/null; then
                 ss -tuln | awk '{print \$5}' | cut -d':' -f2 | grep -E '^[0-9]+$' | sort -un
@@ -1517,15 +1537,14 @@ install_image_container() {
         docker stop "$temp_container_id" >/dev/null 2>&1
     fi
 
-    # 3. 日志检测（扩展匹配逻辑，适应更多镜像）
+    # 3. 日志检测
     if [ ${#exposed_ports[@]} -eq 0 ]; then
         temp_container_id=$(docker run -d --rm "$image_name" 2>/dev/null)
         if [ $? -eq 0 ]; then
             echo -e "${YELLOW}正在通过日志检测端口，请稍候（可能需要 30 秒）...${RESET}"
-            sleep 30  # 等待 30 秒以确保服务启动并生成日志
+            sleep 30
             log_output=$(docker logs "$temp_container_id" 2>/dev/null)
             docker stop "$temp_container_id" >/dev/null 2>&1
-            # 提取可能的端口（匹配多种格式）
             log_ports=$(echo "$log_output" | grep -oP '(http|https)://[^:]*:\K[0-9]+|listen\s+\K[0-9]+|port\s+\K[0-9]+' | sort -un)
             for port in $log_ports; do
                 if [ "$port" -ge 1 ] && [ "$port" -le 65535 ] && [[ ! " ${exposed_ports[@]} " =~ " ${port} " ]]; then
@@ -1533,7 +1552,7 @@ install_image_container() {
                     exposed_ports+=("$port")
                 fi
             done
-            # 如果仍未找到，尝试推测常见镜像的默认端口
+            # 推测常见镜像的默认端口
             if [ ${#exposed_ports[@]} -eq 0 ]; then
                 if [[ "$image_name" =~ "jellyfin" ]]; then
                     echo -e "${YELLOW}[推测] 检测到 Jellyfin 镜像，默认端口 8096${RESET}"
