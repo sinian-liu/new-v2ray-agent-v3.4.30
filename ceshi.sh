@@ -1453,7 +1453,7 @@ EOF
         fi
     }
 
-# 选项10：拉取镜像并安装容器（增强版 - 优化端口检测）
+# 选项10：拉取镜像并安装容器（通用增强版 - 优化等待时间与通用性）
 install_image_container() {
     if ! check_docker_status; then return; fi
 
@@ -1497,9 +1497,11 @@ install_image_container() {
         done
     fi
 
-    # 2. 运行时检测
+    # 2. 运行时检测（增加等待时间并添加提示）
     temp_container_id=$(docker run -d --rm "$image_name" tail -f /dev/null 2>/dev/null)
     if [ $? -eq 0 ]; then
+        echo -e "${YELLOW}正在检测容器端口，请稍候（可能需要 30 秒）...${RESET}"
+        sleep 30  # 等待 30 秒以确保服务启动
         runtime_ports=$(docker exec "$temp_container_id" sh -c "
             if command -v ss >/dev/null; then
                 ss -tuln | awk '{print \$5}' | cut -d':' -f2 | grep -E '^[0-9]+$' | sort -un
@@ -1515,36 +1517,59 @@ install_image_container() {
         docker stop "$temp_container_id" >/dev/null 2>&1
     fi
 
-    # 3. 日志检测（针对类似 gdy666/lucky 的镜像）
+    # 3. 日志检测（扩展匹配逻辑，适应更多镜像）
     if [ ${#exposed_ports[@]} -eq 0 ]; then
         temp_container_id=$(docker run -d --rm "$image_name" 2>/dev/null)
         if [ $? -eq 0 ]; then
-            sleep 5  # 等待容器启动并生成日志
+            echo -e "${YELLOW}正在通过日志检测端口，请稍候（可能需要 30 秒）...${RESET}"
+            sleep 30  # 等待 30 秒以确保服务启动并生成日志
             log_output=$(docker logs "$temp_container_id" 2>/dev/null)
             docker stop "$temp_container_id" >/dev/null 2>&1
-            # 从日志中提取可能的端口（匹配 "Listen on http://:port" 或类似模式）
-            log_ports=$(echo "$log_output" | grep -oP '(http|https)://[^:]*:\K[0-9]+' | sort -un)
+            # 提取可能的端口（匹配多种格式）
+            log_ports=$(echo "$log_output" | grep -oP '(http|https)://[^:]*:\K[0-9]+|listen\s+\K[0-9]+|port\s+\K[0-9]+' | sort -un)
             for port in $log_ports; do
                 if [ "$port" -ge 1 ] && [ "$port" -le 65535 ] && [[ ! " ${exposed_ports[@]} " =~ " ${port} " ]]; then
                     echo -e "${YELLOW}[日志检测] 发现端口 ${port}${RESET}"
                     exposed_ports+=("$port")
                 fi
             done
+            # 如果仍未找到，尝试推测常见镜像的默认端口
+            if [ ${#exposed_ports[@]} -eq 0 ]; then
+                if [[ "$image_name" =~ "jellyfin" ]]; then
+                    echo -e "${YELLOW}[推测] 检测到 Jellyfin 镜像，默认端口 8096${RESET}"
+                    exposed_ports+=("8096")
+                elif [[ "$image_name" =~ "nginx" ]]; then
+                    echo -e "${YELLOW}[推测] 检测到 Nginx 镜像，默认端口 80${RESET}"
+                    exposed_ports+=("80")
+                elif [[ "$image_name" =~ "mysql" ]]; then
+                    echo -e "${YELLOW}[推测] 检测到 MySQL 镜像，默认端口 3306${RESET}"
+                    exposed_ports+=("3306")
+                elif [[ "$image_name" =~ "postgres" ]]; then
+                    echo -e "${YELLOW}[推测] 检测到 PostgreSQL 镜像，默认端口 5432${RESET}"
+                    exposed_ports+=("5432")
+                elif [[ "$image_name" =~ "redis" ]]; then
+                    echo -e "${YELLOW}[推测] 检测到 Redis 镜像，默认端口 6379${RESET}"
+                    exposed_ports+=("6379")
+                elif [[ "$image_name" =~ "gdy666/lucky" ]]; then
+                    echo -e "${YELLOW}[推测] 检测到 Lucky 镜像，默认端口 16601${RESET}"
+                    exposed_ports+=("16601")
+                fi
+            fi
         fi
     fi
 
     # 如果仍未检测到有效端口，提示用户从常见端口选择
-    common_ports=(80 443 8080 8096 9000 16601)
+    common_ports=(80 443 8080 8096 9000 16601 3306 5432 6379)
     if [ ${#exposed_ports[@]} -eq 0 ]; then
         echo -e "${YELLOW}未检测到有效暴露端口，请从以下常见端口选择：${RESET}"
         for i in "${!common_ports[@]}"; do
             echo -e "  ${i}. ${common_ports[$i]}"
         done
         while true; do
-            read -p "请输入容器端口编号（0-5，默认 0 即 80）： " port_choice
+            read -p "请输入容器端口编号（0-8，默认 0 即 80）： " port_choice
             port_choice=${port_choice:-0}
-            if ! [[ "$port_choice" =~ ^[0-5]$ ]]; then
-                echo -e "${RED}无效选择，请输入 0-5 之间的数字！${RESET}"
+            if ! [[ "$port_choice" =~ ^[0-8]$ ]]; then
+                echo -e "${RED}无效选择，请输入 0-8 之间的数字！${RESET}"
                 continue
             fi
             exposed_ports+=("${common_ports[$port_choice]}")
@@ -1655,6 +1680,21 @@ install_image_container() {
             docker logs "$container_name"
             return
         fi
+
+        # 验证端口监听
+        for mapping in "${port_mapping_display[@]}"; do
+            container_port=$(echo "$mapping" | cut -d' ' -f1)
+            temp_check=$(docker exec "$container_name" sh -c "
+                if command -v ss >/dev/null; then
+                    ss -tuln | grep -q ':${container_port}' && echo 'found'
+                elif command -v netstat >/dev/null; then
+                    netstat -tuln | grep -q ':${container_port}' && echo 'found'
+                fi" 2>/dev/null)
+            if [ "$temp_check" != "found" ]; then
+                echo -e "${RED}警告：容器未监听端口 ${container_port}，映射可能无效！${RESET}"
+                echo -e "${YELLOW}建议查看日志或重新选择容器端口：docker logs $container_name${RESET}"
+            fi
+        done
 
         # 获取网络信息
         server_ip=$(hostname -I | awk '{print $1}')
