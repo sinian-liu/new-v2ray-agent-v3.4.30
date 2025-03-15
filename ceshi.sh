@@ -1453,7 +1453,21 @@ EOF
         fi
     }
 
-# 选项10：拉取镜像并安装容器（增强版 - 支持手动拉取）
+# 定义颜色变量（支持禁用颜色）
+USE_COLORS=true
+if [ "$USE_COLORS" = true ]; then
+    RED='\033[31m'
+    GREEN='\033[32m'
+    YELLOW='\033[33m'
+    RESET='\033[0m'
+else
+    RED=''
+    GREEN=''
+    YELLOW=''
+    RESET=''
+fi
+
+# 选项10：拉取镜像并安装容器（增强版 - 修复颜色显示并支持手动拉取）
 install_image_container() {
     if ! check_docker_status; then return; fi
 
