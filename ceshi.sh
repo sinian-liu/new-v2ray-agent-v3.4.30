@@ -1054,923 +1054,792 @@ EOF
     # Docker 管理子菜单
     echo -e "${GREEN}正在进入 Docker 管理子菜单...${RESET}"
 
-    while true; do
-        echo -e "${GREEN}=== Docker 管理 ===${RESET}"
-        echo "1) 安装 Docker 环境"
-        echo "2) 彻底卸载 Docker"
-        echo "3) 配置 Docker 镜像加速"
-        echo "4) 启动 Docker 容器"
-        echo "5) 停止 Docker 容器"
-        echo "6) 查看已安装镜像"
-        echo "7) 删除 Docker 容器"
-        echo "8) 删除 Docker 镜像"
-        echo "9) 安装 sun-panel"
-        echo "10) 拉取镜像并安装容器"
-        echo "11) 更新镜像并重启容器"
-        echo "12) 批量操作容器"
-        echo "13) 查看容器日志"
-        echo "14) 容器资源监控"
-        echo "15) Docker 网络管理"
-        echo "16) 使用 Docker Compose 管理容器"
-        echo "17) 容器健康检查"
-        echo "18) 备份和恢复容器"
-        echo "19) 查看所有容器端口映射信息"
-        echo "0) 返回主菜单"
-        read -p "请输入选项：" docker_choice
+    # Docker 管理子菜单
+while true; do
+    echo -e "${GREEN}=== Docker 管理 ===${RESET}"
+    echo "1) 安装 Docker 环境"
+    echo "2) 彻底卸载 Docker"
+    echo "3) 配置 Docker 镜像加速"
+    echo "4) 启动 Docker 容器"
+    echo "5) 停止 Docker 容器"
+    echo "6) 查看已安装镜像"
+    echo "7) 删除 Docker 容器"
+    echo "8) 删除 Docker 镜像"
+    echo "9) 安装 sun-panel"
+    echo "10) 拉取镜像并安装容器"
+    echo "11) 更新镜像并重启容器"
+    echo "12) 批量操作容器"
+    echo "0) 返回主菜单"
+    read -p "请输入选项：" docker_choice
 
-        # 检查 Docker 状态
-        check_docker_status() {
-            if ! command -v docker &> /dev/null && ! snap list | grep -q docker; then
-                echo -e "${RED}Docker 未安装，请先选择选项 1 安装 Docker！${RESET}"
+    # 检查 Docker 状态
+    check_docker_status() {
+        if ! command -v docker &> /dev/null && ! snap list | grep -q docker; then
+            echo -e "${RED}Docker 未安装，请先安装！${RESET}"
+            return 1
+        fi
+        return 0
+    }
+
+    # 安装 Docker
+    install_docker() {
+        echo -e "${GREEN}正在安装 Docker...${RESET}"
+        if command -v docker &> /dev/null || snap list | grep -q docker; then
+            echo -e "${YELLOW}Docker 已经安装，当前版本：$(docker --version | awk '{print $3}')${RESET}"
+            return
+        fi
+
+        check_system
+        case $SYSTEM in
+            ubuntu|debian)
+                sudo apt update && sudo apt install -y docker.io || {
+                    echo -e "${RED}APT 源更新失败，尝试官方脚本安装...${RESET}"
+                    curl -fsSL https://get.docker.com | sh
+                }
+                ;;
+            centos|fedora)
+                sudo yum install -y yum-utils
+                sudo yum-config-manager --add-repo https://download.docker.com/linux/$SYSTEM/docker-ce.repo
+                sudo yum install -y docker-ce docker-ce-cli containerd.io
+                ;;
+            *)
+                echo -e "${RED}不支持的 Linux 发行版！${RESET}"
                 return 1
-            fi
-            if ! systemctl is-active --quiet docker; then
-                echo -e "${YELLOW}Docker 服务未运行，正在尝试启动...${RESET}"
-                sudo systemctl start docker
-                if ! systemctl is-active --quiet docker; then
-                    echo -e "${RED}Docker 服务启动失败，请检查 Docker 安装！${RESET}"
-                    return 1
-                fi
-            fi
-            return 0
-        }
+                ;;
+        esac
 
-        # 检查当前用户是否有 Docker 权限
-        check_docker_permissions() {
-            if ! command -v docker &> /dev/null; then
-                echo -e "${RED}Docker 未安装，请先选择选项 1 安装 Docker！${RESET}"
-                return 1
-            fi
-            if ! docker info &> /dev/null; then
-                echo -e "${RED}当前用户没有 Docker 权限！${RESET}"
-                if groups $USER | grep -q '\bdocker\b'; then
-                    echo -e "${YELLOW}您已属于 docker 组，请重新登录以应用权限，或以 sudo 运行脚本。${RESET}"
-                else
-                    echo -e "${YELLOW}正在将当前用户添加到 docker 组...${RESET}"
-                    sudo usermod -aG docker $USER
-                    echo -e "${YELLOW}已添加用户到 docker 组，请重新登录或以 sudo 运行脚本。${RESET}"
-                fi
-                return 1
-            fi
-            return 0
-        }
+        if command -v docker &> /dev/null; then
+            sudo systemctl enable --now docker
+            echo -e "${GREEN}Docker 安装成功！版本：$(docker --version | awk '{print $3}')${RESET}"
 
-        # 安装 Docker
-        install_docker() {
-            echo -e "${GREEN}正在安装 Docker...${RESET}"
-            if command -v docker &> /dev/null || snap list | grep -q docker; then
-                echo -e "${YELLOW}Docker 已经安装，当前版本：$(docker --version | awk '{print $3}')${RESET}"
-                return
+            # 将当前用户加入 docker 组
+            if ! groups $USER | grep -q '\bdocker\b'; then
+                sudo usermod -aG docker $USER
+                echo -e "${YELLOW}已将当前用户加入 docker 组，请重新登录以生效。${RESET}"
             fi
+        else
+            echo -e "${RED}Docker 安装失败！请检查日志。${RESET}"
+        fi
+    }
 
-            check_system
-            case $SYSTEM in
-                ubuntu|debian)
-                    sudo apt update && sudo apt install -y docker.io || {
-                        echo -e "${RED}APT 源更新失败，尝试官方脚本安装...${RESET}"
-                        curl -fsSL https://get.docker.com | sh
-                    }
-                    ;;
-                centos|fedora)
-                    sudo yum install -y yum-utils
-                    sudo yum-config-manager --add-repo https://download.docker.com/linux/$SYSTEM/docker-ce.repo
-                    sudo yum install -y docker-ce docker-ce-cli containerd.io
-                    ;;
-                arch)
-                    sudo pacman -Syu --noconfirm docker
-                    ;;
-                *)
-                    echo -e "${RED}不支持的 Linux 发行版！请手动安装 Docker。${RESET}"
-                    return 1
-                    ;;
-            esac
+    # 彻底卸载 Docker
+    uninstall_docker() {
+        if ! check_docker_status; then return; fi
 
-            if command -v docker &> /dev/null; then
-                sudo systemctl enable --now docker
-                echo -e "${GREEN}Docker 安装成功！版本：$(docker --version | awk '{print $3}')${RESET}"
-                if ! groups $USER | grep -q '\bdocker\b'; then
-                    sudo usermod -aG docker $USER
-                    echo -e "${YELLOW}已将当前用户加入 docker 组，请重新登录以生效。${RESET}"
-                fi
+        # 检查运行中的容器
+        running_containers=$(docker ps -q)
+        if [ -n "$running_containers" ]; then
+            echo -e "${YELLOW}发现运行中的容器：${RESET}"
+            docker ps --format "table {{.ID}}\t{{.Image}}\t{{.Command}}\t{{.CreatedAt}}\t{{.Status}}\t{{.RunningFor}}\t{{.Ports}}\t{{.Names}}" | sed 's/CONTAINER ID/容器ID/; s/IMAGE/镜像名称/; s/COMMAND/命令/; s/CREATED AT/创建时间/; s/STATUS/状态/; s/RUNNINGFOR/运行时间/; s/PORTS/端口映射/; s/NAMES/容器名称/; s/Up \([0-9]\+\) minutes\?/运行中/; s/Up \([0-9]\+\) seconds\?/运行中/'
+            read -p "是否停止并删除所有容器？(y/n，默认 n): " stop_choice
+            stop_choice=${stop_choice:-n}  # 默认值为 n
+            if [[ $stop_choice =~ [Yy] ]]; then
+                echo -e "${YELLOW}正在停止并移除运行中的 Docker 容器...${RESET}"
+                docker stop $(docker ps -aq) 2>/dev/null
+                docker rm $(docker ps -aq) 2>/dev/null
             else
-                echo -e "${RED}Docker 安装失败！请检查日志。${RESET}"
+                echo -e "${YELLOW}已跳过停止并删除容器。${RESET}"
             fi
-        }
+        fi
 
-        # 彻底卸载 Docker
-        uninstall_docker() {
-            if ! check_docker_status; then return; fi
+        # 删除镜像确认
+        read -p "是否删除所有 Docker 镜像？(y/n，默认 n): " delete_images
+        delete_images=${delete_images:-n}  # 默认值为 n
+        if [[ $delete_images =~ [Yy] ]]; then
+            echo -e "${YELLOW}正在删除所有 Docker 镜像...${RESET}"
+            docker rmi $(docker images -q) 2>/dev/null
+        else
+            echo -e "${YELLOW}已跳过删除所有镜像。${RESET}"
+        fi
 
-            running_containers=$(docker ps -q)
-            if [ -n "$running_containers" ]; then
-                echo -e "${YELLOW}发现运行中的容器：${RESET}"
-                docker ps --format "table {{.ID}}\t{{.Image}}\t{{.Command}}\t{{.CreatedAt}}\t{{.Status}}\t{{.RunningFor}}\t{{.Ports}}\t{{.Names}}" | sed 's/CONTAINER ID/容器ID/; s/IMAGE/镜像名称/; s/COMMAND/命令/; s/CREATED AT/创建时间/; s/STATUS/状态/; s/RUNNINGFOR/运行时间/; s/PORTS/端口映射/; s/NAMES/容器名称/; s/Up \([0-9]\+\) minutes\?/运行中/; s/Up \([0-9]\+\) seconds\?/运行中/'
-                read -p "是否停止并删除所有容器？(y/n，默认 n): " stop_choice
-                stop_choice=${stop_choice:-n}
-                if [[ $stop_choice =~ [Yy] ]]; then
-                    echo -e "${YELLOW}正在停止并移除运行中的 Docker 容器...${RESET}"
-                    docker stop $(docker ps -aq) 2>/dev/null
-                    docker rm $(docker ps -aq) 2>/dev/null
-                else
-                    echo -e "${YELLOW}已跳过停止并删除容器。${RESET}"
+        # 停止并禁用 Docker 服务
+        echo -e "${YELLOW}正在停止并禁用 Docker 服务...${RESET}"
+        sudo systemctl stop docker 2>/dev/null
+        sudo systemctl disable docker 2>/dev/null
+
+        # 删除 Docker 二进制文件
+        echo -e "${YELLOW}正在删除 Docker 二进制文件...${RESET}"
+        sudo rm -f /usr/bin/docker
+        sudo rm -f /usr/bin/dockerd
+        sudo rm -f /usr/bin/docker-init
+        sudo rm -f /usr/bin/docker-proxy
+        sudo rm -f /usr/local/bin/docker-compose
+
+        # 删除 Docker 相关目录和文件
+        echo -e "${YELLOW}正在删除 Docker 相关目录和文件...${RESET}"
+        sudo rm -rf /var/lib/docker
+        sudo rm -rf /etc/docker
+        sudo rm -rf /var/run/docker.sock
+        sudo rm -rf ~/.docker
+
+        # 删除 Docker 服务文件
+        echo -e "${YELLOW}正在删除 Docker 服务文件...${RESET}"
+        sudo rm -f /etc/systemd/system/docker.service
+        sudo rm -f /etc/systemd/system/docker.socket
+        sudo systemctl daemon-reload
+
+        # 删除 Docker 用户组
+        echo -e "${YELLOW}正在删除 Docker 用户组...${RESET}"
+        if grep -q docker /etc/group; then
+            sudo groupdel docker
+        else
+            echo -e "${YELLOW}Docker 用户组不存在，无需删除。${RESET}"
+        fi
+
+        # 卸载 Docker 包（如果通过包管理器安装）
+        echo -e "${YELLOW}正在卸载 Docker 包...${RESET}"
+        sudo apt purge -y docker.io docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-ce-rootless-extras docker-compose-plugin
+        sudo apt autoremove -y
+
+        # 检查是否通过 Snap 安装
+        if snap list | grep -q docker; then
+            echo -e "${YELLOW}正在卸载 Snap 安装的 Docker...${RESET}"
+            sudo snap remove docker
+        else
+            echo -e "${YELLOW}Docker 不是通过 Snap 安装的，跳过 Snap 卸载。${RESET}"
+        fi
+
+        # 检查是否通过官方脚本安装
+        if [ -f /usr/bin/docker ] && ! dpkg -S /usr/bin/docker &>/dev/null && ! snap list | grep -q docker; then
+            echo -e "${YELLOW}检测到 Docker 是通过官方脚本安装的，尝试卸载...${RESET}"
+            if sudo /usr/bin/docker uninstall &>/dev/null; then
+                echo -e "${GREEN}Docker 已通过官方脚本卸载！${RESET}"
+            else
+                echo -e "${RED}无法通过官方脚本卸载 Docker，请手动检查。${RESET}"
+            fi
+        fi
+
+        echo -e "${GREEN}Docker 已彻底卸载！${RESET}"
+    }
+
+    # 配置 Docker 镜像加速
+    configure_mirror() {
+        if ! check_docker_status; then return; fi
+
+        echo -e "${YELLOW}当前镜像加速配置：${RESET}"
+        if [ -f /etc/docker/daemon.json ]; then
+            # 显示当前镜像加速地址
+            mirror_url=$(jq -r '."registry-mirrors"[0]' /etc/docker/daemon.json 2>/dev/null)
+            if [ -n "$mirror_url" ]; then
+                echo -e "${GREEN}当前使用的镜像加速地址：$mirror_url${RESET}"
+            else
+                echo -e "${RED}未找到有效的镜像加速配置！${RESET}"
+            fi
+        else
+            echo -e "${YELLOW}未配置镜像加速，默认使用 Docker 官方镜像源。${RESET}"
+        fi
+
+        echo -e "${GREEN}请选择操作：${RESET}"
+        echo "1) 添加/更换镜像加速地址"
+        echo "2) 删除镜像加速配置"
+        echo "3) 使用预设镜像加速地址"
+        read -p "请输入选项： " mirror_choice
+
+        case $mirror_choice in
+            1)
+                read -p "请输入镜像加速地址（例如 https://registry.docker-cn.com）： " mirror_url
+                if [[ ! $mirror_url =~ ^https?:// ]]; then
+                    echo -e "${RED}镜像加速地址格式不正确，请以 http:// 或 https:// 开头！${RESET}"
+                    return
                 fi
-            fi
-
-            read -p "是否删除所有 Docker 镜像？(y/n，默认 n): " delete_images
-            delete_images=${delete_images:-n}
-            if [[ $delete_images =~ [Yy] ]]; then
-                echo -e "${YELLOW}正在删除所有 Docker 镜像...${RESET}"
-                docker rmi $(docker images -q) 2>/dev/null
-            else
-                echo -e "${YELLOW}已跳过删除所有镜像。${RESET}"
-            fi
-
-            echo -e "${YELLOW}正在停止并禁用 Docker 服务...${RESET}"
-            sudo systemctl stop docker 2>/dev/null
-            sudo systemctl disable docker 2>/dev/null
-
-            echo -e "${YELLOW}正在删除 Docker 二进制文件...${RESET}"
-            sudo rm -f /usr/bin/docker /usr/bin/dockerd /usr/bin/docker-init /usr/bin/docker-proxy /usr/local/bin/docker-compose
-
-            echo -e "${YELLOW}正在删除 Docker 相关目录和文件...${RESET}"
-            sudo rm -rf /var/lib/docker /etc/docker /var/run/docker.sock ~/.docker
-
-            echo -e "${YELLOW}正在删除 Docker 服务文件...${RESET}"
-            sudo rm -f /etc/systemd/system/docker.service /etc/systemd/system/docker.socket
-            sudo systemctl daemon-reload
-
-            echo -e "${YELLOW}正在删除 Docker 用户组...${RESET}"
-            if grep -q docker /etc/group; then
-                sudo groupdel docker
-            else
-                echo -e "${YELLOW}Docker 用户组不存在，无需删除。${RESET}"
-            fi
-
-            echo -e "${YELLOW}正在卸载 Docker 包...${RESET}"
-            sudo apt purge -y docker.io docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-ce-rootless-extras docker-compose-plugin 2>/dev/null
-            sudo yum remove -y docker-ce docker-ce-cli containerd.io 2>/dev/null
-            sudo pacman -Rns --noconfirm docker 2>/dev/null
-            sudo apt autoremove -y 2>/dev/null
-
-            if snap list | grep -q docker; then
-                echo -e "${YELLOW}正在卸载 Snap 安装的 Docker...${RESET}"
-                sudo snap remove docker
-            fi
-
-            [ -f /etc/iptables/rules.v4 ] && sudo rm -f /etc/iptables/rules.v4
-            [ -f /etc/iptables/rules.v6 ] && sudo rm -f /etc/iptables/rules.v6
-
-            echo -e "${GREEN}Docker 已彻底卸载！${RESET}"
-        }
-
-        # 配置 Docker 镜像加速
-        configure_docker_mirror() {
-            if ! check_docker_status; then return; fi
-
-            echo -e "${GREEN}正在配置 Docker 镜像加速...${RESET}"
-            sudo mkdir -p /etc/docker
-            echo -e "${YELLOW}支持以下镜像加速源：${RESET}"
-            echo "1) 阿里云镜像加速"
-            echo "2) 网易云镜像加速"
-            echo "3) 官方中国镜像加速"
-            echo "4) 自定义镜像源"
-            read -p "请选择镜像加速源（默认 1）：" mirror_choice
-            mirror_choice=${mirror_choice:-1}
-
-            case $mirror_choice in
-                1)
-                    mirror_url="https://mirror.aliyuncs.com"
-                    ;;
-                2)
-                    mirror_url="http://hub-mirror.c.163.com"
-                    ;;
-                3)
-                    mirror_url="https://registry.docker-cn.com"
-                    ;;
-                4)
-                    read -p "请输入自定义镜像源地址（例如 https://custom-mirror.com）： " mirror_url
-                    if [ -z "$mirror_url" ]; then
-                        echo -e "${RED}镜像源地址不能为空！${RESET}"
-                        return 1
-                    fi
-                    ;;
-                *)
-                    mirror_url="https://mirror.aliyuncs.com"
-                    ;;
-            esac
-
-            sudo tee /etc/docker/daemon.json > /dev/null <<EOF
+                sudo mkdir -p /etc/docker
+                sudo tee /etc/docker/daemon.json <<-EOF
 {
-    "registry-mirrors": ["$mirror_url"]
+  "registry-mirrors": ["$mirror_url"]
 }
 EOF
-            if [ $? -eq 0 ]; then
-                sudo systemctl daemon-reload
                 sudo systemctl restart docker
-                echo -e "${GREEN}Docker 镜像加速配置成功！当前镜像源：$mirror_url${RESET}"
-            else
-                echo -e "${RED}Docker 镜像加速配置失败！请检查权限。${RESET}"
-            fi
-        }
-
-        # 启动 Docker 容器
-        start_docker_container() {
-            if ! check_docker_status; then return; fi
-            if ! check_docker_permissions; then return; fi
-
-            echo -e "${GREEN}正在启动 Docker 容器...${RESET}"
-            docker ps -a --format "table {{.ID}}\t{{.Image}}\t{{.Command}}\t{{.CreatedAt}}\t{{.Status}}\t{{.RunningFor}}\t{{.Ports}}\t{{.Names}}" | sed 's/CONTAINER ID/容器ID/; s/IMAGE/镜像名称/; s/COMMAND/命令/; s/CREATED AT/创建时间/; s/STATUS/状态/; s/RUNNINGFOR/运行时间/; s/PORTS/端口映射/; s/NAMES/容器名称/; s/Up \([0-9]\+\) minutes\?/运行中/; s/Up \([0-9]\+\) seconds\?/运行中/'
-            read -p "请输入要启动的容器名称或 ID（留空则全部启动）： " container_id
-            if [ -z "$container_id" ]; then
-                docker start $(docker ps -a -q)
-                echo -e "${GREEN}所有容器已启动！${RESET}"
-            else
-                docker start $container_id
-                if [ $? -eq 0 ]; then
-                    echo -e "${GREEN}容器 $container_id 已启动！${RESET}"
-                else
-                    echo -e "${RED}容器 $container_id 启动失败！请检查容器是否存在。${RESET}"
-                fi
-            fi
-        }
-
-        # 停止 Docker 容器
-        stop_docker_container() {
-            if ! check_docker_status; then return; fi
-            if ! check_docker_permissions; then return; fi
-
-            echo -e "${GREEN}正在停止 Docker 容器...${RESET}"
-            docker ps --format "table {{.ID}}\t{{.Image}}\t{{.Command}}\t{{.CreatedAt}}\t{{.Status}}\t{{.RunningFor}}\t{{.Ports}}\t{{.Names}}" | sed 's/CONTAINER ID/容器ID/; s/IMAGE/镜像名称/; s/COMMAND/命令/; s/CREATED AT/创建时间/; s/STATUS/状态/; s/RUNNINGFOR/运行时间/; s/PORTS/端口映射/; s/NAMES/容器名称/; s/Up \([0-9]\+\) minutes\?/运行中/; s/Up \([0-9]\+\) seconds\?/运行中/'
-            read -p "请输入要停止的容器名称或 ID（留空则全部停止）： " container_id
-            if [ -z "$container_id" ]; then
-                docker stop $(docker ps -q)
-                echo -e "${GREEN}所有运行中的容器已停止！${RESET}"
-            else
-                docker stop $container_id
-                if [ $? -eq 0 ]; then
-                    echo -e "${GREEN}容器 $container_id 已停止！${RESET}"
-                else
-                    echo -e "${RED}容器 $container_id 停止失败！请检查容器是否存在。${RESET}"
-                fi
-            fi
-        }
-
-        # 查看已安装镜像
-        list_docker_images() {
-            if ! check_docker_status; then return; fi
-            if ! check_docker_permissions; then return; fi
-
-            echo -e "${GREEN}正在查看已安装的 Docker 镜像...${RESET}"
-            docker images --format "table {{.Repository}}\t{{.Tag}}\t{{.ID}}\t{{.CreatedAt}}\t{{.Size}}" | sed 's/REPOSITORY/镜像名称/; s/TAG/标签/; s/ID/镜像ID/; s/CREATED AT/创建时间/; s/SIZE/大小/'
-        }
-
-        # 删除 Docker 容器
-        remove_docker_container() {
-            if ! check_docker_status; then return; fi
-            if ! check_docker_permissions; then return; fi
-
-            echo -e "${GREEN}正在删除 Docker 容器...${RESET}"
-            docker ps -a --format "table {{.ID}}\t{{.Image}}\t{{.Command}}\t{{.CreatedAt}}\t{{.Status}}\t{{.RunningFor}}\t{{.Ports}}\t{{.Names}}" | sed 's/CONTAINER ID/容器ID/; s/IMAGE/镜像名称/; s/COMMAND/命令/; s/CREATED AT/创建时间/; s/STATUS/状态/; s/RUNNINGFOR/运行时间/; s/PORTS/端口映射/; s/NAMES/容器名称/; s/Up \([0-9]\+\) minutes\?/运行中/; s/Up \([0-9]\+\) seconds\?/运行中/'
-            read -p "请输入要删除的容器名称或 ID（留空则全部删除）： " container_id
-            if [ -z "$container_id" ]; then
-                read -p "确定要删除所有容器吗？(y/n，默认 n): " confirm
-                confirm=${confirm:-n}
-                if [[ $confirm =~ [Yy] ]]; then
-                    docker stop $(docker ps -q) 2>/dev/null
-                    docker rm $(docker ps -a -q)
-                    echo -e "${GREEN}所有容器已删除！${RESET}"
-                else
-                    echo -e "${YELLOW}已取消删除操作。${RESET}"
-                fi
-            else
-                docker stop $container_id 2>/dev/null
-                docker rm $container_id
-                if [ $? -eq 0 ]; then
-                    echo -e "${GREEN}容器 $container_id 已删除！${RESET}"
-                else
-                    echo -e "${RED}容器 $container_id 删除失败！请检查容器是否存在。${RESET}"
-                fi
-            fi
-        }
-
-        # 删除 Docker 镜像
-        remove_docker_image() {
-            if ! check_docker_status; then return; fi
-            if ! check_docker_permissions; then return; fi
-
-            echo -e "${GREEN}正在删除 Docker 镜像...${RESET}"
-            docker images --format "table {{.Repository}}\t{{.Tag}}\t{{.ID}}\t{{.CreatedAt}}\t{{.Size}}" | sed 's/REPOSITORY/镜像名称/; s/TAG/标签/; s/ID/镜像ID/; s/CREATED AT/创建时间/; s/SIZE/大小/'
-            read -p "请输入要删除的镜像名称或 ID（留空则全部删除）： " image_id
-            if [ -z "$image_id" ]; then
-                read -p "确定要删除所有镜像吗？(y/n，默认 n): " confirm
-                confirm=${confirm:-n}
-                if [[ $confirm =~ [Yy] ]]; then
-                    docker rmi $(docker images -q -a)
-                    echo -e "${GREEN}所有镜像已删除！${RESET}"
-                else
-                    echo -e "${YELLOW}已取消删除操作。${RESET}"
-                fi
-            else
-                docker rmi $image_id
-                if [ $? -eq 0 ]; then
-                    echo -e "${GREEN}镜像 $image_id 已删除！${RESET}"
-                else
-                    echo -e "${RED}镜像 $image_id 删除失败！请检查镜像是否存在或是否被容器使用。${RESET}"
-                fi
-            fi
-        }
-
-        # 安装 sun-panel
-        install_sun_panel() {
-            if ! check_docker_status; then return; fi
-            if ! check_docker_permissions; then return; fi
-
-            echo -e "${GREEN}正在安装 sun-panel...${RESET}"
-            read -p "请输入 sun-panel 的访问端口（默认 3002）： " sun_port
-            sun_port=${sun_port:-3002}
-
-            check_port() {
-                local port=$1
-                if netstat -tuln | grep ":$port" > /dev/null; then
-                    return 1
-                else
-                    return 0
-                fi
-            }
-
-            check_port $sun_port
-            if [ $? -eq 1 ]; then
-                echo -e "${RED}端口 $sun_port 已被占用！${RESET}"
-                read -p "请输入其他端口号： " sun_port
-                check_port $sun_port
-                if [ $? -eq 1 ]; then
-                    echo -e "${RED}端口 $sun_port 仍然被占用，无法继续安装！${RESET}"
-                    return 1
-                fi
-            fi
-
-            docker run -d --name sun-panel \
-                -p $sun_port:3002 \
-                -v sun-panel:/app/data \
-                --restart=unless-stopped \
-                hslr/sun-panel
-
-            if [ $? -eq 0 ]; then
-                server_ip=$(curl -s4 ifconfig.me)
-                echo -e "${GREEN}sun-panel 安装成功！${RESET}"
-                echo -e "${YELLOW}访问地址：http://$server_ip:$sun_port${RESET}"
-                echo -e "${YELLOW}默认用户名：admin@sun.cc${RESET}"
-                echo -e "${YELLOW}默认密码：123456${RESET}"
-                echo -e "${YELLOW}请及时修改默认密码！${RESET}"
-            else
-                echo -e "${RED}sun-panel 安装失败！请检查日志。${RESET}"
-                docker logs sun-panel
-            fi
-        }
-
-        # 拉取镜像并安装容器
-        pull_and_run_container() {
-            if ! check_docker_status; then return; fi
-            if ! check_docker_permissions; then return; fi
-
-            echo -e "${GREEN}正在拉取镜像并安装容器...${RESET}"
-            read -p "请输入镜像名称（例如 nginx:latest）： " image_name
-            if [ -z "$image_name" ]; then
-                echo -e "${RED}镜像名称不能为空！${RESET}"
-                return 1
-            fi
-
-            echo -e "${YELLOW}正在拉取镜像 $image_name...${RESET}"
-            docker pull $image_name
-            if [ $? -ne 0 ]; then
-                echo -e "${RED}镜像 $image_name 拉取失败！请检查镜像名称或网络。${RESET}"
-                return 1
-            fi
-
-            read -p "请输入容器名称： " container_name
-            if [ -z "$container_name" ]; then
-                echo -e "${RED}容器名称不能为空！${RESET}"
-                return 1
-            fi
-
-            read -p "请输入端口映射（格式为 主机端口:容器端口，例如 8080:80，留空则不映射）： " port_mapping
-            if [ -n "$port_mapping" ]; then
-                port_option="-p $port_mapping"
-            else
-                port_option=""
-            fi
-
-            read -p "请输入挂载卷（格式为 主机路径:容器路径，例如 /data:/app/data，留空则不挂载）： " volume_mapping
-            if [ -n "$volume_mapping" ]; then
-                volume_option="-v $volume_mapping"
-            else
-                volume_option=""
-            fi
-
-            read -p "请输入环境变量（格式为 变量名=值，例如 TZ=Asia/Shanghai，多个用空格分隔，留空则无）： " env_vars
-            env_option=""
-            if [ -n "$env_vars" ]; then
-                for env in $env_vars; do
-                    env_option="$env_option -e $env"
-                done
-            fi
-
-            docker run -d --name $container_name $port_option $volume_option $env_option --restart=unless-stopped $image_name
-            if [ $? -eq 0 ]; then
-                echo -e "${GREEN}容器 $container_name 已成功启动！${RESET}"
-                docker ps --format "table {{.ID}}\t{{.Image}}\t{{.Command}}\t{{.CreatedAt}}\t{{.Status}}\t{{.RunningFor}}\t{{.Ports}}\t{{.Names}}" | sed 's/CONTAINER ID/容器ID/; s/IMAGE/镜像名称/; s/COMMAND/命令/; s/CREATED AT/创建时间/; s/STATUS/状态/; s/RUNNINGFOR/运行时间/; s/PORTS/端口映射/; s/NAMES/容器名称/; s/Up \([0-9]\+\) minutes\?/运行中/; s/Up \([0-9]\+\) seconds\?/运行中/'
-            else
-                echo -e "${RED}容器 $container_name 启动失败！请检查参数或日志。${RESET}"
-                docker logs $container_name
-            fi
-        }
-
-        # 更新镜像并重启容器
-        update_and_restart_container() {
-            if ! check_docker_status; then return; fi
-            if ! check_docker_permissions; then return; fi
-
-            echo -e "${GREEN}正在更新镜像并重启容器...${RESET}"
-            docker ps --format "table {{.ID}}\t{{.Image}}\t{{.Command}}\t{{.CreatedAt}}\t{{.Status}}\t{{.RunningFor}}\t{{.Ports}}\t{{.Names}}" | sed 's/CONTAINER ID/容器ID/; s/IMAGE/镜像名称/; s/COMMAND/命令/; s/CREATED AT/创建时间/; s/STATUS/状态/; s/RUNNINGFOR/运行时间/; s/PORTS/端口映射/; s/NAMES/容器名称/; s/Up \([0-9]\+\) minutes\?/运行中/; s/Up \([0-9]\+\) seconds\?/运行中/'
-            read -p "请输入要更新的容器名称或 ID： " container_id
-            if [ -z "$container_id" ]; then
-                echo -e "${RED}容器名称或 ID 不能为空！${RESET}"
-                return 1
-            fi
-
-            image_name=$(docker inspect $container_id --format '{{.Config.Image}}')
-            if [ -z "$image_name" ]; then
-                echo -e "${RED}无法找到容器 $container_id 的镜像信息！${RESET}"
-                return 1
-            fi
-
-            echo -e "${YELLOW}正在拉取最新镜像 $image_name...${RESET}"
-            docker pull $image_name
-            if [ $? -ne 0 ]; then
-                echo -e "${RED}镜像 $image_name 拉取失败！请检查网络或镜像名称。${RESET}"
-                return 1
-            fi
-
-            docker stop $container_id
-            docker rm $container_id
-            docker run -d --name $container_id $(docker inspect $container_id --format '{{range .HostConfig.Binds}}-v {{.}} {{end}}{{range $key, $value := .Config.Env}}-e {{$key}}={{$value}} {{end}}{{range $key, $value := .HostConfig.PortBindings}}{{range $value}}-p {{$key}}:{{.HostPort}} {{end}}{{end}}--restart={{.HostConfig.RestartPolicy.Name}}') $image_name
-            if [ $? -eq 0 ]; then
-                echo -e "${GREEN}容器 $container_id 已更新并重启！${RESET}"
-            else
-                echo -e "${RED}容器 $container_id 更新失败！请检查日志。${RESET}"
-                docker logs $container_id
-            fi
-        }
-
-        # 批量操作容器
-        batch_operate_containers() {
-            if ! check_docker_status; then return; fi
-            if ! check_docker_permissions; then return; fi
-
-            echo -e "${GREEN}正在执行批量操作...${RESET}"
-            echo "1) 批量启动所有容器"
-            echo "2) 批量停止所有容器"
-            echo "3) 批量删除所有容器"
-            read -p "请选择操作（1-3）： " batch_choice
-
-            case $batch_choice in
-                1)
-                    docker start $(docker ps -a -q)
-                    echo -e "${GREEN}所有容器已启动！${RESET}"
-                    ;;
-                2)
-                    docker stop $(docker ps -q)
-                    echo -e "${GREEN}所有运行中的容器已停止！${RESET}"
-                    ;;
-                3)
-                    read -p "确定要删除所有容器吗？(y/n，默认 n): " confirm
-                    confirm=${confirm:-n}
-                    if [[ $confirm =~ [Yy] ]]; then
-                        docker stop $(docker ps -q) 2>/dev/null
-                        docker rm $(docker ps -a -q)
-                        echo -e "${GREEN}所有容器已删除！${RESET}"
-                    else
-                        echo -e "${YELLOW}已取消删除操作。${RESET}"
-                    fi
-                    ;;
-                *)
-                    echo -e "${RED}无效选项！${RESET}"
-                    ;;
-            esac
-        }
-
-        # 查看容器日志
-        view_container_logs() {
-            if ! check_docker_status; then return; fi
-            if ! check_docker_permissions; then return; fi
-
-            echo -e "${GREEN}正在查看容器日志...${RESET}"
-            docker ps -a --format "table {{.ID}}\t{{.Image}}\t{{.Command}}\t{{.CreatedAt}}\t{{.Status}}\t{{.RunningFor}}\t{{.Ports}}\t{{.Names}}" | sed 's/CONTAINER ID/容器ID/; s/IMAGE/镜像名称/; s/COMMAND/命令/; s/CREATED AT/创建时间/; s/STATUS/状态/; s/RUNNINGFOR/运行时间/; s/PORTS/端口映射/; s/NAMES/容器名称/; s/Up \([0-9]\+\) minutes\?/运行中/; s/Up \([0-9]\+\) seconds\?/运行中/'
-            read -p "请输入要查看日志的容器名称或 ID： " container_id
-            if [ -z "$container_id" ]; then
-                echo -e "${RED}容器名称或 ID 不能为空！${RESET}"
-                return 1
-            fi
-
-            read -p "请输入查看的日志行数（默认 50）： " log_lines
-            log_lines=${log_lines:-50}
-            docker logs --tail $log_lines $container_id
-            if [ $? -ne 0 ]; then
-                echo -e "${RED}无法查看容器 $container_id 的日志，请检查容器是否存在！${RESET}"
-            fi
-        }
-
-        # 容器资源监控
-        monitor_container_resources() {
-            if ! check_docker_status; then return; fi
-            if ! check_docker_permissions; then return; fi
-
-            echo -e "${GREEN}正在查看容器资源使用情况...${RESET}"
-            docker stats --format "table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}\t{{.NetIO}}\t{{.BlockIO}}" | sed 's/NAME/容器名称/; s/CPUPERC/CPU使用率/; s/MEMUSAGE/内存使用量/; s/MEMPERC/内存使用率/; s/NETIO/网络IO/; s/BLOCKIO/磁盘IO/'
-        }
-
-        # Docker 网络管理
-        manage_docker_network() {
-            if ! check_docker_status; then return; fi
-            if ! check_docker_permissions; then return; fi
-
-            echo -e "${GREEN}=== Docker 网络管理 ===${RESET}"
-            echo "1) 查看所有网络"
-            echo "2) 创建新网络"
-            echo "3) 删除网络"
-            echo "4) 将容器连接到网络"
-            echo "5) 将容器从网络断开"
-            echo "0) 返回上一级"
-            read -p "请选择操作：" network_choice
-
-            case $network_choice in
-                1)
-                    echo -e "${GREEN}当前 Docker 网络列表：${RESET}"
-                    docker network ls --format "table {{.ID}}\t{{.Name}}\t{{.Driver}}\t{{.Scope}}" | sed 's/ID/网络ID/; s/NAME/网络名称/; s/DRIVER/驱动/; s/SCOPE/范围/'
-                    ;;
-                2)
-                    read -p "请输入新网络名称： " network_name
-                    if [ -z "$network_name" ]; then
-                        echo -e "${RED}网络名称不能为空！${RESET}"
-                        return 1
-                    fi
-                    read -p "请输入网络驱动（默认 bridge）： " network_driver
-                    network_driver=${network_driver:-bridge}
-                    docker network create --driver $network_driver $network_name
-                    if [ $? -eq 0 ]; then
-                        echo -e "${GREEN}网络 $network_name 创建成功！${RESET}"
-                    else
-                        echo -e "${RED}网络 $network_name 创建失败！${RESET}"
-                    fi
-                    ;;
-                3)
-                    echo -e "${GREEN}当前 Docker 网络列表：${RESET}"
-                    docker network ls --format "table {{.ID}}\t{{.Name}}\t{{.Driver}}\t{{.Scope}}" | sed 's/ID/网络ID/; s/NAME/网络名称/; s/DRIVER/驱动/; s/SCOPE/范围/'
-                    read -p "请输入要删除的网络名称或 ID： " network_id
-                    if [ -z "$network_id" ]; then
-                        echo -e "${RED}网络名称或 ID 不能为空！${RESET}"
-                        return 1
-                    fi
-                    docker network rm $network_id
-                    if [ $? -eq 0 ]; then
-                        echo -e "${GREEN}网络 $network_id 已删除！${RESET}"
-                    else
-                        echo -e "${RED}网络 $network_id 删除失败！请检查网络是否存在或是否有容器使用。${RESET}"
-                    fi
-                    ;;
-                4)
-                    echo -e "${GREEN}当前 Docker 网络列表：${RESET}"
-                    docker network ls --format "table {{.ID}}\t{{.Name}}\t{{.Driver}}\t{{.Scope}}" | sed 's/ID/网络ID/; s/NAME/网络名称/; s/DRIVER/驱动/; s/SCOPE/范围/'
-                    read -p "请输入要连接的网络名称或 ID： " network_id
-                    if [ -z "$network_id" ]; then
-                        echo -e "${RED}网络名称或 ID 不能为空！${RESET}"
-                        return 1
-                    fi
-                    echo -e "${GREEN}当前容器列表：${RESET}"
-                    docker ps -a --format "table {{.ID}}\t{{.Image}}\t{{.Command}}\t{{.CreatedAt}}\t{{.Status}}\t{{.RunningFor}}\t{{.Ports}}\t{{.Names}}" | sed 's/CONTAINER ID/容器ID/; s/IMAGE/镜像名称/; s/COMMAND/命令/; s/CREATED AT/创建时间/; s/STATUS/状态/; s/RUNNINGFOR/运行时间/; s/PORTS/端口映射/; s/NAMES/容器名称/; s/Up \([0-9]\+\) minutes\?/运行中/; s/Up \([0-9]\+\) seconds\?/运行中/'
-                    read -p "请输入要连接的容器名称或 ID： " container_id
-                    if [ -z "$container_id" ]; then
-                        echo -e "${RED}容器名称或 ID 不能为空！${RESET}"
-                        return 1
-                    fi
-                    docker network connect $network_id $container_id
-                    if [ $? -eq 0 ]; then
-                        echo -e "${GREEN}容器 $container_id 已连接到网络 $network_id！${RESET}"
-                    else
-                        echo -e "${RED}连接失败！请检查网络或容器是否存在。${RESET}"
-                    fi
-                    ;;
-                5)
-                    echo -e "${GREEN}当前 Docker 网络列表：${RESET}"
-                    docker network ls --format "table {{.ID}}\t{{.Name}}\t{{.Driver}}\t{{.Scope}}" | sed 's/ID/网络ID/; s/NAME/网络名称/; s/DRIVER/驱动/; s/SCOPE/范围/'
-                    read -p "请输入要断开的网络名称或 ID： " network_id
-                    if [ -z "$network_id" ]; then
-                        echo -e "${RED}网络名称或 ID 不能为空！${RESET}"
-                        return 1
-                    fi
-                    echo -e "${GREEN}当前容器列表：${RESET}"
-                    docker ps -a --format "table {{.ID}}\t{{.Image}}\t{{.Command}}\t{{.CreatedAt}}\t{{.Status}}\t{{.RunningFor}}\t{{.Ports}}\t{{.Names}}" | sed 's/CONTAINER ID/容器ID/; s/IMAGE/镜像名称/; s/COMMAND/命令/; s/CREATED AT/创建时间/; s/STATUS/状态/; s/RUNNINGFOR/运行时间/; s/PORTS/端口映射/; s/NAMES/容器名称/; s/Up \([0-9]\+\) minutes\?/运行中/; s/Up \([0-9]\+\) seconds\?/运行中/'
-                    read -p "请输入要断开的容器名称或 ID： " container_id
-                    if [ -z "$container_id" ]; then
-                        echo -e "${RED}容器名称或 ID 不能为空！${RESET}"
-                        return 1
-                    fi
-                    docker network disconnect $network_id $container_id
-                    if [ $? -eq 0 ]; then
-                        echo -e "${GREEN}容器 $container_id 已从网络 $network_id 断开！${RESET}"
-                    else
-                        echo -e "${RED}断开失败！请检查网络或容器是否存在。${RESET}"
-                    fi
-                    ;;
-                0)
-                    return 0
-                    ;;
-                *)
-                    echo -e "${RED}无效选项！${RESET}"
-                    ;;
-            esac
-        }
-
-        # 使用 Docker Compose 管理容器
-        manage_docker_compose() {
-            if ! check_docker_status; then return; fi
-            if ! check_docker_permissions; then return; fi
-
-            # 检查 Docker Compose 是否安装
-            if ! command -v docker-compose &> /dev/null; then
-                echo -e "${YELLOW}Docker Compose 未安装，正在安装...${RESET}"
-                curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-                chmod +x /usr/local/bin/docker-compose
-                if [ $? -ne 0 ]; then
-                    echo -e "${RED}Docker Compose 安装失败！请手动安装。${RESET}"
-                    return 1
-                fi
-                echo -e "${GREEN}Docker Compose 安装成功！${RESET}"
-            fi
-
-            echo -e "${GREEN}=== Docker Compose 管理 ===${RESET}"
-            echo "1) 创建并启动服务"
-            echo "2) 停止并移除服务"
-            echo "3) 查看服务状态"
-            echo "4) 重启服务"
-            echo "0) 返回上一级"
-            read -p "请选择操作：" compose_choice
-
-            case $compose_choice in
-                1)
-                    read -p "请输入 docker-compose.yml 文件路径（默认当前目录）： " compose_file
-                    compose_file=${compose_file:-docker-compose.yml}
-                    if [ ! -f "$compose_file" ]; then
-                        echo -e "${RED}文件 $compose_file 不存在！${RESET}"
-                        return 1
-                    fi
-                    docker-compose -f $compose_file up -d
-                    if [ $? -eq 0 ]; then
-                        echo -e "${GREEN}服务已启动！${RESET}"
-                        docker-compose -f $compose_file ps
-                    else
-                        echo -e "${RED}服务启动失败！请检查 docker-compose.yml 文件。${RESET}"
-                    fi
-                    ;;
-                2)
-                    read -p "请输入 docker-compose.yml 文件路径（默认当前目录）： " compose_file
-                    compose_file=${compose_file:-docker-compose.yml}
-                    if [ ! -f "$compose_file" ]; then
-                        echo -e "${RED}文件 $compose_file 不存在！${RESET}"
-                        return 1
-                    fi
-                    docker-compose -f $compose_file down
-                    if [ $? -eq 0 ]; then
-                        echo -e "${GREEN}服务已停止并移除！${RESET}"
-                    else
-                        echo -e "${RED}服务停止失败！请检查文件或服务状态。${RESET}"
-                    fi
-                    ;;
-                3)
-                    read -p "请输入 docker-compose.yml 文件路径（默认当前目录）： " compose_file
-                    compose_file=${compose_file:-docker-compose.yml}
-                    if [ ! -f "$compose_file" ]; then
-                        echo -e "${RED}文件 $compose_file 不存在！${RESET}"
-                        return 1
-                    fi
-                    docker-compose -f $compose_file ps
-                    ;;
-                4)
-                    read -p "请输入 docker-compose.yml 文件路径（默认当前目录）： " compose_file
-                    compose_file=${compose_file:-docker-compose.yml}
-                    if [ ! -f "$compose_file" ]; then
-                        echo -e "${RED}文件 $compose_file 不存在！${RESET}"
-                        return 1
-                    fi
-                    docker-compose -f $compose_file restart
-                    if [ $? -eq 0 ]; then
-                        echo -e "${GREEN}服务已重启！${RESET}"
-                        docker-compose -f $compose_file ps
-                    else
-                        echo -e "${RED}服务重启失败！请检查文件或服务状态。${RESET}"
-                    fi
-                    ;;
-                0)
-                    return 0
-                    ;;
-                *)
-                    echo -e "${RED}无效选项！${RESET}"
-                    ;;
-            esac
-        }
-
-        # 容器健康检查
-        check_container_health() {
-            if ! check_docker_status; then return; fi
-            if ! check_docker_permissions; then return; fi
-
-            echo -e "${GREEN}正在检查容器健康状态...${RESET}"
-            docker ps -a --format "table {{.ID}}\t{{.Image}}\t{{.Command}}\t{{.CreatedAt}}\t{{.Status}}\t{{.RunningFor}}\t{{.Ports}}\t{{.Names}}" | sed 's/CONTAINER ID/容器ID/; s/IMAGE/镜像名称/; s/COMMAND/命令/; s/CREATED AT/创建时间/; s/STATUS/状态/; s/RUNNINGFOR/运行时间/; s/PORTS/端口映射/; s/NAMES/容器名称/; s/Up \([0-9]\+\) minutes\?/运行中/; s/Up \([0-9]\+\) seconds\?/运行中/'
-            read -p "请输入要检查的容器名称或 ID（留空则检查所有容器）： " container_id
-
-            if [ -z "$container_id" ]; then
-                for container in $(docker ps -a -q); do
-                    container_name=$(docker inspect $container --format '{{.Name}}' | sed 's/^\///')
-                    health_status=$(docker inspect $container --format '{{.State.Health.Status}}' 2>/dev/null || echo "no healthcheck")
-                    if [ "$health_status" = "no healthcheck" ]; then
-                        status=$(docker inspect $container --format '{{.State.Status}}')
-                        echo -e "${YELLOW}容器 $container_name 未配置健康检查，当前状态：$status${RESET}"
-                    else
-                        echo -e "${GREEN}容器 $container_name 健康状态：$health_status${RESET}"
-                    fi
-                done
-            else
-                container_name=$(docker inspect $container_id --format '{{.Name}}' | sed 's/^\///')
-                health_status=$(docker inspect $container_id --format '{{.State.Health.Status}}' 2>/dev/null || echo "no healthcheck")
-                if [ "$health_status" = "no healthcheck" ]; then
-                    status=$(docker inspect $container_id --format '{{.State.Status}}')
-                    echo -e "${YELLOW}容器 $container_name 未配置健康检查，当前状态：$status${RESET}"
-                else
-                    echo -e "${GREEN}容器 $container_name 健康状态：$health_status${RESET}"
-                fi
-            fi
-        }
-
-        # 备份和恢复容器
-        backup_and_restore_container() {
-            if ! check_docker_status; then return; fi
-            if ! check_docker_permissions; then return; fi
-
-            echo -e "${GREEN}=== 容器备份与恢复 ===${RESET}"
-            echo "1) 备份容器"
-            echo "2) 恢复容器"
-            echo "0) 返回上一级"
-            read -p "请选择操作：" backup_choice
-
-            case $backup_choice in
-                1)
-                    echo -e "${GREEN}正在备份容器...${RESET}"
-                    docker ps -a --format "table {{.ID}}\t{{.Image}}\t{{.Command}}\t{{.CreatedAt}}\t{{.Status}}\t{{.RunningFor}}\t{{.Ports}}\t{{.Names}}" | sed 's/CONTAINER ID/容器ID/; s/IMAGE/镜像名称/; s/COMMAND/命令/; s/CREATED AT/创建时间/; s/STATUS/状态/; s/RUNNINGFOR/运行时间/; s/PORTS/端口映射/; s/NAMES/容器名称/; s/Up \([0-9]\+\) minutes\?/运行中/; s/Up \([0-9]\+\) seconds\?/运行中/'
-                    read -p "请输入要备份的容器名称或 ID： " container_id
-                    if [ -z "$container_id" ]; then
-                        echo -e "${RED}容器名称或 ID 不能为空！${RESET}"
-                        return 1
-                    fi
-
-                    backup_file="backup_$(date +%Y%m%d_%H%M%S)_$container_id.tar"
-                    docker export $container_id > $backup_file
-                    if [ $? -eq 0 ]; then
-                        echo -e "${GREEN}容器 $container_id 已备份到 $backup_file！${RESET}"
-                    else
-                        echo -e "${RED}容器 $container_id 备份失败！请检查容器是否存在。${RESET}"
-                    fi
-                    ;;
-                2)
-                    echo -e "${GREEN}正在恢复容器...${RESET}"
-                    read -p "请输入备份文件的路径： " backup_file
-                    if [ ! -f "$backup_file" ]; then
-                        echo -e "${RED}备份文件 $backup_file 不存在！${RESET}"
-                        return 1
-                    fi
-
-                    read -p "请输入新容器的名称： " new_container_name
-                    if [ -z "$new_container_name" ]; then
-                        echo -e "${RED}容器名称不能为空！${RESET}"
-                        return 1
-                    fi
-
-                    docker import $backup_file $new_container_name
-                    if [ $? -eq 0 ]; then
-                        echo -e "${GREEN}容器已从 $backup_file 恢复为镜像！${RESET}"
-                        docker run -d --name $new_container_name $new_container_name
-                        if [ $? -eq 0 ]; then
-                            echo -e "${GREEN}新容器 $new_container_name 已启动！${RESET}"
-                        else
-                            echo -e "${RED}新容器 $new_container_name 启动失败！请检查日志。${RESET}"
-                        fi
-                    else
-                        echo -e "${RED}从 $backup_file 恢复容器失败！${RESET}"
-                    fi
-                    ;;
-                0)
-                    return 0
-                    ;;
-                *)
-                    echo -e "${RED}无效选项！${RESET}"
-                    ;;
-            esac
-        }
-
-        # 查看所有容器端口映射信息
-        list_container_ports() {
-            if ! check_docker_status; then return; fi
-            if ! check_docker_permissions; then return; fi
-
-            echo -e "${GREEN}正在查看所有容器端口映射信息...${RESET}"
-            docker ps -a --format "table {{.ID}}\t{{.Names}}\t{{.Ports}}" | sed 's/ID/容器ID/; s/NAMES/容器名称/; s/PORTS/端口映射/'
-        }
-
-        case $docker_choice in
-            1)
-                install_docker
-                read -p "按回车键继续..."
+                echo -e "${GREEN}镜像加速配置已更新！当前使用的镜像加速地址：$mirror_url${RESET}"
                 ;;
             2)
-                uninstall_docker
-                read -p "按回车键继续..."
+                if [ -f /etc/docker/daemon.json ]; then
+                    sudo rm /etc/docker/daemon.json
+                    sudo systemctl restart docker
+                    echo -e "${GREEN}镜像加速配置已删除！${RESET}"
+                else
+                    echo -e "${RED}未找到镜像加速配置，无需删除。${RESET}"
+                fi
                 ;;
             3)
-                configure_docker_mirror
-                read -p "按回车键继续..."
-                ;;
-            4)
-                start_docker_container
-                read -p "按回车键继续..."
-                ;;
-            5)
-                stop_docker_container
-                read -p "按回车键继续..."
-                ;;
-            6)
-                list_docker_images
-                read -p "按回车键继续..."
-                ;;
-            7)
-                remove_docker_container
-                read -p "按回车键继续..."
-                ;;
-            8)
-                remove_docker_image
-                read -p "按回车键继续..."
-                ;;
-            9)
-                install_sun_panel
-                read -p "按回车键继续..."
-                ;;
-            10)
-                pull_and_run_container
-                read -p "按回车键继续..."
-                ;;
-            11)
-                update_and_restart_container
-                read -p "按回车键继续..."
-                ;;
-            12)
-                batch_operate_containers
-                read -p "按回车键继续..."
-                ;;
-            13)
-                view_container_logs
-                read -p "按回车键继续..."
-                ;;
-            14)
-                monitor_container_resources
-                read -p "按回车键继续..."
-                ;;
-            15)
-                manage_docker_network
-                read -p "按回车键继续..."
-                ;;
-            16)
-                manage_docker_compose
-                read -p "按回车键继续..."
-                ;;
-            17)
-                check_container_health
-                read -p "按回车键继续..."
-                ;;
-            18)
-                backup_and_restore_container
-                read -p "按回车键继续..."
-                ;;
-            19)
-                list_container_ports
-                read -p "按回车键继续..."
-                ;;
-            0)
-                break  # 返回主菜单
+                echo -e "${GREEN}请选择预设镜像加速地址：${RESET}"
+                echo "1) Docker 官方中国区镜像"
+                echo "2) 阿里云加速器（需登录阿里云容器镜像服务获取专属地址）"
+                echo "3) 腾讯云加速器"
+                echo "4) 华为云加速器"
+                echo "5) 网易云加速器"
+                echo "6) DaoCloud 加速器"
+                read -p "请输入选项： " preset_choice
+
+                case $preset_choice in
+                    1) mirror_url="https://registry.docker-cn.com" ;;
+                    2) mirror_url="https://<your-aliyun-mirror>.mirror.aliyuncs.com" ;;
+                    3) mirror_url="https://mirror.ccs.tencentyun.com" ;;
+                    4) mirror_url="https://05f073ad3c0010ea0f4bc00b7105ec20.mirror.swr.myhuaweicloud.com" ;;
+                    5) mirror_url="https://hub-mirror.c.163.com" ;;
+                    6) mirror_url="https://www.daocloud.io/mirror" ;;
+                    *) echo -e "${RED}无效选项！${RESET}" ; return ;;
+                esac
+
+                sudo mkdir -p /etc/docker
+                sudo tee /etc/docker/daemon.json <<-EOF
+{
+  "registry-mirrors": ["$mirror_url"]
+}
+EOF
+                sudo systemctl restart docker
+                echo -e "${GREEN}镜像加速配置已更新！当前使用的镜像加速地址：$mirror_url${RESET}"
                 ;;
             *)
                 echo -e "${RED}无效选项！${RESET}"
-                read -p "按回车键继续..."
                 ;;
         esac
+    }
+
+    # 启动 Docker 容器
+    start_container() {
+        if ! check_docker_status; then return; fi
+
+        echo -e "${YELLOW}已停止的容器：${RESET}"
+        container_list=$(docker ps -a --filter "status=exited" -q)
+        if [ -z "$container_list" ]; then
+            echo -e "${YELLOW}没有已停止的容器！${RESET}"
+            return
+        fi
+        docker ps -a --filter "status=exited" --format "table {{.ID}}\t{{.Image}}\t{{.Names}}" | sed 's/CONTAINER ID/容器ID/; s/IMAGE/镜像名称/; s/NAMES/容器名称/'
+        read -p "请输入要启动的容器ID： " container_id
+        if docker start "$container_id" &> /dev/null; then
+            echo -e "${GREEN}容器已启动！${RESET}"
+            # 显示容器的访问地址和端口
+            container_info=$(docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}} {{range $p, $conf := .NetworkSettings.Ports}}{{(index $conf 0).HostPort}} {{end}}' "$container_id")
+            ip=$(echo "$container_info" | awk '{print $1}')
+            ports=$(echo "$container_info" | awk '{for (i=2; i<=NF; i++) print $i}')
+            if [ -z "$ip" ] && [ -z "$ports" ]; then
+                echo -e "${YELLOW}该容器未暴露端口，请手动检查容器配置。${RESET}"
+            else
+                echo -e "${YELLOW}容器访问地址：${RESET}"
+                echo -e "${YELLOW}IP: $ip${RESET}"
+                echo -e "${YELLOW}端口: $ports${RESET}"
+            fi
+        else
+            echo -e "${RED}容器启动失败！${RESET}"
+        fi
+    }
+
+    # 停止 Docker 容器
+    stop_container() {
+        if ! check_docker_status; then return; fi
+
+        echo -e "${YELLOW}正在运行的容器：${RESET}"
+        docker ps --format "table {{.ID}}\t{{.Image}}\t{{.Names}}" | sed 's/CONTAINER ID/容器ID/; s/IMAGE/镜像名称/; s/NAMES/容器名称/'
+        read -p "请输入要停止的容器ID： " container_id
+        if docker stop "$container_id" &> /dev/null; then
+            echo -e "${GREEN}容器已停止！${RESET}"
+        else
+            echo -e "${RED}容器停止失败！${RESET}"
+        fi
+    }
+
+    # 查看已安装镜像
+    manage_images() {
+        if ! check_docker_status; then return; fi
+
+        echo -e "${YELLOW}====== 已安装镜像 ======${RESET}"
+        docker images --format "table {{.Repository}}\t{{.Tag}}\t{{.ID}}\t{{.CreatedSince}}\t{{.Size}}" | sed 's/REPOSITORY/仓库名称/; s/TAG/标签/; s/IMAGE ID/镜像ID/; s/CREATED/创建时间/; s/SIZE/大小/; s/ago/前/'
+        echo -e "${YELLOW}========================${RESET}"
+    }
+
+    # 删除 Docker 容器
+    delete_container() {
+        if ! check_docker_status; then return; fi
+
+        echo -e "${YELLOW}所有容器：${RESET}"
+        docker ps -a --format "table {{.ID}}\t{{.Image}}\t{{.Names}}" | sed 's/CONTAINER ID/容器ID/; s/IMAGE/镜像名称/; s/NAMES/容器名称/'
+        read -p "请输入要删除的容器ID： " container_id
+        if docker rm -f "$container_id" &> /dev/null; then
+            echo -e "${GREEN}容器已删除！${RESET}"
+        else
+            echo -e "${RED}容器删除失败！${RESET}"
+        fi
+    }
+
+    # 删除 Docker 镜像
+    delete_image() {
+        if ! check_docker_status; then return; fi
+
+        echo -e "${YELLOW}已安装镜像列表：${RESET}"
+        docker images --format "table {{.Repository}}\t{{.Tag}}\t{{.ID}}\t{{.CreatedSince}}\t{{.Size}}" | sed 's/REPOSITORY/仓库名称/; s/TAG/标签/; s/IMAGE ID/镜像ID/; s/CREATED/创建时间/; s/SIZE/大小/; s/ago/前/'
+        read -p "请输入要删除的镜像ID： " image_id
+        # 停止并删除使用该镜像的容器
+        running_containers=$(docker ps -q --filter "ancestor=$image_id")
+        if [ -n "$running_containers" ]; then
+            echo -e "${YELLOW}发现使用该镜像的容器，正在停止并删除...${RESET}"
+            docker stop $running_containers 2>/dev/null
+            docker rm $running_containers 2>/dev/null
+        fi
+        # 删除镜像
+        if docker rmi "$image_id" &> /dev/null; then
+            echo -e "${GREEN}镜像删除成功！${RESET}"
+        else
+            echo -e "${RED}镜像删除失败！${RESET}"
+        fi
+    }
+
+    # 安装 sun-panel
+    install_sun_panel() {
+        echo -e "${GREEN}正在安装 sun-panel...${RESET}"
+
+        # 端口处理
+        while true; do
+            read -p "请输入要使用的端口号（默认 3002）： " sun_port
+            sun_port=${sun_port:-3002}
+            
+            # 验证端口格式
+            if ! [[ "$sun_port" =~ ^[0-9]+$ ]] || [ "$sun_port" -lt 1 ] || [ "$sun_port" -gt 65535 ]; then
+                echo -e "${RED}无效端口，请输入 1-65535 之间的数字！${RESET}"
+                continue
+            fi
+
+            # 检查端口占用
+            if ss -tuln | grep -q ":${sun_port} "; then
+                echo -e "${RED}端口 ${sun_port} 已被占用，请选择其他端口！${RESET}"
+            else
+                break
+            fi
+        done
+
+        # 处理防火墙
+        open_port() {
+            if command -v ufw > /dev/null 2>&1; then
+                if ! ufw status | grep -q "${sun_port}/tcp"; then
+                    echo -e "${YELLOW}正在放行端口 ${sun_port}..."
+                    sudo ufw allow "${sun_port}/tcp"
+                    sudo ufw reload
+                fi
+            elif command -v firewall-cmd > /dev/null 2>&1; then
+                if ! firewall-cmd --list-ports | grep -q "${sun_port}/tcp"; then
+                    echo -e "${YELLOW}正在放行端口 ${sun_port}..."
+                    sudo firewall-cmd --permanent --add-port=${sun_port}/tcp
+                    sudo firewall-cmd --reload
+                fi
+            else
+                echo -e "${YELLOW}未检测到防火墙工具，请手动放行端口 ${sun_port}"
+            fi
+        }
+        open_port
+
+        # 拉取最新镜像并运行
+        docker pull hslr/sun-panel:latest && \
+        docker run -d \
+            --name sun-panel \
+            --restart always \
+            -p ${sun_port}:3002 \
+            -v /home/sun-panel/data:/app/data \
+            -v /home/sun-panel/config:/app/config \
+            -e SUNPANEL_ADMIN_USER="admin@sun.cc" \
+            -e SUNPANEL_ADMIN_PASS="12345678" \
+            hslr/sun-panel:latest
+
+        # 显示安装结果
+        if [ $? -eq 0 ]; then
+            server_ip=$(curl -s4 ifconfig.me)
+            echo -e "${GREEN}------------------------------------------------------"
+            echo -e " sun-panel 安装成功！"
+            echo -e " 访问地址：http://${server_ip}:${sun_port}"
+            echo -e " 管理员账号：admin@sun.cc"
+            echo -e " 管理员密码：12345678"
+            echo -e "------------------------------------------------------${RESET}"
+        else
+            echo -e "${RED}sun-panel 安装失败，请检查日志！${RESET}"
+        fi
+    }
+
+# 定义颜色变量（支持禁用颜色）
+USE_COLORS=true
+if [ "$USE_COLORS" = true ]; then
+    RED='\033[31m'
+    GREEN='\033[32m'
+    YELLOW='\033[33m'
+    RESET='\033[0m'
+else
+    RED=''
+    GREEN=''
+    YELLOW=''
+    RESET=''
+fi
+
+# 选项10：拉取镜像并安装容器（增强版 - 修复颜色显示并支持手动拉取）
+install_image_container() {
+    if ! check_docker_status; then return; fi
+
+    # 获取镜像名称
+    while true; do
+        read -p "请输入镜像名称（示例：nginx:latest 或 localhost:5000/nginx:v1）： " image_name
+        if [[ -z "$image_name" ]]; then
+            echo -e "${RED}镜像名称不能为空！${RESET}"
+            continue
+        fi
+        break
     done
+
+    # 拉取镜像
+    echo -e "${GREEN}正在拉取镜像 ${image_name}...${RESET}"
+    if ! docker pull "$image_name"; then
+        echo -e "${RED}镜像拉取失败！请检查：\n1. 镜像名称是否正确\n2. 网络连接是否正常\n3. 私有仓库是否需要 docker login${RESET}"
+        # 提示用户手动输入 docker pull 命令
+        read -p "${YELLOW}是否手动输入 docker pull 命令尝试拉取？（y/N，默认 N）：${RESET} " manual_pull_choice
+        if [[ "${manual_pull_choice:-N}" =~ [Yy] ]]; then
+            read -p "请输入完整的 docker pull 命令（示例：docker pull eyeblue/tank）： " manual_pull_cmd
+            if [[ -z "$manual_pull_cmd" ]]; then
+                echo -e "${RED}命令不能为空！返回主菜单...${RESET}"
+                return
+            fi
+            echo -e "${GREEN}正在执行手动拉取命令：${manual_pull_cmd}${RESET}"
+            # 执行用户输入的命令
+            if ! $manual_pull_cmd; then
+                echo -e "${RED}手动拉取失败！请检查命令或网络，返回主菜单...${RESET}"
+                return
+            fi
+            # 手动拉取成功后，重新设置 image_name 为拉取的镜像名称
+            image_name=$(echo "$manual_pull_cmd" | awk '{print $NF}')
+            echo -e "${GREEN}手动拉取成功！镜像名称更新为：${image_name}${RESET}"
+        else
+            echo -e "${YELLOW}取消手动拉取，返回主菜单...${RESET}"
+            return
+        fi
+    fi
+
+    # 获取系统占用端口
+    echo -e "${YELLOW}当前系统占用的端口：${RESET}"
+    used_host_ports=($(ss -tuln | awk '{print $5}' | cut -d':' -f2 | grep -E '^[0-9]+$' | sort -un))
+    for port in "${used_host_ports[@]}"; do
+        echo -e "  - 端口 ${port}"
+    done
+
+    # 自动检测镜像端口
+    exposed_ports=()
+
+    # 1. 元数据检测
+    port_info=$(docker inspect --format='{{json .Config.ExposedPorts}}' "$image_name" 2>/dev/null)
+    if [ $? -eq 0 ] && [ "$port_info" != "null" ]; then
+        eval "declare -A ports=${port_info}"
+        for port in "${!ports[@]}"; do
+            port_num="${port%/*}"
+            if [ "$port_num" -ge 1 ] && [ "$port_num" -le 65535 ]; then
+                echo -e "${YELLOW}[元数据检测] 发现端口 ${port_num}${RESET}"
+                exposed_ports+=("$port_num")
+            fi
+        done
+    fi
+
+    # 2. 运行时检测
+    temp_container_id=$(docker run -d --rm "$image_name" tail -f /dev/null 2>/dev/null)
+    if [ $? -eq 0 ]; then
+        echo -e "${YELLOW}正在检测容器端口，请稍候（可能需要 30 秒）...${RESET}"
+        sleep 30
+        runtime_ports=$(docker exec "$temp_container_id" sh -c "
+            if command -v ss >/dev/null; then
+                ss -tuln | awk '{print \$5}' | cut -d':' -f2 | grep -E '^[0-9]+$' | sort -un
+            elif command -v netstat >/dev/null; then
+                netstat -tuln | awk '/^tcp|udp/ {print \$4}' | cut -d':' -f2 | grep -E '^[0-9]+$' | sort -un
+            fi" 2>/dev/null)
+        for port in $runtime_ports; do
+            if [ "$port" -ge 1 ] && [ "$port" -le 65535 ] && [[ ! " ${exposed_ports[@]} " =~ " ${port} " ]]; then
+                echo -e "${YELLOW}[运行时检测] 发现端口 ${port}${RESET}"
+                exposed_ports+=("$port")
+            fi
+        done
+        docker stop "$temp_container_id" >/dev/null 2>&1
+    fi
+
+    # 3. 日志检测
+    if [ ${#exposed_ports[@]} -eq 0 ]; then
+        temp_container_id=$(docker run -d --rm "$image_name" 2>/dev/null)
+        if [ $? -eq 0 ]; then
+            echo -e "${YELLOW}正在通过日志检测端口，请稍候（可能需要 30 秒）...${RESET}"
+            sleep 30
+            log_output=$(docker logs "$temp_container_id" 2>/dev/null)
+            docker stop "$temp_container_id" >/dev/null 2>&1
+            log_ports=$(echo "$log_output" | grep -oP '(http|https)://[^:]*:\K[0-9]+|listen\s+\K[0-9]+|port\s+\K[0-9]+' | sort -un)
+            for port in $log_ports; do
+                if [ "$port" -ge 1 ] && [ "$port" -le 65535 ] && [[ ! " ${exposed_ports[@]} " =~ " ${port} " ]]; then
+                    echo -e "${YELLOW}[日志检测] 发现端口 ${port}${RESET}"
+                    exposed_ports+=("$port")
+                fi
+            done
+            # 推测常见镜像的默认端口
+            if [ ${#exposed_ports[@]} -eq 0 ]; then
+                if [[ "$image_name" =~ "jellyfin" ]]; then
+                    echo -e "${YELLOW}[推测] 检测到 Jellyfin 镜像，默认端口 8096${RESET}"
+                    exposed_ports+=("8096")
+                elif [[ "$image_name" =~ "nginx" ]]; then
+                    echo -e "${YELLOW}[推测] 检测到 Nginx 镜像，默认端口 80${RESET}"
+                    exposed_ports+=("80")
+                elif [[ "$image_name" =~ "mysql" ]]; then
+                    echo -e "${YELLOW}[推测] 检测到 MySQL 镜像，默认端口 3306${RESET}"
+                    exposed_ports+=("3306")
+                elif [[ "$image_name" =~ "postgres" ]]; then
+                    echo -e "${YELLOW}[推测] 检测到 PostgreSQL 镜像，默认端口 5432${RESET}"
+                    exposed_ports+=("5432")
+                elif [[ "$image_name" =~ "redis" ]]; then
+                    echo -e "${YELLOW}[推测] 检测到 Redis 镜像，默认端口 6379${RESET}"
+                    exposed_ports+=("6379")
+                elif [[ "$image_name" =~ "gdy666/lucky" ]]; then
+                    echo -e "${YELLOW}[推测] 检测到 Lucky 镜像，默认端口 16601${RESET}"
+                    exposed_ports+=("16601")
+                fi
+            fi
+        fi
+    fi
+
+    # 如果仍未检测到有效端口，提示用户从常见端口选择
+    common_ports=(80 443 8080 8096 9000 16601 3306 5432 6379)
+    if [ ${#exposed_ports[@]} -eq 0 ]; then
+        echo -e "${YELLOW}未检测到有效暴露端口，请从以下常见端口选择：${RESET}"
+        for i in "${!common_ports[@]}"; do
+            echo -e "  ${i}. ${common_ports[$i]}"
+        done
+        while true; do
+            read -p "请输入容器端口编号（0-8，默认 0 即 80）： " port_choice
+            port_choice=${port_choice:-0}
+            if ! [[ "$port_choice" =~ ^[0-8]$ ]]; then
+                echo -e "${RED}无效选择，请输入 0-8 之间的数字！${RESET}"
+                continue
+            fi
+            exposed_ports+=("${common_ports[$port_choice]}")
+            echo -e "${GREEN}选择容器端口 ${exposed_ports[0]}${RESET}"
+            break
+        done
+    fi
+
+    # 智能端口映射
+    port_mappings=()
+    port_mapping_display=()
+
+    for port in "${exposed_ports[@]}"; do
+        recommended_port=$port
+        while [[ " ${used_host_ports[@]} " =~ " ${recommended_port} " ]]; do
+            recommended_port=$((recommended_port + 1))
+            if [ "$recommended_port" -gt 65535 ]; then
+                recommended_port=8080
+            fi
+        done
+
+        while true; do
+            read -p "映射容器端口 ${port} 到宿主机端口（默认 ${recommended_port}，回车使用默认）： " host_port
+            host_port=${host_port:-$recommended_port}
+
+            if ! [[ "$host_port" =~ ^[0-9]+$ ]] || [ "$host_port" -lt 1 ] || [ "$host_port" -gt 65535 ]; then
+                echo -e "${RED}无效端口，请输入 1-65535 之间的数字！${RESET}"
+                continue
+            fi
+
+            if [[ " ${used_host_ports[@]} " =~ " ${host_port} " ]]; then
+                echo -e "${RED}端口 ${host_port} 已占用！建议更换端口：${RESET}"
+                ss -tulpn | grep ":$host_port"
+                read -p "更换端口？(y/N，默认 y)： " change_port
+                if [[ "${change_port:-y}" =~ [Yy] ]]; then
+                    continue
+                fi
+            fi
+
+            port_mappings+=("-p" "${host_port}:${port}")
+            port_mapping_display+=("${port} -> ${host_port}")
+            used_host_ports+=("$host_port")
+            echo -e "${GREEN}端口映射：容器端口 ${port} -> 宿主机端口 ${host_port}${RESET}"
+            break
+        done
+    done
+
+    # 数据路径设置
+    default_data_path="/root/docker/home"
+    read -p "请输入容器数据路径（默认：${default_data_path}，回车使用默认）： " data_path
+    data_path=${data_path:-$default_data_path}
+    if [ ! -d "$data_path" ]; then
+        echo -e "${YELLOW}创建数据目录：$data_path${RESET}"
+        if ! mkdir -p "$data_path" 2>/dev/null && ! sudo mkdir -p "$data_path"; then
+            echo -e "${RED}目录创建失败，请检查权限或手动创建：sudo mkdir -p '$data_path'${RESET}"
+            return
+        fi
+    fi
+
+    # 防火墙处理
+    open_port() {
+        for ((i=0; i<${#port_mappings[@]}; i+=2)); do
+            if [[ "${port_mappings[$i]}" == "-p" && "${port_mappings[$i+1]}" =~ ^[0-9]+:[0-9]+$ ]]; then
+                host_port=$(echo "${port_mappings[$i+1]}" | cut -d':' -f1)
+                echo -e "${YELLOW}处理防火墙，放行端口 ${host_port}...${RESET}"
+                if command -v ufw >/dev/null 2>&1; then
+                    if ! ufw status | grep -q "${host_port}/tcp"; then
+                        sudo ufw allow "${host_port}/tcp" && sudo ufw reload
+                    fi
+                elif command -v firewall-cmd >/dev/null 2>&1; then
+                    if ! firewall-cmd --list-ports | grep -qw "${host_port}/tcp"; then
+                        sudo firewall-cmd --permanent --add-port="${host_port}/tcp"
+                        sudo firewall-cmd --reload
+                    fi
+                else
+                    echo -e "${YELLOW}未检测到防火墙工具，请手动放行端口 ${host_port}${RESET}"
+                fi
+            fi
+        done
+    }
+    open_port
+
+    # 生成容器名称并启动
+    container_name="$(echo "$image_name" | tr '/:' '_')_$(date +%s)"
+    echo -e "${GREEN}正在启动容器...${RESET}"
+    docker_run_cmd=(
+        docker run -d
+        --name "$container_name"
+        --restart unless-stopped
+        "${port_mappings[@]}"
+        -v "${data_path}:/app/data"
+        "$image_name"
+    )
+
+    # 捕获详细错误输出
+    if ! output=$("${docker_run_cmd[@]}" 2>&1); then
+        echo -e "${RED}容器启动失败！错误信息：${RESET}"
+        echo "$output"
+        echo -e "${RED}可能原因：${RESET}"
+        echo -e "1. 端口配置错误（选择的容器端口可能不正确）"
+        echo -e "2. 镜像需要特定启动参数（请查看镜像文档，如 -p 端口或 -e 环境变量）"
+        echo -e "3. 权限或资源问题"
+        echo -e "调试命令：${docker_run_cmd[*]}"
+    else
+        sleep 5
+        if ! docker ps | grep -q "$container_name"; then
+            echo -e "${RED}容器启动后异常退出，请查看日志：${RESET}"
+            docker logs "$container_name"
+            return
+        fi
+
+        # 验证端口监听
+        for mapping in "${port_mapping_display[@]}"; do
+            container_port=$(echo "$mapping" | cut -d' ' -f1)
+            temp_check=$(docker exec "$container_name" sh -c "
+                if command -v ss >/dev/null; then
+                    ss -tuln | grep -q ':${container_port}' && echo 'found'
+                elif command -v netstat >/dev/null; then
+                    netstat -tuln | grep -q ':${container_port}' && echo 'found'
+                fi" 2>/dev/null)
+            if [ "$temp_check" != "found" ]; then
+                echo -e "${RED}警告：容器未监听端口 ${container_port}，映射可能无效！${RESET}"
+                echo -e "${YELLOW}建议查看日志或重新选择容器端口：docker logs $container_name${RESET}"
+            fi
+        done
+
+        # 获取网络信息
+        server_ip=$(hostname -I | awk '{print $1}')
+        public_ip=$(curl -s4 icanhazip.com || curl -s6 icanhazip.com || echo "N/A")
+
+        # 输出访问信息
+        echo -e "${GREEN}------------------------------------------------------"
+        echo -e " 容器名称：$container_name"
+        echo -e " 镜像名称：$image_name"
+        echo -e " 端口映射（容器内 -> 宿主机）："
+        for mapping in "${port_mapping_display[@]}"; do
+            echo -e "    - ${mapping}"
+        done
+        [ "$public_ip" != "N/A" ] && echo -e " 公网访问："
+        for mapping in "${port_mapping_display[@]}"; do
+            host_port=$(echo "$mapping" | cut -d' ' -f3)
+            [ "$public_ip" != "N/A" ] && echo -e "   - http://${public_ip}:${host_port}"
+            echo -e "  内网访问：http://${server_ip}:${host_port}"
+        done
+        echo -e " 数据路径：$data_path"
+        echo -e "------------------------------------------------------${RESET}"
+
+        # 诊断命令
+        echo -e "${YELLOW}诊断命令：${RESET}"
+        echo -e "查看日志：docker logs $container_name"
+        echo -e "进入容器：docker exec -it $container_name sh"
+        echo -e "停止容器：docker stop $container_name"
+        echo -e "删除容器：docker rm -f $container_name"
+    fi
+}
+
+    # 选项11：更新镜像并重启容器
+    update_image_restart() {
+        if ! check_docker_status; then return; fi
+
+        # 获取镜像名称
+        read -p "请输入要更新的镜像名称（例如：nginx:latest）：" image_name
+        if [[ -z "$image_name" ]]; then
+            echo -e "${RED}镜像名称不能为空！${RESET}"
+            return
+        fi
+
+        # 拉取最新镜像
+        echo -e "${GREEN}正在更新镜像：${image_name}...${RESET}"
+        if ! docker pull "$image_name"; then
+            echo -e "${RED}镜像更新失败！请检查：\n1. 镜像名称是否正确\n2. 网络连接是否正常${RESET}"
+            return
+        fi
+
+        # 查找关联容器
+        container_ids=$(docker ps -a --filter "ancestor=$image_name" --format "{{.ID}}")
+        if [ -z "$container_ids" ]; then
+            echo -e "${YELLOW}没有找到使用该镜像的容器${RESET}"
+            return
+        fi
+
+        # 重启容器
+        echo -e "${YELLOW}正在重启以下容器：${RESET}"
+        docker ps -a --filter "ancestor=$image_name" --format "table {{.ID}}\t{{.Names}}\t{{.Image}}"
+        for cid in $container_ids; do
+            echo -n "重启容器 $cid ... "
+            docker restart "$cid" && echo "成功" || echo "失败"
+        done
+    }
+
+    # 选项12：批量操作容器
+    batch_operations() {
+        if ! check_docker_status; then return; fi
+
+        echo -e "${GREEN}=== 批量操作 ===${RESET}"
+        echo "1) 停止所有容器"
+        echo "2) 删除所有容器"
+        echo "3) 删除所有镜像"
+        read -p "请选择操作类型：" batch_choice
+
+        case $batch_choice in
+            1)
+                read -p "确定要停止所有容器吗？(y/n)：" confirm
+                [[ "$confirm" == "y" ]] && docker stop $(docker ps -q)
+                ;;
+            2)
+                read -p "确定要删除所有容器吗？(y/n)：" confirm
+                [[ "$confirm" == "y" ]] && docker rm -f $(docker ps -aq)
+                ;;
+            3)
+                read -p "确定要删除所有镜像吗？(y/n)：" confirm
+                [[ "$confirm" == "y" ]] && docker rmi -f $(docker images -q)
+                ;;
+            *)
+                echo -e "${RED}无效选项！${RESET}"
+                ;;
+        esac
+    }
+
+    case $docker_choice in
+        1) install_docker ;;
+        2) uninstall_docker ;;
+        3) configure_mirror ;;
+        4) start_container ;;
+        5) stop_container ;;
+        6) manage_images ;;
+        7) delete_container ;;
+        8) delete_image ;;
+        9) install_sun_panel ;;
+        10) install_image_container ;;
+        11) update_image_restart ;;
+        12) batch_operations ;;
+        0) break ;;
+        *) echo -e "${RED}无效选项！${RESET}" ;;
+    esac
+    read -p "按回车键继续..."
+done
     ;;
             19)
                 # SSH 防暴力破解检测与防护
