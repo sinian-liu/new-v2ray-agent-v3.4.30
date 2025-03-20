@@ -3,7 +3,6 @@
 # 设置颜色
 GREEN="\033[32m"
 RED="\033[31m"
-YELLOW="\033[33m"
 RESET="\033[0m"
 
 # 日志文件
@@ -107,20 +106,35 @@ fi
 # 主菜单函数
 show_menu() {
     while true; do
-        echo -e "${GREEN}=============================================${RESET}"
-        echo -e "${GREEN}服务器推荐：https://my.frantech.ca/aff.php?aff=4337${RESET}"
-        echo -e "${GREEN}VPS评测官方网站：https://www.1373737.xyz/${RESET}"
-        echo -e "${GREEN}YouTube频道：https://www.youtube.com/@cyndiboy7881${RESET}"
-        echo -e "${GREEN}=============================================${RESET}"
+        echo "============================================="
+        echo "服务器推荐：https://my.frantech.ca/aff.php?aff=4337"
+        echo "VPS评测官方网站：https://www.1373737.xyz/"
+        echo "YouTube频道：https://www.youtube.com/@cyndiboy7881"
+        echo "============================================="
         echo "请选择要执行的操作："
-        echo -e "${YELLOW}0. 脚本更新  1. VPS一键测试  2. 安装BBR  3. 安装v2ray  4. 安装无人直播云SRS${RESET}"
-        echo -e "${YELLOW}5. 面板安装（1panel/宝塔/青龙）  6. 系统更新  7. 修改密码  8. 重启服务器${RESET}"
-        echo -e "${YELLOW}9. 一键永久禁用IPv6  10. 一键解除禁用IPv6  11. 设置中国时区${RESET}"
-        echo -e "${YELLOW}12. 保持SSH连接  13. 安装系统（KVM）  14. 服务器间文件传输${RESET}"
-        echo -e "${YELLOW}15. 安装探针并绑定域名  16. 端口反代  17. 安装curl和wget${RESET}"
-        echo -e "${YELLOW}18. Docker管理  19. SSH防暴力破解检测  20. Speedtest测速${RESET}"
-        echo -e "${YELLOW}21. WordPress管理（基于Docker）${RESET}"
-        echo -e "${GREEN}=============================================${RESET}"
+        echo "0. 脚本更新"
+        echo "1. VPS一键测试"
+        echo "2. 安装BBR"
+        echo "3. 安装v2ray"
+        echo "4. 安装无人直播云SRS"
+        echo "5. 面板安装（1panel/宝塔/青龙）"
+        echo "6. 系统更新"
+        echo "7. 修改密码"
+        echo "8. 重启服务器"
+        echo "9. 一键永久禁用IPv6"
+        echo "10.一键解除禁用IPv6"
+        echo "11.服务器时区修改为中国时区"
+        echo "12.保持SSH会话一直连接不断开"
+        echo "13.安装Windows或Linux系统"
+        echo "14.服务器对服务器文件传输"
+        echo "15.安装探针并绑定域名"
+        echo "16.共用端口（反代）"
+        echo "17.安装 curl 和 wget"
+        echo "18.Docker安装和管理"
+        echo "19.SSH 防暴力破解检测"
+        echo "20.Speedtest测速面板"
+        echo "21.WordPress 安装（基于 Docker）"
+        echo "============================================="
         read -p "请输入选项 (输入 'q' 退出): " option
 
         [ "$option" = "q" ] && { log_info "退出脚本"; exit 0; }
@@ -160,7 +174,7 @@ show_menu() {
                 ;;
             5) # 面板管理
                 while true; do
-                    echo -e "${GREEN}=== 面板管理 ===${RESET}"
+                    echo "=== 面板管理 ==="
                     echo "1) 安装1Panel  2) 安装宝塔纯净版  3) 安装宝塔国际版  4) 安装宝塔国内版  5) 安装青龙面板"
                     echo "6) 卸载1Panel  7) 卸载宝塔  8) 卸载青龙  9) 一键卸载所有  0) 返回主菜单"
                     read -p "请输入选项: " panel_choice
@@ -339,7 +353,7 @@ EOF
                 ;;
             18) # Docker 管理
                 while true; do
-                    echo -e "${GREEN}=== Docker 管理 ===${RESET}"
+                    echo "=== Docker 管理 ==="
                     echo "1) 安装 Docker  2) 卸载 Docker  3) 配置镜像加速  4) 启动容器  5) 停止容器"
                     echo "6) 查看镜像  7) 删除容器  8) 删除镜像  9) 安装 sun-panel"
                     echo "10) 拉取并安装容器  11) 更新镜像并重启  12) 批量操作容器  0) 返回主菜单"
@@ -389,28 +403,17 @@ EOF
                             docker run -d -p "$DEFAULT_PORT":5678 --name sun-panel --restart=always \
                                 -v /opt/sun-panel/conf:/app/conf -v /opt/sun-panel/db:/app/db \
                                 -v /opt/sun-panel/uploads:/app/uploads sunpanel/sun-panel:latest && \
-                                sleep 5 # 等待服务启动
-                            # 模拟登录验证默认账密
-                            ip=$(curl -s4 ifconfig.me)
-                            login_url="http://$ip:$DEFAULT_PORT/api/authorizations"
-                            login_response=$(curl -s -X POST "$login_url" -H "Content-Type: application/json" \
-                                -d '{"email": "admin@sun.cc", "password": "12345678"}')
-                            if echo "$login_response" | grep -q "token"; then
-                                log_info "sun-panel 安装完成，默认账密正确，访问: $login_url"
+                                sleep 5 # 等待容器启动
+                            # 检查容器是否运行
+                            if docker ps -q --filter "name=sun-panel" | grep -q .; then
+                                # 重置密码为默认值
+                                docker exec -it sun-panel bash -c "./sun-panel -password-reset" && \
+                                sleep 2 # 等待重置完成
+                                log_info "sun-panel 安装完成，密码已重置"
+                                log_info "访问地址: http://$(curl -s4 ifconfig.me):$DEFAULT_PORT"
                                 log_info "用户名: admin@sun.cc  密码: 12345678"
                             else
-                                log_info "默认账密不正确，正在修改..."
-                                docker exec sun-panel sed -i 's/email: .*/email: admin@sun.cc/' /app/conf/application.yml
-                                docker exec sun-panel sed -i 's/password: .*/password: 12345678/' /app/conf/application.yml
-                                docker restart sun-panel && sleep 3
-                                login_response=$(curl -s -X POST "$login_url" -H "Content-Type: application/json" \
-                                    -d '{"email": "admin@sun.cc", "password": "12345678"}')
-                                if echo "$login_response" | grep -q "token"; then
-                                    log_info "sun-panel 安装完成，账密已修改，访问: $login_url"
-                                    log_info "用户名: admin@sun.cc  密码: 12345678"
-                                else
-                                    log_error "账密修改失败，请手动检查"
-                                fi
+                                log_error "sun-panel 容器启动失败，请检查 Docker 日志"
                             fi
                             ;;
                         10)
@@ -444,7 +447,7 @@ EOF
             20) bash <(curl -sL https://raw.githubusercontent.com/sinian-liu/onekey/main/speedtest.sh) || log_error "Speedtest 失败"; read -p "按回车继续..." ;;
             21) # WordPress 管理
                 while true; do
-                    echo -e "${GREEN}=== WordPress 管理 ===${RESET}"
+                    echo "=== WordPress 管理 ==="
                     echo "1) 安装 WordPress  2) 卸载 WordPress  3) 迁移 WordPress  4) 查看证书信息  5) 设置定时备份  0) 返回主菜单"
                     read -p "请输入选项: " wp_choice
                     case $wp_choice in
