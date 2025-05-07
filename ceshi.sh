@@ -1922,7 +1922,7 @@ install_image_container() {
         10) install_image_container ;;
         11) update_image_restart ;;
         12) batch_operations ;;
-        13) install_portainer_ce ;;
+        13) install_portainer ;;
         0) break ;;
         *) echo -e "${RED}无效选项！${RESET}" ;;
     esac
