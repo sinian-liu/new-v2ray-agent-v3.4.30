@@ -201,84 +201,15 @@ show_menu() {
     # BBR 和 BBR v3 安装与管理
     echo -e "${GREEN}正在进入 BBR 和 BBR v3 安装与管理菜单...${RESET}"
     bbr_management() {
-        # 检查内核版本并自动升级
+        # 检查内核版本是否支持 BBR v3
         check_kernel_version() {
             kernel_version=$(uname -r)
             if [[ $(echo "$kernel_version" | cut -d. -f1) -lt 5 || $(echo "$kernel_version" | cut -d. -f2) -lt 10 ]]; then
-                echo -e "${RED}当前内核版本 $kernel_version 较低，不支持 BBR v3。${RESET}"
-                echo -e "${YELLOW}正在尝试自动升级内核...${RESET}"
-                upgrade_kernel
-                if [ $? -eq 0 ]; then
-                    echo -e "${GREEN}内核升级完成！${RESET}"
-                    read -p "是否立即重启系统以应用新内核？(y/n): " reboot_choice
-                    if [[ $reboot_choice == "y" || $reboot_choice == "Y" ]]; then
-                        echo -e "${YELLOW}正在重启系统...${RESET}"
-                        sudo reboot
-                    else
-                        echo -e "${YELLOW}请稍后手动运行 'sudo reboot' 重启系统以应用新内核。${RESET}"
-                    fi
-                    return 1
-                else
-                    echo -e "${RED}内核升级失败，请手动升级内核到 5.10 或更高版本！${RESET}"
-                    return 1
-                fi
+                echo -e "${RED}当前内核版本 $kernel_version 不支持 BBR v3，请手动升级到 5.10 或更高版本！${RESET}"
+                return 1
             fi
             echo -e "${GREEN}内核版本 $kernel_version 支持 BBR v3。${RESET}"
             return 0
-        }
-        # 自动升级内核
-        upgrade_kernel() {
-            # 检测系统发行版
-            if [ -f /etc/os-release ]; then
-                . /etc/os-release
-                distro=$ID
-            else
-                echo -e "${RED}无法检测系统发行版，请手动升级内核！${RESET}"
-                return 1
-            fi
-            case $distro in
-                ubuntu)
-                    echo -e "${YELLOW}检测到 Ubuntu 系统，正在安装最新 HWE 内核...${RESET}"
-                    sudo apt update
-                    sudo apt install -y linux-generic-hwe-22.04
-                    if [ $? -eq 0 ]; then
-                        echo -e "${GREEN}Ubuntu 内核升级成功！${RESET}"
-                        return 0
-                    else
-                        echo -e "${RED}Ubuntu 内核升级失败，请检查网络或权限！${RESET}"
-                        return 1
-                    fi
-                    ;;
-                debian)
-                    echo -e "${YELLOW}检测到 Debian 系统，正在安装最新内核...${RESET}"
-                    sudo apt update
-                    sudo apt install -y linux-image-amd64
-                    if [ $? -eq 0 ]; then
-                        echo -e "${GREEN}Debian 内核升级成功！${RESET}"
-                        return 0
-                    else
-                        echo -e "${RED}Debian 内核升级失败，请检查网络或权限！${RESET}"
-                        return 1
-                    fi
-                    ;;
-                centos)
-                    echo -e "${YELLOW}检测到 CentOS 系统，正在安装最新主线内核...${RESET}"
-                    sudo yum install -y epel-release
-                    sudo yum install -y kernel kernel-devel
-                    if [ $? -eq 0 ]; then
-                        sudo grub2-mkconfig -o /boot/grub2/grub.cfg
-                        echo -e "${GREEN}CentOS 内核升级成功！${RESET}"
-                        return 0
-                    else
-                        echo -e "${RED}CentOS 内核升级失败，请检查网络或权限！${RESET}"
-                        return 1
-                    fi
-                    ;;
-                *)
-                    echo -e "${RED}不支持的系统发行版：$distro，请手动升级内核！${RESET}"
-                    return 1
-                    ;;
-            esac
         }
         # 检查 BBR v3 安装和运行状态
         check_bbr_status() {
@@ -498,7 +429,11 @@ show_menu() {
             echo "5) 应用网络优化配置"
             echo "6) 恢复默认 TCP 设置"
             echo "7) 返回主菜单"
-            read -p "请输入选项 [1-7]: " bbr_choice
+            read -p "请输入选项 [1-7] 或按回车返回主菜单: " bbr_choice
+            if [ -z "$bbr_choice" ]; then
+                echo -e "${YELLOW}返回主菜单...${RESET}"
+                break
+            fi
             case $bbr_choice in
                 1)
                     install_original_bbr
@@ -552,6 +487,7 @@ show_menu() {
                     read -p "按回车键返回 BBR 管理菜单..."
                     ;;
                 7)
+                    echo -e "${YELLOW}返回主菜单...${RESET}"
                     break
                     ;;
                 *)
