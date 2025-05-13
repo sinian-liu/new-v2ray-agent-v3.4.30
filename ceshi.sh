@@ -204,8 +204,15 @@ show_menu() {
         # 检查内核版本是否支持 BBR v3
         check_kernel_version() {
             kernel_version=$(uname -r)
-            if [[ $(echo "$kernel_version" | cut -d. -f1) -lt 5 || $(echo "$kernel_version" | cut -d. -f2) -lt 10 ]]; then
-                echo -e "${RED}当前内核版本 $kernel_version 不支持 BBR v3，请手动升级到 5.10 或更高版本！${RESET}"
+            major_version=$(echo "$kernel_version" | awk -F. '{print $1}')
+            minor_version=$(echo "$kernel_version" | awk -F. '{print $2}' | cut -d- -f1)
+            if [[ $major_version -lt 5 || ($major_version -eq 5 && $minor_version -lt 6) ]]; then
+                echo -e "${RED}当前内核版本 $kernel_version 不支持 BBR v3！${RESET}"
+                if [ -f /etc/centos-release ] && grep -q "CentOS Linux release 7" /etc/centos-release; then
+                    echo -e "${YELLOW}CentOS 7 默认内核（3.10）不支持 BBR v3，建议升级到 5.6 或更高版本（如通过 'yum install kernel'）。${RESET}"
+                else
+                    echo -e "${YELLOW}请手动升级内核到 5.6 或更高版本！${RESET}"
+                fi
                 return 1
             fi
             echo -e "${GREEN}内核版本 $kernel_version 支持 BBR v3。${RESET}"
@@ -214,31 +221,34 @@ show_menu() {
         # 检查 BBR v3 安装和运行状态
         check_bbr_status() {
             echo -e "${YELLOW}正在检查 BBR v3 状态...${RESET}"
-            # 检查模块是否加载
             PURPLE='\033[35m'
-            if lsmod | grep -q "tcp_bbr"; then
-                echo -e "${GREEN}BBR v3 模块 (tcp_bbr) 已加载。${RESET}"
+            if modinfo tcp_bbr >/dev/null 2>&1; then
+                if lsmod | grep -q "tcp_bbr"; then
+                    echo -e "${GREEN}BBR v3 模块 (tcp_bbr) 已加载。${RESET}"
+                else
+                    echo -e "${PURPLE}BBR v3 模块 (tcp_bbr) 未加载，可能未启用。${RESET}"
+                    return 1
+                fi
             else
-                echo -e "${PURPLE}BBR v3 模块 (tcp_bbr) 未加载，可能未安装或未启用。${RESET}"
+                echo -e "${RED}BBR v3 模块 (tcp_bbr) 未找到，可能内核不支持或模块缺失！${RESET}"
+                echo -e "${YELLOW}请确认内核版本 >= 5.6，并检查模块路径（如 /lib/modules/$(uname -r)/kernel/net/ipv4/tcp_bbr.ko）。${RESET}"
                 return 1
             fi
-            # 检查当前拥塞控制算法
             current_congestion=$(sysctl -n net.ipv4.tcp_congestion_control)
             if [ "$current_congestion" = "bbr" ]; then
                 echo -e "${PURPLE}拥塞控制算法已设置为 BBR，BBR v3 已成功启动。${RESET}"
             else
                 echo -e "${RED}当前拥塞控制算法为 $current_congestion，BBR v3 未成功启动。${RESET}"
-                echo -e "${YELLOW}建议：尝试重新安装 BBR v3 或检查 /etc/sysctl.conf 配置。${RESET}"
+                echo -e "${YELLOW}建议：运行 'sudo sysctl -w net.ipv4.tcp_congestion_control=bbr' 或重新安装 BBR v3。${RESET}"
                 return 1
             fi
-            # 检查 sysctl 配置是否持久化（重启后生效）
-            if grep -q "net.ipv4.tcp_congestion_control = bbr" /etc/sysctl.conf; then
-                echo -e "${GREEN}BBR v3 配置已写入 /etc/sysctl.conf，重启后将保持生效。${RESET}"
+            sysctl_file="/etc/sysctl.conf"
+            [ -f /etc/centos-release ] && sysctl_file="/etc/sysctl.d/99-bbr.conf"
+            if grep -q "net.ipv4.tcp_congestion_control = bbr" "$sysctl_file"; then
+                echo -e "${GREEN}BBR v3 配置已写入 $sysctl_file，重启后将保持生效。${RESET}"
             else
-                echo -e "${YELLOW}警告：BBR v3 配置未写入 /etc/sysctl.conf，重启后可能失效。${RESET}"
-                echo -e "${YELLOW}建议：重新安装 BBR v3 以确保配置持久化。${RESET}"
+                echo -e "${YELLOW}警告：BBR v3 配置未写入 $sysctl_file，重启后可能失效。${RESET}"
             fi
-            # 检查模块是否在系统启动时自动加载
             if [ -f /etc/modules-load.d/bbr.conf ] && grep -q "tcp_bbr" /etc/modules-load.d/bbr.conf; then
                 echo -e "${GREEN}BBR v3 模块配置为系统启动时自动加载。${RESET}"
             else
@@ -271,7 +281,7 @@ show_menu() {
         uninstall_other_bbr_versions() {
             current_bbr=$(lsmod | grep tcp_bbr | head -n 1)
             current_bbr_version=$(echo "$current_bbr" | awk '{print $1}')
-            sudo modprobe -r $current_bbr_version
+            sudo modprobe -r "$current_bbr_version"
             if [ $? -eq 0 ]; then
                 echo -e "${GREEN}$current_bbr_version 卸载成功${RESET}"
             else
@@ -283,18 +293,19 @@ show_menu() {
             echo -e "${YELLOW}正在安装 BBR v3...${RESET}"
             sudo modprobe tcp_bbr
             if [ $? -ne 0 ]; then
-                echo -e "${RED}加载 tcp_bbr 模块失败，请检查内核支持！${RESET}"
+                echo -e "${RED}加载 tcp_bbr 模块失败，请检查内核支持或模块路径！${RESET}"
                 return 1
             fi
-            echo "net.ipv4.tcp_congestion_control = bbr" | sudo tee -a /etc/sysctl.conf
-            sudo sysctl -p
+            sysctl_file="/etc/sysctl.conf"
+            [ -f /etc/centos-release ] && sysctl_file="/etc/sysctl.d/99-bbr.conf"
+            echo "net.ipv4.tcp_congestion_control = bbr" | sudo tee -a "$sysctl_file"
+            sudo sysctl -p "$sysctl_file"
             if [ $? -eq 0 ]; then
                 echo -e "${GREEN}BBR v3 配置已应用！${RESET}"
             else
-                echo -e "${RED}应用 sysctl 配置失败，请手动检查 /etc/sysctl.conf！${RESET}"
+                echo -e "${RED}应用 sysctl 配置失败，请手动检查 $sysctl_file！${RESET}"
                 return 1
             fi
-            # 确保模块自动加载
             if [ ! -f /etc/modules-load.d/bbr.conf ] || ! grep -q "tcp_bbr" /etc/modules-load.d/bbr.conf; then
                 echo "tcp_bbr" | sudo tee /etc/modules-load.d/bbr.conf >/dev/null
                 if [ $? -eq 0 ]; then
@@ -303,7 +314,6 @@ show_menu() {
                     echo -e "${RED}配置模块自动加载失败，请手动检查 /etc/modules-load.d/bbr.conf！${RESET}"
                 fi
             fi
-            # 验证安装
             check_bbr_status
             if [ $? -eq 0 ]; then
                 echo -e "${GREEN}BBR v3 安装成功！${RESET}"
@@ -316,9 +326,8 @@ show_menu() {
             echo -e "${YELLOW}正在卸载当前 BBR 版本...${RESET}"
             sudo modprobe -r tcp_bbr
             if [ $? -eq 0 ]; then
-                sudo sysctl -w net.ipv4.tcp_congestion_control=default
+                sudo sysctl -w net.ipv4.tcp_congestion_control=cubic
                 echo -e "${GREEN}BBR 版本已卸载！${RESET}"
-                # 移除自动加载配置
                 if [ -f /etc/modules-load.d/bbr.conf ]; then
                     sudo rm -f /etc/modules-load.d/bbr.conf
                     if [ $? -eq 0 ]; then
@@ -334,59 +343,54 @@ show_menu() {
         # 恢复默认 TCP 设置
         restore_default_tcp_settings() {
             echo -e "${YELLOW}正在恢复默认 TCP 拥塞控制设置...${RESET}"
-            sudo sysctl -w net.ipv4.tcp_congestion_control=default
+            sudo sysctl -w net.ipv4.tcp_congestion_control=cubic
             sudo sysctl -w net.core.default_qdisc=fq
-            sudo sysctl -p
+            sysctl_file="/etc/sysctl.conf"
+            [ -f /etc/centos-release ] && sysctl_file="/etc/sysctl.d/99-bbr.conf"
+            sudo sysctl -p "$sysctl_file"
             if [ $? -eq 0 ]; then
                 echo -e "${GREEN}已恢复到默认 TCP 设置。${RESET}"
             else
-                echo -e "${RED}恢复默认 TCP 设置失败，请手动检查！${RESET}"
+                echo -e "${RED}恢复默认 TCP 设置失败，请手动检查 $sysctl_file！${RESET}"
             fi
         }
         # 一键网络优化配置（针对视频播放、文件下载、多用户 VPS）
         apply_network_optimizations() {
             echo -e "${YELLOW}正在应用一键网络优化配置（优化视频播放、文件下载和多用户 VPS）...${RESET}"
-            # TCP 拥塞算法与调度器
-            echo "net.core.default_qdisc = fq" | sudo tee -a /etc/sysctl.conf
-            echo "net.ipv4.tcp_congestion_control = bbr" | sudo tee -a /etc/sysctl.conf
-            # 提高连接处理能力
-            echo "net.core.somaxconn = 4096" | sudo tee -a /etc/sysctl.conf
-            echo "net.ipv4.tcp_max_syn_backlog = 2048" | sudo tee -a /etc/sysctl.conf
-            # 减少连接延迟与释放时间
-            echo "net.ipv4.tcp_fin_timeout = 30" | sudo tee -a /etc/sysctl.conf
-            echo "net.ipv4.tcp_keepalive_time = 600" | sudo tee -a /etc/sysctl.conf
-            # 增加可用端口范围
-            echo "net.ipv4.ip_local_port_range = 1024 65535" | sudo tee -a /etc/sysctl.conf
-            # 提高文件描述符限制
-            echo "fs.file-max = 2097152" | sudo tee -a /etc/sysctl.conf
-            echo "net.core.netdev_max_backlog = 4096" | sudo tee -a /etc/sysctl.conf
-            # 启用 TCP Fast Open
-            echo "net.ipv4.tcp_fastopen = 3" | sudo tee -a /etc/sysctl.conf
-            # 优化 TCP 窗口和缓冲区（适合视频流和文件下载）
-            echo "net.core.rmem_max = 16777216" | sudo tee -a /etc/sysctl.conf
-            echo "net.core.wmem_max = 16777216" | sudo tee -a /etc/sysctl.conf
-            echo "net.ipv4.tcp_rmem = 4096 87380 16777216" | sudo tee -a /etc/sysctl.conf
-            echo "net.ipv4.tcp_wmem = 4096 65536 16777216" | sudo tee -a /etc/sysctl.conf
-            # 优化多用户并发
-            echo "net.ipv4.tcp_max_tw_buckets = 20000" | sudo tee -a /etc/sysctl.conf
-            echo "net.ipv4.tcp_tw_reuse = 1" | sudo tee -a /etc/sysctl.conf
-            # 应用 sysctl 配置
-            sudo sysctl -p
+            sysctl_file="/etc/sysctl.conf"
+            [ -f /etc/centos-release ] && sysctl_file="/etc/sysctl.d/99-bbr.conf"
+            echo "net.core.default_qdisc = fq" | sudo tee -a "$sysctl_file"
+            echo "net.ipv4.tcp_congestion_control = bbr" | sudo tee -a "$sysctl_file"
+            echo "net.core.somaxconn = 4096" | sudo tee -a "$sysctl_file"
+            echo "net.ipv4.tcp_max_syn_backlog = 2048" | sudo tee -a "$sysctl_file"
+            echo "net.ipv4.tcp_fin_timeout = 30" | sudo tee -a "$sysctl_file"
+            echo "net.ipv4.tcp_keepalive_time = 600" | sudo tee -a "$sysctl_file"
+            echo "net.ipv4.ip_local_port_range = 1024 65535" | sudo tee -a "$sysctl_file"
+            echo "fs.file-max = 2097152" | sudo tee -a "$sysctl_file"
+            echo "net.core.netdev_max_backlog = 4096" | sudo tee -a "$sysctl_file"
+            echo "net.ipv4.tcp_fastopen = 3" | sudo tee -a "$sysctl_file"
+            echo "net.core.rmem_max = 16777216" | sudo tee -a "$sysctl_file"
+            echo "net.core.wmem_max = 16777216" | sudo tee -a "$sysctl_file"
+            echo "net.ipv4.tcp_rmem = 4096 87380 16777216" | sudo tee -a "$sysctl_file"
+            echo "net.ipv4.tcp_wmem = 4096 65536 16777216" | sudo tee -a "$sysctl_file"
+            echo "net.ipv4.tcp_max_tw_buckets = 20000" | sudo tee -a "$sysctl_file"
+            echo "net.ipv4.tcp_tw_reuse = 1" | sudo tee -a "$sysctl_file"
+            sudo sysctl -p "$sysctl_file"
             if [ $? -eq 0 ]; then
                 echo -e "${GREEN}网络优化配置已应用！${RESET}"
             else
-                echo -e "${RED}应用网络优化配置失败，请手动检查 /etc/sysctl.conf！${RESET}"
+                echo -e "${RED}应用网络优化配置失败，请手动检查 $sysctl_file！${RESET}"
                 return 1
             fi
-            # 设置文件描述符限制（永久）
-            if ! grep -q "nofile 1048576" /etc/security/limits.conf; then
-                echo "* soft nofile 1048576" | sudo tee -a /etc/security/limits.conf
-                echo "* hard nofile 1048576" | sudo tee -a /etc/security/limits.conf
-                echo -e "${GREEN}已更新 /etc/security/limits.conf 以设置文件描述符限制。${RESET}"
+            limits_file="/etc/security/limits.conf"
+            [ -f /etc/centos-release ] && limits_file="/etc/security/limits.d/99-custom.conf"
+            if ! grep -q "nofile 1048576" "$limits_file"; then
+                echo "* soft nofile 1048576" | sudo tee -a "$limits_file"
+                echo "* hard nofile 1048576" | sudo tee -a "$limits_file"
+                echo -e "${GREEN}已更新 $limits_file 以设置文件描述符限制。${RESET}"
             else
-                echo -e "${YELLOW}文件描述符限制已在 /etc/security/limits.conf 中配置，无需重复设置。${RESET}"
+                echo -e "${YELLOW}文件描述符限制已在 $limits_file 中配置，无需重复设置。${RESET}"
             fi
-            # 临时设置 ulimit
             ulimit -n 1048576
             if [ $? -eq 0 ]; then
                 echo -e "${GREEN}临时文件描述符限制已设置为 1048576。${RESET}"
