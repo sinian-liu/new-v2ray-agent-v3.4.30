@@ -433,7 +433,7 @@ show_menu() {
             echo "5) 应用网络优化配置"
             echo "6) 恢复默认 TCP 设置"
             echo "7) 返回主菜单"
-            read -p "请输入选项 [1-7] 或按回车返回主菜单: " bbr_choice
+            read -p "请输入选项 [1-7]: " bbr_choice
             if [ -z "$bbr_choice" ]; then
                 echo -e "${YELLOW}返回主菜单...${RESET}"
                 break
