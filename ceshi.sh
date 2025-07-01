@@ -4704,10 +4704,6 @@ EOF"
                 fi
                 read -p "按回车键返回主菜单..."
                 ;;
-            *)
-                echo -e "${RED}无效选项，请重新输入！${RESET}"
-                read -p "按回车键继续..."
-                ;;
                 24)
                 # 反向代理管理
                 echo -e "${GREEN}正在进入反向代理管理菜单...${RESET}"
@@ -4933,6 +4929,10 @@ EOF
                     done
                 }
                 proxy_management
+                ;;
+                            *)
+                echo -e "${RED}无效选项，请重新输入！${RESET}"
+                read -p "按回车键继续..."
                 ;;
         esac
     done
