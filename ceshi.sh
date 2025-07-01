@@ -4709,309 +4709,231 @@ EOF"
                 read -p "按回车键继续..."
                 ;;
                 24)
-    # 反向代理管理
-    # 颜色定义（与 onekey.sh 一致）
-    RED="\033[31m"
-    GREEN="\033[32m"
-    YELLOW="\033[33m"
-    RESET="\033[0m"
+                # 反向代理管理
+                echo -e "${GREEN}正在进入反向代理管理菜单...${RESET}"
 
-    # 检查系统类型（与 onekey.sh 的 check_system 函数一致）
-    check_system() {
-        if [ -f /etc/os-release ]; then
-            . /etc/os-release
-            case $ID in
-                ubuntu|debian)
-                    SYSTEM="ubuntu"
-                    ;;
-                centos|rhel)
-                    SYSTEM="centos"
-                    ;;
-                fedora)
-                    SYSTEM="fedora"
-                    ;;
-                *)
-                    SYSTEM="unknown"
-                    echo -e "${RED}不支持的系统类型：$ID${RESET}"
-                    exit 1
-                    ;;
-            esac
-        elif [ -f /etc/lsb-release ]; then
-            SYSTEM="ubuntu"
-        elif [ -f /etc/redhat-release ]; then
-            SYSTEM="centos"
-        elif [ -f /etc/fedora-release ]; then
-            SYSTEM="fedora"
-        else
-            SYSTEM="unknown"
-            echo -e "${RED}无法检测系统类型！${RESET}"
-            exit 1
-        fi
-        return 0
-    }
-
-    # 检查 Nginx 是否安装
-    check_nginx() {
-        if ! command -v nginx >/dev/null 2>&1; then
-            echo -e "${RED}Nginx 未安装，请先选择选项 1 进行安装！${RESET}"
-            exit 1
-        fi
-        return 0
-    }
-
-    # 获取未绑定域名的后端服务地址和端口
-    get_available_backends() {
-        local used_ports=()
-        local available_ports=()
-        # 提取已使用的 proxy_pass 端口
-        for config in /etc/nginx/sites-enabled/* 2>/dev/null; do
-            if [ -f "$config" ]; then
-                ports=$(grep -E "proxy_pass" "$config" | grep -oE ":[0-9]+" | tr -d ':' | sort -u)
-                for port in $ports; do
-                    used_ports+=("$port")
-                done
-            fi
-        done
-        # 获取本地监听的 TCP 端口
-        if command -v netstat >/dev/null 2>&1; then
-            mapfile -t local_ports < <(netstat -tuln | grep -E "(127.0.0.1|0.0.0.0)" | awk '{print $4}' | grep -oE "[0-9]+$" | sort -u)
-        elif command -v ss >/dev/null 2>&1; then
-            mapfile -t local_ports < <(ss -tuln | grep -E "LISTEN.*(127.0.0.1|0.0.0.0)" | awk '{print $5}' | grep -oE "[0-9]+$" | sort -u)
-        else
-            echo -e "${RED}未找到 netstat 或 ss 命令，无法检测本地端口！${RESET}"
-            return 1
-        fi
-        # 过滤出未绑定的端口
-        for port in "${local_ports[@]}"; do
-            if ! [[ " ${used_ports[*]} " =~ " $port " ]] && [ "$port" -ne 80 ] && [ "$port" -ne 443 ]; then
-                available_ports+=("$port")
-            fi
-        done
-        echo "${available_ports[@]}"
-    }
-
-    # 处理 80 端口被占用的 HTTPS 证书申请
-    handle_port_80() {
-        local domain=$1
-        local certbot_cmd="certbot --nginx -d $domain --non-interactive --agree-tos -m admin@$domain --redirect"
-        # 第一次尝试申请证书
-        if sudo $certbot_cmd; then
-            echo -e "${GREEN}HTTPS 证书配置成功！${RESET}"
-            return 0
-        fi
-        # 检查 80 端口占用
-        local pid service_name container_ids=()
-        if command -v netstat >/dev/null 2>&1; then
-            pid=$(netstat -tulnp 2>/dev/null | grep -E ":80\b" | awk '{print $7}' | cut -d'/' -f1 | head -n 1)
-        elif command -v ss >/dev/null 2>&1; then
-            pid=$(ss -tuln -p | grep -E ":80\b" | awk '{print $6}' | grep -oE "pid=[0-9]+" | cut -d'=' -f2 | head -n 1)
-        fi
-        # 检查 Docker 容器端口映射
-        if command -v docker >/dev/null 2>&1; then
-            local running_containers=$(sudo docker ps -q 2>/dev/null)
-            if [ -n "$running_containers" ]; then
-                for container_id in $running_containers; do
-                    local port_mappings=$(sudo docker inspect --format '{{range $p, $conf := .NetworkSettings.Ports}}{{if eq $p "80/tcp"}}{{range $conf}}{{.HostPort}}:80 {{end}}{{end}}' "$container_id" 2>/dev/null)
-                    if [ -n "$port_mappings" ]; then
-                        container_ids+=("$container_id")
+                # 检查系统类型
+                check_system() {
+                    if [ -f /etc/os-release ]; then
+                        . /etc/os-release
+                        case $ID in
+                            ubuntu|debian) SYSTEM="debian" ;;
+                            centos|rhel|fedora) SYSTEM="centos" ;;
+                            *) SYSTEM="unknown" ;;
+                        esac
+                    else
+                        SYSTEM="unknown"
                     fi
-                done
-                if [ ${#container_ids[@]} -gt 0 ]; then
-                    for container_id in "${container_ids[@]}"; do
-                        local container_name=$(sudo docker inspect --format '{{.Name}}' "$container_id" 2>/dev/null | sed 's|^/||')
-                        echo -e "${YELLOW}检测到 Docker 容器 $container_name 占用 80 端口，正在暂停以申请证书...${RESET}"
-                        if sudo docker pause "$container_id"; then
-                            echo -e "${GREEN}成功暂停 Docker 容器 $container_name${RESET}"
-                        else
-                            echo -e "${RED}暂停 Docker 容器 $container_name 失败，请手动检查！${RESET}"
+                }
+
+                # 检查 Nginx 是否安装
+                check_nginx() {
+                    if ! command -v nginx &> /dev/null; then
+                        echo -e "${YELLOW}检测到 Nginx 未安装，正在安装...${RESET}"
+                        check_system
+                        case $SYSTEM in
+                            debian)
+                                sudo apt update
+                                sudo apt install -y nginx
+                                ;;
+                            centos)
+                                sudo yum install -y epel-release
+                                sudo yum install -y nginx
+                                ;;
+                            *)
+                                echo -e "${RED}不支持的系统类型，无法安装 Nginx！${RESET}"
+                                return 1
+                                ;;
+                        esac
+                        sudo systemctl enable nginx
+                        sudo systemctl start nginx
+                        if [ $? -ne 0 ]; then
+                            echo -e "${RED}Nginx 安装或启动失败，请检查！${RESET}"
+                            return 1
                         fi
-                    done
-                    if sudo $certbot_cmd; then
-                        echo -e "${GREEN}HTTPS 证书配置成功！${RESET}"
-                        for container_id in "${container_ids[@]}"; do
-                            local container_name=$(sudo docker inspect --format '{{.Name}}' "$container_id" 2>/dev/null | sed 's|^/||')
-                            if sudo docker unpause "$container_id"; then
-                                echo -e "${GREEN}已恢复 Docker 容器 $container_name${RESET}"
-                            else
-                                echo -e "${RED}恢复 Docker 容器 $container_name 失败，请手动运行 'sudo docker unpause $container_id'！${RESET}"
+                    fi
+                    return 0
+                }
+
+                # 获取可用后端端口
+                get_available_backends() {
+                    local used_ports=()
+                    local available_ports=()
+                    # 提取已使用的 proxy_pass 端口
+                    if [ -d /etc/nginx/sites-enabled ]; then
+                        for config in /etc/nginx/sites-enabled/*; do
+                            if [ -f "$config" ]; then
+                                ports=$(grep -E "proxy_pass" "$config" 2>/dev/null | grep -oE ":[0-9]+" | tr -d ':' | sort -u)
+                                for port in $ports; do
+                                    used_ports+=("$port")
+                                done
                             fi
                         done
-                        return 0
+                    fi
+                    # 获取本地监听的 TCP 端口
+                    if command -v netstat >/dev/null 2>&1; then
+                        mapfile -t local_ports < <(netstat -tuln | grep -E "(127.0.0.1|0.0.0.0)" | awk '{print $4}' | grep -oE "[0-9]+$" | sort -u)
+                    elif command -v ss >/dev/null 2>&1; then
+                        mapfile -t local_ports < <(ss -tuln | grep -E "LISTEN.*(127.0.0.1|0.0.0.0)" | awk '{print $5}' | grep -oE "[0-9]+$" | sort -u)
                     else
-                        echo -e "${RED}HTTPS 证书配置失败，请确保域名已解析并检查网络！${RESET}"
-                        for container_id in "${container_ids[@]}"; do
-                            local container_name=$(sudo docker inspect --format '{{.Name}}' "$container_id" 2>/dev/null | sed 's|^/||')
-                            sudo docker unpause "$container_id" 2>/dev/null || true
-                            echo -e "${YELLOW}已尝试恢复 Docker 容器 $container_name${RESET}"
-                        done
-                        echo -e "${YELLOW}请手动运行 'sudo certbot --nginx -d $domain' 重新配置！${RESET}"
+                        echo -e "${RED}未找到 netstat 或 ss 命令，无法检测本地端口！${RESET}"
                         return 1
                     fi
-                fi
-            fi
-        fi
-        # 检查普通进程或 systemd 服务
-        if [ -n "$pid" ]; then
-            service_name=$(ps -p "$pid" -o comm= 2>/dev/null)
-            if [ -n "$service_name" ]; then
-                echo -e "${YELLOW}检测到 $service_name (PID: $pid) 占用 80 端口，正在暂停以申请证书...${RESET}"
-                local systemd_service=$(systemctl list-units --type=service --state --state=running | grep "$service_name" | awk '{print $1}' | head -n 1)
-                if [ -n "$systemd_service" ]; then
-                    sudo systemctl stop "$systemd_service"
-                    if sudo $certbot_cmd; then
-                        echo -e "${GREEN}HTTPS 证书配置成功！${RESET}"
-                        sudo systemctl start "$systemd_service"
-                        if systemctl is-active --quiet "$systemd_service"; then
-                            echo -e "${GREEN}已恢复 $systemd_service 服务！${RESET}"
-                        else
-                            echo -e "${RED}恢复 $systemd_service 服务失败，请手动运行 'sudo systemctl start $systemd_service'！${RESET}"
+                    # 过滤出未绑定的端口
+                    for port in "${local_ports[@]}"; do
+                        if ! [[ " ${used_ports[*]} " =~ " $port " ]] && [ "$port" -ne 80 ] && [ "$port" -ne 443 ]; then
+                            available_ports+=("$port")
                         fi
-                        return 0
-                    else
-                        echo -e "${RED}HTTPS 证书配置失败，请确保域名已解析并检查网络！${RESET}"
-                        sudo systemctl start "$systemd_service" 2>/dev/null || true
-                        echo -e "${YELLOW}请手动运行 'sudo certbot --nginx -d $domain' 重新配置！${RESET}"
-                        return 1
-                    fi
-                else
-                    sudo kill -STOP "$pid"
-                    if sudo $certbot_cmd; then
-                        echo -e "${GREEN}HTTPS 证书配置成功！${RESET}"
-                        sudo kill -CONT "$pid"
-                        if ps -p "$pid" >/dev/null; then
-                            echo -e "${GREEN}已恢复 PID $pid 的服务！${RESET}"
-                        else
-                            echo -e "${RED}恢复 PID $pid 的服务失败，请手动检查！${RESET}"
-                        fi
-                        return 0
-                    else
-                        echo -e "${RED}HTTPS 证书配置失败，请确保域名已解析并检查网络！${RESET}"
-                        sudo kill -CONT "$pid" 2>/dev/null || true
-                        echo -e "${YELLOW}请手动运行 'sudo certbot --nginx -d $domain' 重新配置！${RESET}"
-                        return 1
-                    fi
-                fi
-            fi
-        fi
-        echo -e "${RED}HTTPS 证书配置失败，请确保域名已解析并开放 80 端口！${RESET}"
-        echo -e "${YELLOW}请手动运行 'sudo certbot --nginx -d $domain' 重新配置！${RESET}"
-        return 1
-    }
+                    done
+                    echo "${available_ports[@]}"
+                }
 
-    # 修改反向代理配置
-    modify_proxy_config() {
-        echo -e "${YELLOW}请输入要修改的域名（例如 example.com）：${RESET}"
-        read -p "域名: " domain
-        if [ -z "$domain" ]; then
-            echo -e "${RED}域名不能为空！${RESET}"
-            return 1
-        fi
-        local config_file="/etc/nginx/sites-available/$domain"
-        if [ ! -f "$config_file" ] || [ ! -w "$config_file" ]; then
-            echo -e "${RED}未找到 $domain 的配置文件或无写权限！${RESET}"
-            return 1
-        fi
-        echo -e "${YELLOW}正在修改 $domain 的反向代理配置...${RESET}"
-        echo "1) 修改域名"
-        echo "2) 修改后端服务地址"
-        echo "3) 取消"
-        read -p "请选择操作 [1-3]: " modify_choice
-        case $modify_choice in
-            1)
-                read -p "请输入新的域名（例如 new.example.com）： " new_domain
-                if [ -z "$new_domain" ]; then
-                    echo -e "${RED}新域名不能为空！${RESET}"
-                    return 1
-                fi
-                if [ -f "/etc/nginx/sites-available/$new_domain" ]; then
-                    echo -e "${RED}新域名 $new_domain 已存在，请选择其他域名！${RESET}"
-                    return 1
-                fi
-                sudo cp "$config_file" "$config_file.bak.$(date +%Y%m%d_%H%M%S)"
-                sudo sed -i "/server_name.*;/s/[^;]*/server_name $new_domain/" "$config_file"
-                if sudo mv "/etc/nginx/sites-enabled/$domain" "/etc/nginx/sites-enabled/$new_domain" && \
-                   sudo mv "$config_file" "/etc/nginx/sites-available/$new_domain"; then
+                # 处理端口 80 的占用
+                handle_port_80() {
+                    local port_80_pid
+                    if netstat -tuln | grep ":80 " >/dev/null; then
+                        port_80_pid=$(netstat -tulnp | grep ":80 " | awk '{print $7}' | cut -d'/' -f1)
+                        echo -e "${YELLOW}端口 80 已被进程 $port_80_pid 占用！${RESET}"
+                        read -p "是否终止占用端口 80 的进程？(y/n): " choice
+                        if [[ "$choice" == "y" || "$choice" == "Y" ]]; then
+                            sudo kill -9 "$port_80_pid"
+                            if [ $? -eq 0 ]; then
+                                echo -e "${GREEN}端口 80 已释放！${RESET}"
+                            else
+                                echo -e "${RED}释放端口 80 失败，请手动检查！${RESET}"
+                                return 1
+                            fi
+                        else
+                            return 1
+                        fi
+                    fi
+                    return 0
+                }
+
+                # 修改反向代理配置
+                modify_proxy_config() {
+                    if ! check_nginx; then
+                        read -p "按回车键返回反向代理管理菜单..."
+                        return 1
+                    fi
+                    read -p "请输入要绑定的域名（例如 example.com）： " domain
+                    if [ -z "$domain" ]; then
+                        echo -e "${RED}域名不能为空！${RESET}"
+                        return 1
+                    fi
+                    read -p "是否启用 HTTPS？(y/n, 默认 n): " enable_https
+                    enable_https=${enable_https:-n}
+                    available_backends=$(get_available_backends)
+                    if [ -z "$available_backends" ]; then
+                        echo -e "${RED}未检测到可用后端端口，请检查服务状态！${RESET}"
+                        return 1
+                    fi
+                    echo -e "${YELLOW}可用后端端口：$available_backends${RESET}"
+                    read -p "请输入后端服务地址（例如 http://127.0.0.1:8080）： " backend
+                    if [ -z "$backend" ]; then
+                        echo -e "${RED}后端服务地址不能为空！${RESET}"
+                        return 1
+                    fi
+                    sudo mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled
+                    cat > "/etc/nginx/sites-available/$domain" <<EOF
+server {
+    listen 80;
+    server_name $domain;
+    location / {
+        proxy_pass $backend;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+}
+EOF
+                    sudo ln -sf "/etc/nginx/sites-available/$domain" "/etc/nginx/sites-enabled/$domain"
+                    if [[ "$enable_https" == "y" || "$enable_https" == "Y" ]]; then
+                        if ! command -v certbot &> /dev/null; then
+                            echo -e "${YELLOW}检测到 Certbot 未安装，正在安装...${RESET}"
+                            check_system
+                            case $SYSTEM in
+                                debian)
+                                    sudo apt update
+                                    sudo apt install -y certbot python3-certbot-nginx
+                                    ;;
+                                centos)
+                                    sudo yum install -y epel-release
+                                    sudo yum install -y certbot python3-certbot-nginx
+                                    ;;
+                                *)
+                                    echo -e "${RED}不支持的系统类型，无法安装 Certbot！${RESET}"
+                                    return 1
+                                    ;;
+                            esac
+                        fi
+                        if ! handle_port_80; then
+                            echo -e "${RED}无法配置 HTTPS，因为端口 80 不可用！${RESET}"
+                            return 1
+                        fi
+                        if sudo certbot --nginx -d "$domain" --non-interactive --agree-tos -m "admin@$domain" --redirect; then
+                            echo -e "${GREEN}HTTPS 证书配置成功！${RESET}"
+                        else
+                            echo -e "${RED}HTTPS 证书配置失败，请确保域名已解析并开放 80 端口！${RESET}"
+                            return 1
+                        fi
+                    fi
                     if sudo nginx -t 2>/dev/null; then
                         sudo systemctl reload nginx
-                        echo -e "${GREEN}域名已从 $domain 修改为 $new_domain！${RESET}"
-                        if grep -q "listen 443 ssl" "/etc/nginx/sites-available/$new_domain" 2>/dev/null; then
-                            if command -v certbot >/dev/null 2>&1; then
-                                echo -e "${YELLOW}正在为新域名 $new_domain 重新配置 HTTPS 证书...${RESET}"
-                                handle_port_80 "$new_domain"
-                            else
-                                echo -e "${RED}未找到 Certbot，请手动安装并运行 'sudo certbot --nginx -d $new_domain' 配置 HTTPS！${RESET}"
-                            fi
+                        echo -e "${GREEN}反向代理配置成功！${RESET}"
+                        if [[ "$enable_https" == "y" || "$enable_https" == "Y" ]]; then
+                            echo -e "${YELLOW}访问地址：https://$domain${RESET}"
+                        else
+                            echo -e "${YELLOW}访问地址：http://$domain${RESET}"
                         fi
                     else
-                        echo -e "${RED}Nginx 配置测试失败，修改已取消！${RESET}"
-                        sudo mv "$config_file.bak" "$config_file" 2>/dev/null || true
+                        echo -e "${RED}Nginx 配置测试失败，请检查配置！${RESET}"
                         return 1
                     fi
-                else
-                    echo -e "${RED}文件移动失败，请检查权限！${RESET}"
-                    return 1
-                fi
-                ;;
-            2)
-                local current_backend=$(grep -E "proxy_pass" "$config_file" | awk '{print $2}' | tr -d ';' | head -n 1)
-                [ -z "$current_backend" ] && current_backend="未知（复杂配置）"
-                echo -e "${YELLOW}当前后端地址：$current_backend${RESET}"
-                local available_ports=($(get_available_backends))
-                if [ ${#available_ports[@]} -eq 0 ]; then
-                    echo -e "${RED}未检测到未绑定的后端服务端口！${RESET}"
-                    read -p "请输入后端服务地址（例如 http://127.0.0.1:8080）： " new_backend
-                else
-                    echo -e "${GREEN}以下是未绑定域名的后端服务端口：${RESET}"
-                    for i in "${!available_ports[@]}"; do
-                        echo "$((i+1))) http://127.0.0.1:${available_ports[i]}"
-                    done
-                    echo "$((i+2))) 手动输入其他地址"
-                    read -p "请选择端口（输入编号）： " port_choice
-                    if [ "$port_choice" -eq $((i+2)) ]; then
-                        read -p "请输入后端服务地址（例如 http://127.0.0.1:8080）： " new_backend
-                    elif [ "$port_choice" -ge 1 ] && [ "$port_choice" -le ${#available_ports[@]} ]; then
-                        new_backend="http://127.0.0.1:${available_ports[$((port_choice-1))]}"
-                    else
-                        echo -e "${RED}无效的编号！${RESET}"
-                        return 1
-                    fi
-                fi
-                if [ -z "$new_backend" ]; then
-                    echo -e "${RED}后端地址不能为空！${RESET}"
-                    return 1
-                fi
-                sudo cp "$config_file" "$config_file.bak.$(date +%Y%m%d_%H%M%S)"
-                sudo sed -i "s|proxy_pass .*;|proxy_pass $new_backend;|" "$config_file"
-                if sudo nginx -t 2>/dev/null; then
-                    sudo systemctl reload nginx
-                    echo -e "${GREEN}后端地址已修改为 $new_backend！${RESET}"
-                else
-                    echo -e "${RED}Nginx 配置测试失败，修改已取消！${RESET}"
-                    sudo mv "$config_file.bak" "$config_file" 2>/dev/null || true
-                    return 1
-                fi
-                ;;
-            3)
-                echo -e "${YELLOW}已取消修改操作！${RESET}"
-                return 0
-                ;;
-            *)
-                echo -e "${RED}无效的选择！${RESET}"
-                return 1
-                ;;
-        esac
-        return 0
-    }
+                }
 
-    # 主逻辑
-    clear
-    echo -e "${GREEN}=== 修改反向代理配置 ===${RESET}"
-    check_system
-    check_nginx
-    modify_proxy_config
-    echo -e "${GREEN}操作完成，按 Enter 返回主菜单...${RESET}"
-    read -s
-    ;;
+                # 反向代理管理子菜单
+                proxy_management() {
+                    while true; do
+                        echo -e "${GREEN}=== 反向代理管理 ===${RESET}"
+                        echo "1) 配置新的反向代理"
+                        echo "2) 查看现有反向代理配置"
+                        echo "3) 返回主菜单"
+                        read -p "请输入选项 [1-3]: " proxy_choice
+                        case $proxy_choice in
+                            1)
+                                modify_proxy_config
+                                read -p "按回车键返回反向代理管理菜单..."
+                                ;;
+                            2)
+                                echo -e "${YELLOW}现有反向代理配置：${RESET}"
+                                if [ -d /etc/nginx/sites-enabled ]; then
+                                    for config in /etc/nginx/sites-enabled/*; do
+                                        if [ -f "$config" ]; then
+                                            echo -e "${GREEN}配置文件：$(basename "$config")${RESET}"
+                                            cat "$config"
+                                            echo
+                                        fi
+                                    done
+                                else
+                                    echo -e "${RED}未找到 Nginx 配置目录！${RESET}"
+                                fi
+                                read -p "按回车键返回反向代理管理菜单..."
+                                ;;
+                            3)
+                                echo -e "${YELLOW}返回主菜单...${RESET}"
+                                break
+                                ;;
+                            *)
+                                echo -e "${RED}无效选项，请重新输入！${RESET}"
+                                read -p "按回车键继续..."
+                                ;;
+                        esac
+                    done
+                }
+                proxy_management
+                ;;
         esac
     done
 }
