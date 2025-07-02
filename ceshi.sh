@@ -1767,8 +1767,6 @@ EOF
                 echo -e "${RED}无效选项，请重新输入！${RESET}"
                 read -p "按回车键继续..."
                 ;;
-                read -p "按回车键返回主菜单..."
-                ;;
             17)
                 # 安装 curl 和 wget
                 echo -e "${GREEN}正在安装 curl 和 wget ...${RESET}"
