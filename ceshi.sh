@@ -1641,7 +1641,11 @@ EOF
                                         continue
                                     fi
                                     if grep -q "server_name $domain;" /etc/nginx/conf.d/alone.conf 2>/dev/null; then
-                                        echo -e "${RED}域名 $domain 已存在，请选择其他域名！${RESET}"
+                                        echo -e "${RED}域名 $domain 已存在于 Nginx 配置中，请选择其他域名！${RESET}"
+                                        continue
+                                    fi
+                                    if [[ -n "${domains[$domain]}" ]]; then
+                                        echo -e "${RED}域名 $domain 已在此会话中配置，请选择其他域名或留空结束！${RESET}"
                                         continue
                                     fi
                                     echo "请选择后端类型："
