@@ -149,7 +149,7 @@ show_menu() {
         echo -e "${YELLOW}13.安装Windows或Linux系统${RESET}"
         echo -e "${YELLOW}14.服务器对服务器文件传输${RESET}"
         echo -e "${YELLOW}15.安装探针并绑定域名${RESET}"
-        echo -e "${YELLOW}16.共用端口（反向代理）${RESET}"
+        echo -e "${YELLOW}16.反向代理管理${RESET}"
         echo -e "${YELLOW}17.安装 curl 和 wget${RESET}"
         echo -e "${YELLOW}18.Docker安装和管理${RESET}"
         echo -e "${YELLOW}19.SSH 防暴力破解检测${RESET}"
@@ -157,7 +157,6 @@ show_menu() {
         echo -e "${YELLOW}21.WordPress 安装（基于 Docker）${RESET}"  
         echo -e "${YELLOW}22.网心云安装${RESET}" 
         echo -e "${YELLOW}23.3X-UI搭建${RESET}"
-        echo -e "${YELLOW}24.反向代理管理${RESET}"
         echo -e "${GREEN}=============================================${RESET}"
 
         read -p "请输入选项 (输入 'q' 退出): " option
@@ -1172,7 +1171,7 @@ EOL
                 read -p "按回车键返回主菜单..."
                 ;;
             16)
-# 反向代理管理函数
+# 反向代理管理
 reverse_proxy_management() {
     if [ "$EUID" -ne 0 ]; then
         echo -e "${RED}请使用 sudo 或 root 用户运行此脚本！${RESET}"
@@ -1767,6 +1766,9 @@ EOF
             *)
                 echo -e "${RED}无效选项，请重新输入！${RESET}"
                 read -p "按回车键继续..."
+                ;;
+                fi
+                read -p "按回车键返回主菜单..."
                 ;;
             17)
                 # 安装 curl 和 wget
@@ -5165,6 +5167,10 @@ EOF"
                     echo -e "${RED}3X-UI 安装失败，请检查网络或脚本输出！${RESET}"
                 fi
                 read -p "按回车键返回主菜单..."
+                ;;
+            *)
+                echo -e "${RED}无效选项，请重新输入！${RESET}"
+                read -p "按回车键继续..."
                 ;;
         esac
     done
