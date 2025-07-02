@@ -149,7 +149,7 @@ show_menu() {
         echo -e "${YELLOW}13.安装Windows或Linux系统${RESET}"
         echo -e "${YELLOW}14.服务器对服务器文件传输${RESET}"
         echo -e "${YELLOW}15.安装探针并绑定域名${RESET}"
-        echo -e "${YELLOW}16.反向代理${RESET}"
+        echo -e "${YELLOW}16.反向代理测试${RESET}"
         echo -e "${YELLOW}17.安装 curl 和 wget${RESET}"
         echo -e "${YELLOW}18.Docker安装和管理${RESET}"
         echo -e "${YELLOW}19.SSH 防暴力破解检测${RESET}"
