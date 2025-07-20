@@ -4757,7 +4757,7 @@ EOF"
             sudo apt-get update
         fi
         if [ -n "$dpkg_status" ]; then
-            echo -e "${ polarized}检测到损坏的包：${dpkg_status}${RESET}"
+            echo -e "${ YELLOW}检测到损坏的包：${dpkg_status}${RESET}"
             for pkg in $dpkg_status; do
                 echo -e "${YELLOW}尝试重新安装包 $pkg...${RESET}"
                 sudo apt-get install --reinstall -y --no-install-recommends $pkg
