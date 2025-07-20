@@ -4757,7 +4757,7 @@ EOF"
             sudo apt-get update
         fi
         if [ -n "$dpkg_status" ]; then
-            echo -e "${YELLOW}检测到损坏的包：${dpkg_status}${RESET}"
+            echo -e "${ polarized}检测到损坏的包：${dpkg_status}${RESET}"
             for pkg in $dpkg_status; do
                 echo -e "${YELLOW}尝试重新安装包 $pkg...${RESET}"
                 sudo apt-get install --reinstall -y --no-install-recommends $pkg
@@ -4784,7 +4784,7 @@ EOF"
         fi
         echo -e "${GREEN}dpkg 中断问题已修复！${RESET}"
     else
-        echo -e "${GREEN}dpkg 状态正常，跳过修复...${RESET}"
+        echo -e "${GREEN}没有检测到损坏的包，跳过修复...${RESET}"
     fi
 
     # 更新系统并安装必要工具（优化性能）
@@ -5166,32 +5166,64 @@ EOF
         continue
     fi
 
-    # 重置 MySQL 数据库并更新用户（避免命令行密码警告）
+    # 重置 MySQL 数据库并更新用户
     echo -e "${YELLOW}正在重置 MySQL 数据库并更新用户...${RESET}"
-    # 创建临时 MySQL 配置文件
-    cat > /tmp/my.cnf <<EOF
-[client]
-user=root
-password=webroot
-EOF
+    # 在 MySQL 容器内创建临时配置文件
+    docker exec mysql sh -c 'echo "[client]\nuser=root\npassword=webroot" > /tmp/my.cnf'
+    # 重置数据库
     docker exec mysql mysql --defaults-file=/tmp/my.cnf -e "DROP DATABASE IF EXISTS web; CREATE DATABASE web;"
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}MySQL 数据库重置失败，请检查 MySQL 容器日志！运行 'docker logs mysql' 查看详情。${RESET}"
+        echo -e "${YELLOW}手动排查命令：${RESET}"
+        echo -e "${YELLOW}1. 检查 MySQL 用户：docker exec mysql mysql -u root -pwebroot -e 'SELECT User, Host FROM mysql.user;'${RESET}"
+        echo -e "${YELLOW}2. 手动创建数据库：docker exec mysql mysql -u root -pwebroot -e 'DROP DATABASE IF EXISTS web; CREATE DATABASE web;'${RESET}"
+        read -p "按回车键返回主菜单..."
+        continue
+    fi
     # 检查并更新 sinian 用户
     docker exec mysql mysql --defaults-file=/tmp/my.cnf -e "SELECT User FROM mysql.user WHERE User='sinian' AND Host='%';" | grep -q sinian && docker exec mysql mysql --defaults-file=/tmp/my.cnf -e "ALTER USER 'sinian'@'%' IDENTIFIED BY 'sinian1'; FLUSH PRIVILEGES;" || docker exec mysql mysql --defaults-file=/tmp/my.cnf -e "CREATE USER 'sinian'@'%' IDENTIFIED BY 'sinian1'; GRANT ALL PRIVILEGES ON web.* TO 'sinian'@'%'; FLUSH PRIVILEGES;"
-    rm -f /tmp/my.cnf
     if [ $? -ne 0 ]; then
-        echo -e "${RED}MySQL 数据库重置或用户更新失败，请检查 MySQL 容器日志！运行 'docker logs mysql' 查看详情。${}RESET"
+        echo -e "${RED}MySQL 用户更新失败，请检查 MySQL 容器日志！运行 'docker logs mysql' 查看详情。${RESET}"
         echo -e "${YELLOW}手动排查命令：${RESET}"
         echo -e "${YELLOW}1. 检查 MySQL 用户：docker exec mysql mysql -u root -pwebroot -e 'SELECT User, Host FROM mysql.user;'${RESET}"
         echo -e "${YELLOW}2. 手动创建用户：docker exec mysql mysql -u root -pwebroot -e \"CREATE USER 'sinian'@'%' IDENTIFIED BY 'sinian1'; GRANT ALL PRIVILEGES ON web.* TO 'sinian'@'%'; FLUSH PRIVILEGES;\"${RESET}"
         read -p "按回车键返回主菜单..."
         continue
     fi
+    # 清理临时配置文件
+    docker exec mysql rm -f /tmp/my.cnf
     echo -e "${GREEN}MySQL 数据库和用户配置成功！${RESET}"
 
     # 初始化独角数卡
     echo -e "${YELLOW}正在初始化独角数卡...${RESET}"
+    # 清除 Laravel 缓存
+    docker exec php php /var/www/html/dujiaoka/artisan cache:clear
+    docker exec php php /var/www/html/dujiaoka/artisan config:clear
+    # 检查迁移文件
+    if [ -z "$(docker exec php ls /var/www/html/dujiaoka/database/migrations)" ]; then
+        echo -e "${RED}迁移文件缺失，请检查独角数卡源码完整性！${RESET}"
+        echo -e "${YELLOW}手动排查命令：${RESET}"
+        echo -e "${YELLOW}1. 检查迁移目录：docker exec php ls -l /var/www/html/dujiaoka/database/migrations${RESET}"
+        echo -e "${YELLOW}2. 重新下载源码：wget https://github.com/assimon/dujiaoka/releases/download/2.0.6/2.0.6-antibody.tar.gz${RESET}"
+        read -p "按回车键返回主菜单..."
+        continue
+    fi
     docker exec php php /var/www/html/dujiaoka/artisan key:generate
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}应用密钥生成失败，请检查 PHP 容器日志！运行 'docker logs php' 查看详情。${RESET}"
+        read -p "按回车键返回主菜单..."
+        continue
+    fi
     docker exec php php /var/www/html/dujiaoka/artisan migrate:fresh --force
+    if [ $? -ne 0 ] || [ -n "$(docker exec php php /var/www/html/dujiaoka/artisan migrate:status --no-ansi | grep 'Nothing to migrate')" ]; then
+        echo -e "${RED}数据库迁移失败或迁移文件为空！${RESET}"
+        echo -e "${YELLOW}手动排查命令：${RESET}"
+        echo -e "${YELLOW}1. 检查迁移文件：docker exec php ls -l /var/www/html/dujiaoka/database/migrations${RESET}"
+        echo -e "${YELLOW}2. 检查迁移状态：docker exec php php /var/www/html/dujiaoka/artisan migrate:status${RESET}"
+        echo -e "${YELLOW}3. 手动运行迁移：docker exec php php /var/www/html/dujiaoka/artisan migrate:fresh --force${RESET}"
+        read -p "按回车键返回主菜单..."
+        continue
+    fi
     docker exec php php /var/www/html/dujiaoka/artisan db:seed --force
     if [ $? -ne 0 ]; then
         echo -e "${RED}独角数卡初始化失败，请检查 MySQL、Redis 或 Composer 依赖！${RESET}"
@@ -5218,13 +5250,6 @@ EOF
     echo -e "${YELLOW}默认管理员账号：admin${RESET}"
     echo -e "${YELLOW}默认管理员密码：admin${RESET}"
     echo -e "${YELLOW}请确保域名已解析到 $server_ip${RESET}"
-    read -p "按回车键返回主菜单..."
-    ;;
-q)
-    exit 0
-    ;;
-*)
-    echo -e "${RED}无效选项，请输入有效数字或 'q' 退出！${RESET}"
     read -p "按回车键返回主菜单..."
     ;;
 esac
