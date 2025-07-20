@@ -4747,15 +4747,11 @@ EOF"
     echo -e "${YELLOW}正在检查 dpkg 状态...${RESET}"
     if [ -f /var/lib/dpkg/lock-frontend ] || [ -f /var/cache/apt/archives/lock ] || ! sudo dpkg --configure -a 2>/dev/null || sudo dpkg -l | grep -v '^ii' | grep -q .; then
         echo -e "${YELLOW}检测到 dpkg 中断或锁定，正在尝试修复...${RESET}"
-        # 终止占用 dpkg 的进程
         sudo killall -9 apt apt-get dpkg 2>/dev/null || true
         sleep 2
-        # 清理锁定文件
         sudo rm -f /var/lib/dpkg/lock-frontend /var/cache/apt/archives/lock 2>/dev/null
-        # 清理 apt 缓存
         sudo apt-get clean
         sudo apt-get update
-        # 检查并修复损坏的包
         BROKEN_PACKAGES=$(sudo dpkg -l | grep -v '^ii' | awk '{print $2}' | grep -v '^$')
         if [ -n "$BROKEN_PACKAGES" ]; then
             echo -e "${YELLOW}检测到损坏的包：${BROKEN_PACKAGES}${RESET}"
@@ -4769,7 +4765,6 @@ EOF"
                 fi
             done
         fi
-        # 修复 dpkg 配置
         sudo dpkg --configure -a
         if [ $? -ne 0 ]; then
             echo -e "${RED}dpkg 修复失败！${RESET}"
@@ -4784,7 +4779,6 @@ EOF"
             read -p "按回车键返回主菜单..."
             continue
         fi
-        # 修复依赖
         sudo apt-get install -f -y
         if [ $? -ne 0 ]; then
             echo -e "${RED}依赖修复失败，请手动运行 'sudo apt-get install -f' 查看详情！${RESET}"
@@ -4873,8 +4867,8 @@ services:
     environment:
       - MYSQL_ROOT_PASSWORD=webroot
       - MYSQL_DATABASE=web
-      - MYSQL_USER=kejilion
-      - MYSQL_PASSWORD=kejilionYYDS
+      - MYSQL_USER=sinian
+      - MYSQL_PASSWORD=sinian1
 
   redis:
     image: redis:latest
@@ -5104,15 +5098,29 @@ EOF
         continue
     fi
 
-    # 安装 Composer 依赖
-    echo -e "${YELLOW}正在安装 Composer 依赖...${RESET}"
-    docker exec php composer install --no-dev -d /var/www/html/dujiaoka
+    # 安装 Composer 依赖（包括开发依赖）
+    echo -e "${YELLOW}正在安装 Composer 依赖（包括开发依赖）...${RESET}"
+    docker exec php composer install -d /var/www/html/dujiaoka
     if [ $? -ne 0 ]; then
-        echo -e "${RED}Composer 依赖安装失败，请检查 PHP 容器日志！运行 'docker logs php' 查看详情。${RESET}"
-        echo -e "${YELLOW}可能缺少 PHP 扩展（zip, gd, bcmath）。尝试手动运行：docker exec php composer install --no-dev --ignore-platform-req=ext-zip --ignore-platform-req=ext-gd --ignore-platform-req=ext-bcmath${RESET}"
-        read -p "按回车键返回主菜单..."
-        continue
+        echo -e "${YELLOW}Composer 依赖安装失败，尝试安装 fakerphp/faker...${RESET}"
+        docker exec php composer require fakerphp/faker --dev -d /var/www/html/dujiaoka
+        if [ $? -ne 0 ]; then
+            echo -e "${RED}Composer 依赖安装失败，请检查 PHP 容器日志！运行 'docker logs php' 查看详情。${RESET}"
+            echo -e "${YELLOW}可能缺少 PHP 扩展或网络问题。尝试手动运行：${RESET}"
+            echo -e "${YELLOW}1. 检查已安装依赖：docker exec php composer show -d /var/www/html/dujiaoka${RESET}"
+            echo -e "${YELLOW}2. 手动安装 fakerphp/faker：docker exec php composer require fakerphp/faker --dev -d /var/www/html/dujiaoka${RESET}"
+            read -p "按回车键返回主菜单..."
+            continue
+        fi
+        # 再次尝试安装所有依赖
+        docker exec php composer install -d /var/www/html/dujiaoka
+        if [ $? -ne 0 ]; then
+            echo -e "${RED}Composer 依赖安装失败，请检查 PHP 容器日志！运行 'docker logs php' 查看详情。${RESET}"
+            read -p "按回车键返回主菜单..."
+            continue
+        fi
     fi
+    echo -e "${GREEN}Composer 依赖安装成功！${RESET}"
 
     # 赋予权限
     echo -e "${YELLOW}正在赋予目录权限...${RESET}"
@@ -5129,8 +5137,8 @@ EOF
     cd /home/web/html/dujiaoka
     cp .env.example .env
     sed -i "s/DB_DATABASE=.*/DB_DATABASE=web/" .env
-    sed -i "s/DB_USERNAME=.*/DB_USERNAME=kejilion/" .env
-    sed -i "s/DB_PASSWORD=.*/DB_PASSWORD=kejilionYYDS/" .env
+    sed -i "s/DB_USERNAME=.*/DB_USERNAME=sinian/" .env
+    sed -i "s/DB_PASSWORD=.*/DB_PASSWORD=sinian1/" .env
     sed -i "s/DB_HOST=.*/DB_HOST=mysql/" .env
     sed -i "s/REDIS_HOST=.*/REDIS_HOST=redis/" .env
     sed -i "s/REDIS_PORT=.*/REDIS_PORT=6379/" .env
@@ -5148,13 +5156,31 @@ EOF
         continue
     fi
 
+    # 重置 MySQL 数据库并更新用户
+    echo -e "${YELLOW}正在重置 MySQL 数据库并更新用户...${RESET}"
+    docker exec mysql mysql -u root -pwebroot -e "DROP DATABASE IF EXISTS web; CREATE DATABASE web;"
+    docker exec mysql mysql -u root -pwebroot -e "DROP USER IF EXISTS 'kejilion'@'%'; CREATE USER 'sinian'@'%' IDENTIFIED BY 'sinian1'; GRANT ALL PRIVILEGES ON web.* TO 'sinian'@'%'; FLUSH PRIVILEGES;"
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}MySQL 数据库重置或用户更新失败，请检查 MySQL 容器日志！运行 'docker logs mysql' 查看详情。${RESET}"
+        read -p "按回车键返回主菜单..."
+        continue
+    fi
+    echo -e "${GREEN}MySQL 数据库和用户配置成功！${RESET}"
+
     # 初始化独角数卡
     echo -e "${YELLOW}正在初始化独角数卡...${RESET}"
     docker exec php php /var/www/html/dujiaoka/artisan key:generate
-    docker exec php php /var/www/html/dujiaoka/artisan migrate --force
+    docker exec php php /var/www/html/dujiaoka/artisan migrate:fresh --force
     docker exec php php /var/www/html/dujiaoka/artisan db:seed --force
     if [ $? -ne 0 ]; then
-        echo -e "${RED}独角数卡初始化失败，请检查 MySQL 或 Redis 连接！运行 'docker logs mysql' 或 'docker logs redis' 查看详情。${RESET}"
+        echo -e "${RED}独角数卡初始化失败，请检查 MySQL、Redis 或 Composer 依赖！${RESET}"
+        echo -e "${YELLOW}手动排查命令：${RESET}"
+        echo -e "${YELLOW}1. 检查 MySQL 日志：docker logs mysql${RESET}"
+        echo -e "${YELLOW}2. 检查 Redis 日志：docker logs redis${RESET}"
+        echo -e "${YELLOW}3. 检查 PHP 日志：docker logs php${RESET}"
+        echo -e "${YELLOW}4. 检查 Composer 依赖：docker exec php composer show -d /var/www/html/dujiaoka${RESET}"
+        echo -e "${YELLOW}5. 手动运行初始化：docker exec php php /var/www/html/dujiaoka/artisan migrate:fresh --force${RESET}"
+        echo -e "${YELLOW}6. 手动运行种子填充：docker exec php php /var/www/html/dujiaoka/artisan db:seed --force${RESET}"
         read -p "按回车键返回主菜单..."
         continue
     fi
