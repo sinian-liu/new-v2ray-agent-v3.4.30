@@ -4705,8 +4705,8 @@ EOF"
                 read -p "按回车键返回主菜单..."
                 ;;
 24)
-    # 独角数卡一键安装
-    echo -e "${GREEN}正在安装独角数卡...${RESET}"
+    # 独角数卡一键安装（Docker）
+    echo -e "${GREEN}正在安装独角数卡（Docker 部署）...${RESET}"
 
     # 检查系统类型
     check_system
@@ -4725,56 +4725,107 @@ EOF"
     fi
     echo -e "${YELLOW}检测到系统内存：${TOTAL_MEMORY}MB，满足独角数卡要求。${RESET}"
 
-    # 安装依赖
-    echo -e "${YELLOW}正在安装必要依赖（Git、Nginx、MySQL、PHP、Composer、Redis）...${RESET}"
+    # 更新系统并安装必要工具
+    echo -e "${YELLOW}正在更新系统并安装 curl、wget、sudo、socat、tar...${RESET}"
     if [ "$SYSTEM" == "ubuntu" ] || [ "$SYSTEM" == "debian" ]; then
-        sudo apt update
-        sudo apt install -y git nginx mysql-server php php-cli php-fpm php-mysql php-xml php-mbstring php-curl php-zip php-gd redis-server unzip iproute2
-        PHP_VERSION=$(php -v | head -n 1 | cut -d " " -f 2 | cut -d "." -f 1,2)
-        PHP_FPM_SERVICE="php${PHP_VERSION}-fpm"
-        REDIS_SERVICE="redis-server"
-        sudo systemctl enable mysql nginx "${PHP_FPM_SERVICE}" "${REDIS_SERVICE}"
-        sudo systemctl start mysql nginx "${PHP_FPM_SERVICE}" "${REDIS_SERVICE}"
+        sudo apt update -y && sudo apt upgrade -y && sudo apt install -y curl wget sudo socat tar iproute2
     elif [ "$SYSTEM" == "centos" ]; then
-        sudo yum install -y epel-release
-        sudo yum install -y git nginx mariadb-server php php-cli php-fpm php-mysqlnd php-xml php-mbstring php-curl php-zip php-gd redis unzip iproute
-        PHP_VERSION=$(php -v | head -n 1 | cut -d " " -f 2 | cut -d "." -f 1,2)
-        PHP_FPM_SERVICE="php-fpm"
-        REDIS_SERVICE="redis"
-        sudo systemctl enable mariadb nginx "${PHP_FPM_SERVICE}" "${REDIS_SERVICE}"
-        sudo systemctl start mariadb nginx "${PHP_FPM_SERVICE}" "${REDIS_SERVICE}"
+        sudo yum update -y && sudo yum install -y curl wget sudo socat tar iproute
     fi
     if [ $? -ne 0 ]; then
-        echo -e "${RED}依赖安装或服务启动失败，请检查系统日志（systemctl status nginx ${PHP_FPM_SERVICE} mysql/mariadb ${REDIS_SERVICE}）！${RESET}"
+        echo -e "${RED}系统更新或工具安装失败，请检查网络或包管理器（apt/yum）！${RESET}"
         read -p "按回车键返回主菜单..."
         continue
     fi
 
-    # 停止 Apache2（若已安装）
-    if systemctl is-active apache2 >/dev/null 2>&1; then
-        echo -e "${YELLOW}检测到 Apache2 正在运行，正在停止以释放端口...${RESET}"
-        sudo systemctl stop apache2
-        sudo systemctl disable apache2
-    fi
-
-    # 检查 PHP-CLI 环境
-    php -v > /dev/null 2>&1
+    # 安装 Docker
+    echo -e "${YELLOW}正在安装 Docker...${RESET}"
+    curl -fsSL https://get.docker.com | sh
     if [ $? -ne 0 ]; then
-        echo -e "${RED}PHP-CLI 环境异常，请检查 PHP 安装！${RESET}"
+        echo -e "${RED}Docker 安装失败，请检查网络或脚本！运行 'docker --version' 查看详情。${RESET}"
         read -p "按回车键返回主菜单..."
         continue
     fi
-    echo -e "${YELLOW}PHP-CLI 环境正常：$(php -v | head -n 1)${RESET}"
 
-    # 检查禁用函数
-    DISABLED_FUNCTIONS=$(php -i | grep disable_functions | awk -F '=> ' '{print $2}')
-    for func in putenv proc_open pcntl_signal pcntl_alarm; do
-        if echo "$DISABLED_FUNCTIONS" | grep -q "$func"; then
-            echo -e "${RED}PHP 函数 $func 被禁用，可能导致 Composer 或 Artisan 命令无法执行！${RESET}"
+    # 安装 Docker Compose
+    echo -e "${YELLOW}正在安装 Docker Compose...${RESET}"
+    curl -L "https://github.com/docker/compose/releases/download/v2.18.1/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+    chmod +x /usr/local/bin/docker-compose
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}Docker Compose 安装失败，请检查网络或权限！运行 'docker-compose --version' 查看详情。${RESET}"
+        read -p "按回车键返回主菜单..."
+        continue
+    fi
+
+    # 安装 Composer
+    echo -e "${YELLOW}正在安装 Composer...${RESET}"
+    if ! command -v composer &> /dev/null; then
+        curl -sS https://getcomposer.org/installer | php
+        sudo mv composer.phar /usr/local/bin/composer
+        chmod +x /usr/local/bin/composer
+        if [ $? -ne 0 ]; then
+            echo -e "${RED}Composer 安装失败，请检查网络或权限！${RESET}"
             read -p "按回车键返回主菜单..."
-            continue 2
+            continue
         fi
-    done
+    fi
+    echo -e "${YELLOW}Composer 已安装：$(composer --version)${RESET}"
+
+    # 创建目录
+    echo -e "${YELLOW}正在创建目录结构...${RESET}"
+    cd /home
+    mkdir -p web/html web/mysql web/certs web/redis
+    touch web/nginx.conf web/docker-compose.yml
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}目录创建失败，请检查权限或磁盘空间！${RESET}"
+        read -p "按回车键返回主菜单..."
+        continue
+    fi
+
+    # 配置 docker-compose.yml
+    echo -e "${YELLOW}正在配置 docker-compose.yml...${RESET}"
+    cat > /home/web/docker-compose.yml <<EOF
+version: '3.8'
+
+services:
+  nginx:
+    image: nginx:1.22
+    container_name: nginx
+    restart: always
+    ports:
+      - 80:80
+      - 443:443
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf
+      - ./certs:/etc/nginx/certs
+      - ./html:/var/www/html
+
+  php:
+    image: php:7.4.33-fpm
+    container_name: php
+    restart: always
+    volumes:
+      - ./html:/var/www/html
+
+  mysql:
+    image: mysql:5.7.42
+    container_name: mysql
+    restart: always
+    volumes:
+      - ./mysql:/var/lib/mysql
+    environment:
+      - MYSQL_ROOT_PASSWORD=webroot
+      - MYSQL_DATABASE=web
+      - MYSQL_USER=kejilion
+      - MYSQL_PASSWORD=kejilionYYDS
+
+  redis:
+    image: redis:latest
+    container_name: redis
+    restart: always
+    volumes:
+      - ./redis:/data
+EOF
 
     # 自动查找未占用端口
     find_free_port() {
@@ -4791,10 +4842,6 @@ EOF"
         echo $port
     }
 
-    # 检查并分配独角数卡运行端口
-    APP_PORT=$(find_free_port 8080)
-    echo -e "${YELLOW}独角数卡应用将运行在端口：$APP_PORT${RESET}"
-
     # 检查反向代理端口（默认 80 和 443）
     PROXY_HTTP_PORT=80
     PROXY_HTTPS_PORT=443
@@ -4807,6 +4854,10 @@ EOF"
         PROXY_HTTPS_PORT=$(find_free_port $((PROXY_HTTPS_PORT + 1)))
     fi
     echo -e "${YELLOW}反向代理使用 HTTP 端口：$PROXY_HTTP_PORT，HTTPS 端口：$PROXY_HTTPS_PORT${RESET}"
+
+    # 更新 docker-compose.yml 中的端口
+    sed -i "s/- 80:80/- $PROXY_HTTP_PORT:80/" /home/web/docker-compose.yml
+    sed -i "s/- 443:443/- $PROXY_HTTPS_PORT:443/" /home/web/docker-compose.yml
 
     # 开放防火墙端口
     if command -v ufw &> /dev/null; then
@@ -4826,47 +4877,9 @@ EOF"
         echo -e "${GREEN}iptables 防火墙端口 $PROXY_HTTP_PORT 和 $PROXY_HTTPS_PORT 已开放！${RESET}"
     fi
 
-    # 下载独角数卡代码
-    echo -e "${YELLOW}正在下载独角数卡代码...${RESET}"
-    if [ -d "/www/wwwroot/dujiaoka" ] && [ -n "$(ls -A /www/wwwroot/dujiaoka)" ]; then
-        echo -e "${YELLOW}目录 /www/wwwroot/dujiaoka 已存在且非空，将清空目录...${RESET}"
-        read -p "是否清空目录并继续安装？（y/n，默认 n）： " CLEAR_DIR
-        CLEAR_DIR=${CLEAR_DIR:-n}
-        if [ "$CLEAR_DIR" == "y" ] || [ "$CLEAR_DIR" == "Y" ]; then
-            sudo rm -rf /www/wwwroot/dujiaoka/*
-        else
-            echo -e "${RED}目录非空，安装中止！可手动上传代码包至 /www/wwwroot/dujiaoka，下载地址：https://github.com/assimon/du没有任何问题，可以直接安装。dujiaoka/releases${RESET}"
-            read -p "按回车键返回主菜单..."
-            continue
-        fi
-    fi
-    mkdir -p /www/wwwroot/dujiaoka
-    cd /www/wwwroot/dujiaoka
-    git clone https://github.com/assimon/dujiaoka.git .
-    if [ $? -ne 0 ]; then
-        echo -e "${RED}下载独角数卡代码失败，请检查网络或 Git 仓库！可手动上传代码包至 /www/wwwroot/dujiaoka，下载地址：https://github.com/assimon/dujiaoka/releases${RESET}"
-        read -p "按回车键返回主菜单..."
-        continue
-    fi
-
-    # 安装 Composer 依赖
-    echo -e "${YELLOW}正在安装 Composer 依赖...${RESET}"
-    composer install --no-dev
-    if [ $? -ne 0 ]; then
-        echo -e "${RED}Composer 依赖安装失败，请检查 Composer 配置！${RESET}"
-        read -p "按回车键返回主菜单..."
-        continue
-    fi
-
-    # 配置 .env 文件
-    echo -e "${YELLOW}正在配置 .env 文件...${RESET}"
-    cp .env.example .env
-    DB_NAME="dujiaoka"
-    DB_USER="root"
-    DB_PASS=$(openssl rand -base64 12)
-    REDIS_HOST="localhost"
-    REDIS_PORT="6379"
-    read -p "请输入站点域名（例如 example2.com）： " DOMAIN
+    # 申请 Let's Encrypt 证书
+    echo -e "${YELLOW}请输入站点域名（例如 example2.com）：${RESET}"
+    read -p "" DOMAIN
     while [ -z "$DOMAIN" ]; do
         echo -e "${RED}域名不能为空，请重新输入！${RESET}"
         read -p "请输入站点域名（例如 example2.com）： " DOMAIN
@@ -4874,152 +4887,181 @@ EOF"
     read -p "是否启用 HTTPS？（y/n，默认 y）： " ENABLE_HTTPS
     ENABLE_HTTPS=${ENABLE_HTTPS:-y}
 
-    # 修改 .env 文件
-    sed -i "s/DB_DATABASE=.*/DB_DATABASE=$DB_NAME/" .env
-    sed -i "s/DB_USERNAME=.*/DB_USERNAME=$DB_USER/" .env
-    sed -i "s/DB_PASSWORD=.*/DB_PASSWORD=$DB_PASS/" .env
-    sed -i "s/REDIS_HOST=.*/REDIS_HOST=$REDIS_HOST/" .env
-    sed -i "s/REDIS_PORT=.*/REDIS_PORT=$REDIS_PORT/" .env
     if [ "$ENABLE_HTTPS" == "y" ] || [ "$ENABLE_HTTPS" == "Y" ]; then
-        sed -i "s/APP_URL=.*/APP_URL=https:\/\/$DOMAIN/" .env
-    else
-        sed -i "s/APP_URL=.*/APP_URL=http:\/\/$DOMAIN/" .env
-    fi
-    sed -i "s/APP_DEBUG=.*/APP_DEBUG=false/" .env
-
-    # 设置 MySQL root 密码并创建数据库
-    echo -e "${YELLOW}正在设置 MySQL root 密码并创建数据库...${RESET}"
-    mysql -u"$DB_USER" -e "ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY '$DB_PASS';" 2>/dev/null
-    if [ $? -ne 0 ]; then
-        echo -e "${RED}设置 MySQL root 密码失败，可能已设置密码或权限不足！${RESET}"
-        read -p "按回车键返回主菜单..."
-        continue
-    fi
-    mysql -u"$DB_USER" -p"$DB_PASS" -e "CREATE DATABASE IF NOT EXISTS $DB_NAME;" 2>/dev/null
-    if [ $? -ne 0 ]; then
-        echo -e "${RED}创建数据库失败，请检查 MySQL 配置或权限！${RESET}"
-        read -p "按回车键返回主菜单..."
-        continue
-    fi
-
-    # 配置 Nginx 反向代理
-    echo -e "${YELLOW}正在配置 Nginx 反向代理...${RESET}"
-    NGINX_CONF="/etc/nginx/sites-available/dujiaoka"
-    cat > $NGINX_CONF <<EOF
-server {
-    listen $PROXY_HTTP_PORT;
-    listen [::]:$PROXY_HTTP_PORT;
-    server_name $DOMAIN;
-    location / {
-        proxy_pass http://127.0.0.1:$APP_PORT;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-    }
-}
-EOF
-    # 为独角数卡配置本地服务器
-    cat > /etc/nginx/sites-available/dujiaoka-local <<EOF
-server {
-    listen $APP_PORT;
-    listen [::]:$APP_PORT;
-    server_name localhost;
-    root /www/wwwroot/dujiaoka/public;
-    index index.php index.html index.htm;
-
-    location / {
-        try_files \$uri \$uri/ /index.php\$is_args\$query_string;
-    }
-
-    location ~ \.php$ {
-        fastcgi_pass unix:/run/php/php-fpm.sock;
-        fastcgi_index index.php;
-        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
-        include fastcgi_params;
-    }
-
-    location ~ /\.ht {
-        deny all;
-    }
-}
-EOF
-    ln -sf $NGINX_CONF /etc/nginx/sites-enabled/dujiaoka
-    ln -sf /etc/nginx/sites-available/dujiaoka-local /etc/nginx/sites-enabled/dujiaoka-local
-    nginx -t
-    if [ $? -ne 0 ]; then
-        echo -e "${RED}Nginx 配置文件测试失败，请检查配置！${RESET}"
-        read -p "按回车键返回主菜单..."
-        continue
-    fi
-    systemctl reload nginx
-
-    # 配置 HTTPS
-    if [ "$ENABLE_HTTPS" == "y" ] || [ "$ENABLE_HTTPS" == "Y" ]; then
-        echo -e "${YELLOW}正在为 $DOMAIN 申请 Let's Encrypt 证书...${RESET}"
-        if ! command -v certbot &> /dev/null; then
-            echo -e "${YELLOW}安装 Certbot...${RESET}"
-            if [ "$SYSTEM" == "ubuntu" ] || [ "$SYSTEM" == "debian" ]; then
-                sudo apt install -y certbot python3-certbot-nginx
-            elif [ "$SYSTEM" == "centos" ]; then
-                sudo yum install -y certbot python3-certbot-nginx
-            fi
-        fi
-        # 检查 80 端口是否被占用
+        echo -e "${YELLOW}正在申请 Let's Encrypt 证书...${RESET}"
+        curl https://get.acme.sh | sh
+        ~/.acme.sh/acme.sh --register-account -m admin@$DOMAIN
         if ss -tuln | grep ":80" > /dev/null; then
-            echo -e "${YELLOW}端口 80 被占用，正在暂停 Nginx 服务...${RESET}"
-            systemctl stop nginx
+            echo -e "${YELLOW}端口 80 被占用，正在暂停现有服务...${RESET}"
+            systemctl stop nginx >/dev/null 2>&1 || true
+            docker stop nginx >/dev/null 2>&1 || true
             sleep 2
         fi
-        certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos --email admin@$DOMAIN
+        ~/.acme.sh/acme.sh --issue -d "$DOMAIN" --standalone
         if [ $? -eq 0 ]; then
+            ~/.acme.sh/acme.sh --installcert -d "$DOMAIN" --key-file /home/web/certs/key.pem --fullchain-file /home/web/certs/cert.pem
             echo -e "${GREEN}Let's Encrypt 证书申请成功！${RESET}"
-            sed -i "s/listen $PROXY_HTTP_PORT;/listen $PROXY_HTTPS_PORT ssl;/" $NGINX_CONF
-            sed -i "/listen \[::\]:$PROXY_HTTP_PORT;/a \    ssl_certificate /etc/letsencrypt/live/$DOMAIN/fullchain.pem;\n    ssl_certificate_key /etc/letsencrypt/live/$DOMAIN/privkey.pem;" $NGINX_CONF
-            systemctl reload nginx
         else
-            echo -e "${RED}Let's Encrypt 证书申请失败，请检查域名解析或网络！${RESET}"
-            systemctl start nginx
+            echo -e "${RED}Let's Encrypt 证书申请失败，请检查域名解析或网络！运行 'docker logs nginx' 查看详情。${RESET}"
+            read -p "按回车键返回主菜单..."
+            continue
         fi
     fi
 
-    # 配置 Supervisor
-    echo -e "${YELLOW}正在配置 Supervisor 以管理 Laravel 队列...${RESET}"
-    if ! command -v supervisorctl &> /dev/null; then
-        if [ "$SYSTEM" == "ubuntu" ] || [ "$SYSTEM" == "debian" ]; then
-            sudo apt install -y supervisor
-        elif [ "$SYSTEM" == "centos" ]; then
-            sudo yum install -y supervisor
-            sudo systemctl enable supervisord
-            sudo systemctl start supervisord
+    # 配置 Nginx
+    echo -e "${YELLOW}正在配置 Nginx...${RESET}"
+    cat > /home/web/nginx.conf <<EOF
+events {
+    worker_connections 1024;
+}
+
+http {
+    include       /etc/nginx/mime.types;
+    default_type  application/octet-stream;
+    sendfile        on;
+    keepalive_timeout  65;
+    client_max_body_size 1000m;
+
+    server {
+        listen 80;
+        server_name $DOMAIN;
+        return 301 https://\$host\$request_uri;
+    }
+
+    server {
+        listen 443 ssl http2;
+        server_name $DOMAIN;
+        ssl_certificate /etc/nginx/certs/cert.pem;
+        ssl_certificate_key /etc/nginx/certs/key.pem;
+        root /var/www/html/dujiaoka/public;
+        index index.php;
+
+        location / {
+            try_files \$uri \$uri/ /index.php?\$query_string;
+        }
+
+        location ~ \.php$ {
+            fastcgi_pass php:9000;
+            fastcgi_index index.php;
+            fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
+            include fastcgi_params;
+        }
+    }
+}
+EOF
+    if [ ! "$ENABLE_HTTPS" == "y" ] && [ ! "$ENABLE_HTTPS" == "Y" ]; then
+        sed -i '/listen 443 ssl http2;/,/ssl_certificate_key.*;/d' /home/web/nginx.conf
+        sed -i '/return 301 https:\/\/$host$request_uri;/d' /home/web/nginx.conf
+    fi
+
+    # 下载独角数卡源码
+    echo -e "${YELLOW}正在下载独角数卡源码...${RESET}"
+    if [ -d "/home/web/html/dujiaoka" ] && [ -n "$(ls -A /home/web/html/dujiaoka)" ]; then
+        echo -e "${YELLOW}目录 /home/web/html/dujiaoka 已存在且非空，将清空目录...${RESET}"
+        read -p "是否清空目录并继续安装？（y/n，默认 n）： " CLEAR_DIR
+        CLEAR_DIR=${CLEAR_DIR:-n}
+        if [ "$CLEAR_DIR" == "y" ] || [ "$CLEAR_DIR" == "Y" ]; then
+            sudo rm -rf /home/web/html/dujiaoka/*
+        else
+            echo -e "${RED}目录非空，安装中止！可手动上传代码包至 /home/web/html/dujiaoka，下载地址：https://github.com/assimon/dujiaoka/releases${RESET}"
+            read -p "按回车键返回主菜单..."
+            continue
         fi
     fi
-    cat > /etc/supervisor/conf.d/dujiaoka.conf <<EOF
-[program:dujiaoka-worker]
-process_name=%(program_name)s_%(process_num)02d
-directory=/www/wwwroot/dujiaoka
-command=php artisan queue:work --sleep=3 --tries=3
-autostart=true
-autorestart=true
-user=www-data
-numprocs=1
-redirect_stderr=true
-stdout_logfile=/www/wwwroot/dujiaoka/storage/logs/worker.log
-EOF
-    if [ "$SYSTEM" == "centos" ]; then
-        sed -i 's/user=www-data/user=nobody/' /etc/supervisor/conf.d/dujiaoka.conf
+    cd /home/web/html
+    wget https://github.com/assimon/dujiaoka/releases/download/2.0.6/2.0.6-antibody.tar.gz && tar -zxvf 2.0.6-antibody.tar.gz && rm 2.0.6-antibody.tar.gz
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}下载或解压独角数卡源码失败，请检查网络或磁盘空间！下载地址：https://github.com/assimon/dujiaoka/releases${RESET}"
+        read -p "按回车键返回主菜单..."
+        continue
     fi
-    supervisorctl reread
-    supervisorctl update
-    supervisorctl start dujiaoka-worker:*
+
+    # 安装 Composer 依赖
+    echo -e "${YELLOW}正在安装 Composer 依赖...${RESET}"
+    cd /home/web/html/dujiaoka
+    docker exec php composer install --no-dev
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}Composer 依赖安装失败，请检查 Docker 容器日志！运行 'docker logs php' 查看详情。${RESET}"
+        read -p "按回车键返回主菜单..."
+        continue
+    fi
+
+    # 启动 Docker 容器
+    echo -e "${YELLOW}正在启动 Docker 容器...${RESET}"
+    cd /home/web
+    docker-compose up -d
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}Docker 容器启动失败，请检查 docker-compose 配置或日志！运行 'docker-compose logs' 查看详情。${RESET}"
+        read -p "按回车键返回主菜单..."
+        continue
+    fi
+
+    # 赋予权限
+    echo -e "${YELLOW}正在赋予目录权限...${RESET}"
+    docker exec nginx chmod -R 777 /var/www/html
+    docker exec php chmod -R 777 /var/www/html
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}权限赋予失败，请检查 Docker 容器状态！运行 'docker ps' 查看详情。${RESET}"
+        read -p "按回车键返回主菜单..."
+        continue
+    fi
+
+    # 安装 PHP 扩展
+    echo -e "${YELLOW}正在安装 PHP 扩展...${RESET}"
+    docker exec php apt update
+    docker exec php apt install -y libmariadb-dev-compat libmariadb-dev libzip-dev libmagickwand-dev imagemagick
+    docker exec php docker-php-ext-install pdo_mysql zip bcmath gd intl opcache
+    docker exec php pecl install redis
+    docker exec php sh -c 'echo "extension=redis.so" > /usr/local/etc/php/conf.d/docker-php-ext-redis.ini'
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}PHP 扩展安装失败，请检查 Docker 容器日志！运行 'docker logs php' 查看详情。${RESET}"
+        read -p "按回车键返回主菜单..."
+        continue
+    fi
+
+    # 重启 PHP 容器
+    echo -e "${YELLOW}正在重启 PHP 容器...${RESET}"
+    docker restart php
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}PHP 容器重启失败，请检查 Docker 容器状态！运行 'docker ps' 查看详情。${RESET}"
+        read -p "按回车键返回主菜单..."
+        continue
+    fi
+
+    # 配置 .env 文件
+    echo -e "${YELLOW}正在配置 .env 文件...${RESET}"
+    cd /home/web/html/dujiaoka
+    cp .env.example .env
+    sed -i "s/DB_DATABASE=.*/DB_DATABASE=web/" .env
+    sed -i "s/DB_USERNAME=.*/DB_USERNAME=kejilion/" .env
+    sed -i "s/DB_PASSWORD=.*/DB_PASSWORD=kejilionYYDS/" .env
+    sed -i "s/DB_HOST=.*/DB_HOST=mysql/" .env
+    sed -i "s/REDIS_HOST=.*/REDIS_HOST=redis/" .env
+    sed -i "s/REDIS_PORT=.*/REDIS_PORT=6379/" .env
+    if [ "$ENABLE_HTTPS" == "y" ] || [ "$ENABLE_HTTPS" == "Y" ]; then
+        sed -i "s/APP_URL=.*/APP_URL=https:\/\/$DOMAIN/" .env
+        sed -i "s/ADMIN_HTTPS=.*/ADMIN_HTTPS=true/" .env
+    else
+        sed -i "s/APP_URL=.*/APP_URL=http:\/\/$DOMAIN/" .env
+        sed -i "s/ADMIN_HTTPS=.*/ADMIN_HTTPS=false/" .env
+    fi
+    sed -i "s/APP_DEBUG=.*/APP_DEBUG=false/" .env
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}.env 文件配置失败，请检查 /home/web/html/dujiaoka/.env 是否存在！${RESET}"
+        read -p "按回车键返回主菜单..."
+        continue
+    fi
 
     # 初始化独角数卡
     echo -e "${YELLOW}正在初始化独角数卡...${RESET}"
-    php artisan key:generate
-    php artisan migrate --force
-    php artisan db:seed --force
-    chown -R www-data:www-data /www/wwwroot/dujiaoka
-    chmod -R 755 /www/wwwroot/dujiaoka
+    docker exec php php /var/www/html/dujiaoka/artisan key:generate
+    docker exec php php /var/www/html/dujiaoka/artisan migrate --force
+    docker exec php php /var/www/html/dujiaoka/artisan db:seed --force
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}独角数卡初始化失败，请检查 MySQL 或 Redis 连接！运行 'docker logs mysql' 或 'docker logs redis' 查看详情。${RESET}"
+        read -p "按回车键返回主菜单..."
+        continue
+    fi
 
     # 完成提示
     server_ip=$(curl -s4 ifconfig.me || echo "你的服务器IP")
