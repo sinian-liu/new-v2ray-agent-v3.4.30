@@ -4725,14 +4725,23 @@ EOF"
     fi
     echo -e "${YELLOW}检测到系统内存：${TOTAL_MEMORY}MB，满足独角数卡要求。${RESET}"
 
-    # 检查磁盘空间
-    DISK_SPACE=$(df -h / | awk 'NR==2 {print $4}' | grep -o '[0-9]\+')
-    if [ -n "$DISK_SPACE" ] && [ "$DISK_SPACE" -lt 2048 ]; then
-        echo -e "${RED}磁盘空间不足（当前 ${DISK_SPACE}MB，建议至少 2048MB）！${RESET}"
+    # 检查磁盘空间（针对 /home/web 目录所在分区）
+    echo -e "${YELLOW}正在检查磁盘空间...${RESET}"
+    mkdir -p /home/web # 确保 /home/web 存在
+    DISK_SPACE=$(df -BM /home/web | awk 'NR==2 {print $4}' | grep -o '[0-9]\+')
+    if [ -z "$DISK_SPACE" ]; then
+        echo -e "${RED}无法检测 /home/web 所在分区的磁盘空间，请检查文件系统！运行 'df -h /home/web' 查看详情。${RESET}"
+        df -h /home/web
         read -p "按回车键返回主菜单..."
         continue
     fi
-    echo -e "${YELLOW}检测到磁盘剩余空间：${DISK_SPACE}MB，满足要求。${RESET}"
+    if [ "$DISK_SPACE" -lt 2048 ]; then
+        echo -e "${RED}磁盘空间不足（当前 ${DISK_SPACE}MB，建议至少 2048MB）！运行 'df -h /home/web' 查看详情。${RESET}"
+        df -h /home/web
+        read -p "按回车键返回主菜单..."
+        continue
+    fi
+    echo -e "${YELLOW}检测到 /home/web 所在分区剩余空间：${DISK_SPACE}MB，满足要求。${RESET}"
 
     # 更新系统并安装必要工具
     echo -e "${YELLOW}正在更新系统并安装 curl、wget、sudo、socat、tar...${RESET}"
@@ -4772,7 +4781,7 @@ EOF"
     mkdir -p web/html web/mysql web/certs web/redis
     touch web/nginx.conf web/docker-compose.yml
     if [ $? -ne 0 ]; then
-        echo -e "${RED}目录创建失败，请检查权限或磁盘空间！运行 'df -h' 查看详情。${RESET}"
+        echo -e "${RED}目录创建失败，请检查权限或磁盘空间！运行 'df -h /home/web' 查看详情。${RESET}"
         read -p "按回车键返回主菜单..."
         continue
     fi
