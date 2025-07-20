@@ -4704,12 +4704,8 @@ EOF"
                 fi
                 read -p "按回车键返回主菜单..."
                 ;;
-            *)
-                echo -e "${RED}无效选项，请重新输入！${RESET}"
-                read -p "按回车键继续..."
-                ;;
-                24)
-    # 独角数卡安装
+24)
+    # 独角数卡一键安装
     echo -e "${GREEN}正在安装独角数卡...${RESET}"
 
     # 检查系统类型
@@ -4734,6 +4730,8 @@ EOF"
     if [ "$SYSTEM" == "ubuntu" ] || [ "$SYSTEM" == "debian" ]; then
         sudo apt update
         sudo apt install -y git nginx mysql-server php php-cli php-fpm php-mysql php-xml php-mbstring php-curl php-zip php-gd redis-server unzip
+        sudo systemctl enable mysql nginx php-fpm redis
+        sudo systemctl start mysql nginx php-fpm redis
     elif [ "$SYSTEM" == "centos" ]; then
         sudo yum install -y epel-release
         sudo yum install -y git nginx mariadb-server php php-cli php-fpm php-mysqlnd php-xml php-mbstring php-curl php-zip php-gd redis unzip
@@ -4795,13 +4793,11 @@ EOF"
     # 检查反向代理端口（默认 80 和 443）
     PROXY_HTTP_PORT=80
     PROXY_HTTPS_PORT=443
-    check_port $PROXY_HTTP_PORT
-    if [ $? -eq 1 ]; then
+    if netstat -tuln | grep ":$PROXY_HTTP_PORT" > /dev/null; then
         echo -e "${YELLOW}反向代理端口 $PROXY_HTTP_PORT 已被占用，将自动选择新端口...${RESET}"
         PROXY_HTTP_PORT=$(find_free_port $((PROXY_HTTP_PORT + 1)))
     fi
-    check_port $PROXY_HTTPS_PORT
-    if [ $? -eq 1 ]; then
+    if netstat -tuln | grep ":$PROXY_HTTPS_PORT" > /dev/null; then
         echo -e "${YELLOW}反向代理端口 $PROXY_HTTPS_PORT 已被占用，将自动选择新端口...${RESET}"
         PROXY_HTTPS_PORT=$(find_free_port $((PROXY_HTTPS_PORT + 1)))
     fi
@@ -4867,7 +4863,11 @@ EOF"
     sed -i "s/DB_PASSWORD=.*/DB_PASSWORD=$DB_PASS/" .env
     sed -i "s/REDIS_HOST=.*/REDIS_HOST=$REDIS_HOST/" .env
     sed -i "s/REDIS_PORT=.*/REDIS_PORT=$REDIS_PORT/" .env
-    sed -i "s/APP_URL=.*/APP_URL=http:\/\/$DOMAIN/" .env
+    if [ "$ENABLE_HTTPS" == "y" ] || [ "$ENABLE_HTTPS" == "Y" ]; then
+        sed -i "s/APP_URL=.*/APP_URL=https:\/\/$DOMAIN/" .env
+    else
+        sed -i "s/APP_URL=.*/APP_URL=http:\/\/$DOMAIN/" .env
+    fi
     sed -i "s/APP_DEBUG=.*/APP_DEBUG=false/" .env
 
     # 设置 MySQL root 密码并创建数据库
@@ -4959,7 +4959,6 @@ EOF
             echo -e "${GREEN}Let's Encrypt 证书申请成功！${RESET}"
             sed -i "s/listen $PROXY_HTTP_PORT;/listen $PROXY_HTTPS_PORT ssl;/" $NGINX_CONF
             sed -i "/listen \[::\]:$PROXY_HTTP_PORT;/a \    ssl_certificate /etc/letsencrypt/live/$DOMAIN/fullchain.pem;\n    ssl_certificate_key /etc/letsencrypt/live/$DOMAIN/privkey.pem;" $NGINX_CONF
-            sed -i "s/APP_URL=.*/APP_URL=https:\/\/$DOMAIN/" .env
             systemctl reload nginx
         else
             echo -e "${RED}Let's Encrypt 证书申请失败，请检查域名解析或网络！${RESET}"
@@ -5008,10 +5007,8 @@ EOF
     # 完成提示
     server_ip=$(curl -s4 ifconfig.me || echo "你的服务器IP")
     PROTOCOL="http"
-    PORT=$PROXY_HTTP_PORT
     if [ "$ENABLE_HTTPS" == "y" ] || [ "$ENABLE_HTTPS" == "Y" ]; then
         PROTOCOL="https"
-        PORT=$PROXY_HTTPS_PORT
     fi
     echo -e "${GREEN}独角数卡安装完成！${RESET}"
     echo -e "${YELLOW}访问地址：${PROTOCOL}://$DOMAIN${RESET}"
@@ -5021,12 +5018,15 @@ EOF
     echo -e "${YELLOW}请确保域名已解析到 $server_ip${RESET}"
     read -p "按回车键返回主菜单..."
     ;;
+q)
+    exit 0
+    ;;
 *)
     echo -e "${RED}无效选项，请输入有效数字或 'q' 退出！${RESET}"
     read -p "按回车键返回主菜单..."
     ;;
-        esac
-    done
+esac
+done
 }
 
 # 运行主菜单
