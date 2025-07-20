@@ -4743,29 +4743,33 @@ EOF"
     fi
     echo -e "${YELLOW}检测到 /home/web 所在分区剩余空间：${DISK_SPACE}MB，满足要求。${RESET}"
 
-    # 检查并修复 dpkg 中断问题
+    # 检查并修复 dpkg 中断问题（优化性能）
     echo -e "${YELLOW}正在检查 dpkg 状态...${RESET}"
-    if [ -f /var/lib/dpkg/lock-frontend ] || [ -f /var/cache/apt/archives/lock ] || ! sudo dpkg --configure -a 2>/dev/null || sudo dpkg -l | grep -v '^ii' | grep -q .; then
-        echo -e "${YELLOW}检测到 dpkg 中断或锁定，正在尝试修复...${RESET}"
+    dpkg_status=$(sudo dpkg -l | grep -v '^ii' | awk '{print $2}' | grep -v '^$')
+    if [ -f /var/lib/dpkg/lock-frontend ] || [ -f /var/cache/apt/archives/lock ] || [ -n "$dpkg_status" ] || ! sudo dpkg --configure -a 2>/dev/null; then
+        echo -e "${YELLOW}检测到 dpkg 中断或损坏的包，正在尝试修复...${RESET}"
         sudo killall -9 apt apt-get dpkg 2>/dev/null || true
         sleep 2
         sudo rm -f /var/lib/dpkg/lock-frontend /var/cache/apt/archives/lock 2>/dev/null
-        sudo apt-get clean
-        sudo apt-get update
-        BROKEN_PACKAGES=$(sudo dpkg -l | grep -v '^ii' | awk '{print $2}' | grep -v '^$')
-        if [ -n "$BROKEN_PACKAGES" ]; then
-            echo -e "${YELLOW}检测到损坏的包：${BROKEN_PACKAGES}${RESET}"
-            for pkg in $BROKEN_PACKAGES; do
+        # 检查 apt 缓存是否需要更新（避免重复更新）
+        if [ ! -f /var/lib/apt/lists/lock ] && [ "$(find /var/lib/apt/lists -maxdepth 1 -mmin +60 | wc -l)" -gt 0 ]; then
+            sudo apt-get clean
+            sudo apt-get update
+        fi
+        if [ -n "$dpkg_status" ]; then
+            echo -e "${YELLOW}检测到损坏的包：${dpkg_status}${RESET}"
+            for pkg in $dpkg_status; do
                 echo -e "${YELLOW}尝试重新安装包 $pkg...${RESET}"
-                sudo apt-get install --reinstall -y $pkg
+                sudo apt-get install --reinstall -y --no-install-recommends $pkg
                 if [ $? -ne 0 ]; then
                     echo -e "${YELLOW}重新安装 $pkg 失败，尝试强制移除并重新安装...${RESET}"
                     sudo dpkg --purge --force-all $pkg
-                    sudo apt-get install -y $pkg
+                    sudo apt-get install -y --no-install-recommends $pkg
                 fi
             done
         fi
         sudo dpkg --configure -a
+        sudo apt-get install -f -y --no-install-recommends
         if [ $? -ne 0 ]; then
             echo -e "${RED}dpkg 修复失败！${RESET}"
             echo -e "${YELLOW}请手动运行以下命令修复：${RESET}"
@@ -4775,30 +4779,27 @@ EOF"
             echo -e "${YELLOW}4. 清理 apt 缓存：sudo apt-get clean && sudo apt-get update${RESET}"
             echo -e "${YELLOW}5. 修复 dpkg：sudo dpkg --configure -a${RESET}"
             echo -e "${YELLOW}6. 修复依赖：sudo apt-get install -f${RESET}"
-            echo -e "${YELLOW}7. 重新安装损坏的包（例如 libpam-cap）：sudo apt-get install --reinstall libpam-cap${RESET}"
-            read -p "按回车键返回主菜单..."
-            continue
-        fi
-        sudo apt-get install -f -y
-        if [ $? -ne 0 ]; then
-            echo -e "${RED}依赖修复失败，请手动运行 'sudo apt-get install -f' 查看详情！${RESET}"
             read -p "按回车键返回主菜单..."
             continue
         fi
         echo -e "${GREEN}dpkg 中断问题已修复！${RESET}"
     else
-        echo -e "${GREEN}dpkg 状态正常，继续安装...${RESET}"
+        echo -e "${GREEN}dpkg 状态正常，跳过修复...${RESET}"
     fi
 
-    # 更新系统并安装必要工具
-    echo -e "${YELLOW}正在更新系统并安装 curl、wget、sudo、socat、tar...${RESET}"
+    # 更新系统并安装必要工具（优化性能）
+    echo -e "${YELLOW}正在更新系统并安装必要工具...${RESET}"
     if [ "$SYSTEM" == "ubuntu" ] || [ "$SYSTEM" == "debian" ]; then
-        sudo apt update -y && sudo apt upgrade -y && sudo apt install -y curl wget sudo socat tar iproute2
+        if [ "$(find /var/lib/apt/lists -maxdepth 1 -mmin +60 | wc -l)" -gt 0 ]; then
+            sudo apt-get update -y
+        fi
+        sudo apt-get install -y --no-install-recommends curl wget sudo socat tar iproute2
     elif [ "$SYSTEM" == "centos" ]; then
-        sudo yum update -y && sudo yum install -y curl wget sudo socat tar iproute
+        sudo yum update -y
+        sudo yum install -y curl wget sudo socat tar iproute
     fi
     if [ $? -ne 0 ]; then
-        echo -e "${RED}系统更新或工具安装失败，请检查网络或包管理器（apt/yum）！运行 'sudo apt update' 或 'sudo dpkg --configure -a' 查看详情。${RESET}"
+        echo -e "${RED}系统更新或工具安装失败，请检查网络或包管理器！运行 'sudo apt update' 或 'sudo yum update' 查看详情。${RESET}"
         read -p "按回车键返回主菜单..."
         continue
     fi
@@ -5050,7 +5051,7 @@ EOF
     # 安装 PHP 扩展
     echo -e "${YELLOW}正在安装 PHP 扩展...${RESET}"
     docker exec php apt update
-    docker exec php apt install -y build-essential libmariadb-dev-compat libmariadb-dev libzip-dev libpng-dev libjpeg-dev libfreetype6-dev libmagickwand-dev imagemagick
+    docker exec php apt install -y --no-install-recommends build-essential libmariadb-dev-compat libmariadb-dev libzip-dev libpng-dev libjpeg-dev libfreetype6-dev libmagickwand-dev imagemagick
     docker exec php docker-php-ext-configure gd --with-freetype --with-jpeg
     docker exec php docker-php-ext-install pdo_mysql zip bcmath gd intl opcache
     if [ $? -ne 0 ]; then
@@ -5098,12 +5099,21 @@ EOF
         continue
     fi
 
-    # 安装 Composer 依赖（包括开发依赖）
-    echo -e "${YELLOW}正在安装 Composer 依赖（包括开发依赖）...${RESET}"
-    docker exec php composer install -d /var/www/html/dujiaoka
+    # 配置 Composer 国内镜像并安装依赖
+    echo -e "${YELLOW}正在配置 Composer 国内镜像并安装依赖...${RESET}"
+    docker exec php composer config -g repo.packagist composer https://mirrors.aliyun.com/composer/
+    # 移除废弃包并安装 symfony/mailer
+    docker exec php composer remove paypal/rest-api-sdk-php swiftmailer/swiftmailer -d /var/www/html/dujiaoka
+    docker exec php composer require symfony/mailer -d /var/www/html/dujiaoka
+    # 安装依赖，优先使用 composer.lock
+    if [ -f /home/web/html/dujiaoka/composer.lock ]; then
+        docker exec php composer install --no-interaction --prefer-dist -d /var/www/html/dujiaoka
+    else
+        docker exec php composer update --no-interaction --prefer-dist -d /var/www/html/dujiaoka
+    fi
     if [ $? -ne 0 ]; then
         echo -e "${YELLOW}Composer 依赖安装失败，尝试安装 fakerphp/faker...${RESET}"
-        docker exec php composer require fakerphp/faker --dev -d /var/www/html/dujiaoka
+        docker exec php composer require fakerphp/faker --dev --no-interaction -d /var/www/html/dujiaoka
         if [ $? -ne 0 ]; then
             echo -e "${RED}Composer 依赖安装失败，请检查 PHP 容器日志！运行 'docker logs php' 查看详情。${RESET}"
             echo -e "${YELLOW}可能缺少 PHP 扩展或网络问题。尝试手动运行：${RESET}"
@@ -5113,7 +5123,7 @@ EOF
             continue
         fi
         # 再次尝试安装所有依赖
-        docker exec php composer install -d /var/www/html/dujiaoka
+        docker exec php composer install --no-interaction --prefer-dist -d /var/www/html/dujiaoka
         if [ $? -ne 0 ]; then
             echo -e "${RED}Composer 依赖安装失败，请检查 PHP 容器日志！运行 'docker logs php' 查看详情。${RESET}"
             read -p "按回车键返回主菜单..."
@@ -5156,12 +5166,23 @@ EOF
         continue
     fi
 
-    # 重置 MySQL 数据库并更新用户
+    # 重置 MySQL 数据库并更新用户（避免命令行密码警告）
     echo -e "${YELLOW}正在重置 MySQL 数据库并更新用户...${RESET}"
-    docker exec mysql mysql -u root -pwebroot -e "DROP DATABASE IF EXISTS web; CREATE DATABASE web;"
-    docker exec mysql mysql -u root -pwebroot -e "DROP USER IF EXISTS 'kejilion'@'%'; CREATE USER 'sinian'@'%' IDENTIFIED BY 'sinian1'; GRANT ALL PRIVILEGES ON web.* TO 'sinian'@'%'; FLUSH PRIVILEGES;"
+    # 创建临时 MySQL 配置文件
+    cat > /tmp/my.cnf <<EOF
+[client]
+user=root
+password=webroot
+EOF
+    docker exec mysql mysql --defaults-file=/tmp/my.cnf -e "DROP DATABASE IF EXISTS web; CREATE DATABASE web;"
+    # 检查并更新 sinian 用户
+    docker exec mysql mysql --defaults-file=/tmp/my.cnf -e "SELECT User FROM mysql.user WHERE User='sinian' AND Host='%';" | grep -q sinian && docker exec mysql mysql --defaults-file=/tmp/my.cnf -e "ALTER USER 'sinian'@'%' IDENTIFIED BY 'sinian1'; FLUSH PRIVILEGES;" || docker exec mysql mysql --defaults-file=/tmp/my.cnf -e "CREATE USER 'sinian'@'%' IDENTIFIED BY 'sinian1'; GRANT ALL PRIVILEGES ON web.* TO 'sinian'@'%'; FLUSH PRIVILEGES;"
+    rm -f /tmp/my.cnf
     if [ $? -ne 0 ]; then
-        echo -e "${RED}MySQL 数据库重置或用户更新失败，请检查 MySQL 容器日志！运行 'docker logs mysql' 查看详情。${RESET}"
+        echo -e "${RED}MySQL 数据库重置或用户更新失败，请检查 MySQL 容器日志！运行 'docker logs mysql' 查看详情。${}RESET"
+        echo -e "${YELLOW}手动排查命令：${RESET}"
+        echo -e "${YELLOW}1. 检查 MySQL 用户：docker exec mysql mysql -u root -pwebroot -e 'SELECT User, Host FROM mysql.user;'${RESET}"
+        echo -e "${YELLOW}2. 手动创建用户：docker exec mysql mysql -u root -pwebroot -e \"CREATE USER 'sinian'@'%' IDENTIFIED BY 'sinian1'; GRANT ALL PRIVILEGES ON web.* TO 'sinian'@'%'; FLUSH PRIVILEGES;\"${RESET}"
         read -p "按回车键返回主菜单..."
         continue
     fi
