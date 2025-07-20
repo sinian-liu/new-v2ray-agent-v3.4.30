@@ -4725,6 +4725,15 @@ EOF"
     fi
     echo -e "${YELLOW}检测到系统内存：${TOTAL_MEMORY}MB，满足独角数卡要求。${RESET}"
 
+    # 检查磁盘空间
+    DISK_SPACE=$(df -h / | awk 'NR==2 {print $4}' | grep -o '[0-9]\+')
+    if [ -n "$DISK_SPACE" ] && [ "$DISK_SPACE" -lt 2048 ]; then
+        echo -e "${RED}磁盘空间不足（当前 ${DISK_SPACE}MB，建议至少 2048MB）！${RESET}"
+        read -p "按回车键返回主菜单..."
+        continue
+    fi
+    echo -e "${YELLOW}检测到磁盘剩余空间：${DISK_SPACE}MB，满足要求。${RESET}"
+
     # 更新系统并安装必要工具
     echo -e "${YELLOW}正在更新系统并安装 curl、wget、sudo、socat、tar...${RESET}"
     if [ "$SYSTEM" == "ubuntu" ] || [ "$SYSTEM" == "debian" ]; then
@@ -4757,27 +4766,13 @@ EOF"
         continue
     fi
 
-    # 安装 Composer
-    echo -e "${YELLOW}正在安装 Composer...${RESET}"
-    if ! command -v composer &> /dev/null; then
-        curl -sS https://getcomposer.org/installer | php
-        sudo mv composer.phar /usr/local/bin/composer
-        chmod +x /usr/local/bin/composer
-        if [ $? -ne 0 ]; then
-            echo -e "${RED}Composer 安装失败，请检查网络或权限！${RESET}"
-            read -p "按回车键返回主菜单..."
-            continue
-        fi
-    fi
-    echo -e "${YELLOW}Composer 已安装：$(composer --version)${RESET}"
-
     # 创建目录
     echo -e "${YELLOW}正在创建目录结构...${RESET}"
     cd /home
     mkdir -p web/html web/mysql web/certs web/redis
     touch web/nginx.conf web/docker-compose.yml
     if [ $? -ne 0 ]; then
-        echo -e "${RED}目录创建失败，请检查权限或磁盘空间！${RESET}"
+        echo -e "${RED}目录创建失败，请检查权限或磁盘空间！运行 'df -h' 查看详情。${RESET}"
         read -p "按回车键返回主菜单..."
         continue
     fi
@@ -4902,7 +4897,7 @@ EOF
             ~/.acme.sh/acme.sh --installcert -d "$DOMAIN" --key-file /home/web/certs/key.pem --fullchain-file /home/web/certs/cert.pem
             echo -e "${GREEN}Let's Encrypt 证书申请成功！${RESET}"
         else
-            echo -e "${RED}Let's Encrypt 证书申请失败，请检查域名解析或网络！运行 'docker logs nginx' 查看详情。${RESET}"
+            echo -e "${RED}Let's Encrypt 证书申请失败，请检查域名解析或网络！运行 'tail -n 50 ~/.acme.sh/acme.sh.log' 查看详情。${RESET}"
             read -p "按回车键返回主菜单..."
             continue
         fi
@@ -4976,22 +4971,40 @@ EOF
         continue
     fi
 
-    # 安装 Composer 依赖
-    echo -e "${YELLOW}正在安装 Composer 依赖...${RESET}"
-    cd /home/web/html/dujiaoka
-    docker exec php composer install --no-dev
-    if [ $? -ne 0 ]; then
-        echo -e "${RED}Composer 依赖安装失败，请检查 Docker 容器日志！运行 'docker logs php' 查看详情。${RESET}"
-        read -p "按回车键返回主菜单..."
-        continue
-    fi
-
     # 启动 Docker 容器
     echo -e "${YELLOW}正在启动 Docker 容器...${RESET}"
     cd /home/web
     docker-compose up -d
     if [ $? -ne 0 ]; then
         echo -e "${RED}Docker 容器启动失败，请检查 docker-compose 配置或日志！运行 'docker-compose logs' 查看详情。${RESET}"
+        read -p "按回车键返回主菜单..."
+        continue
+    fi
+
+    # 检查 PHP 容器是否运行
+    echo -e "${YELLOW}正在检查 PHP 容器状态...${RESET}"
+    sleep 5 # 等待容器完全启动
+    if ! docker ps | grep -q "php"; then
+        echo -e "${RED}PHP 容器未运行，请检查 Docker 状态！运行 'docker-compose logs php' 查看详情。${RESET}"
+        read -p "按回车键返回主菜单..."
+        continue
+    fi
+    echo -e "${GREEN}PHP 容器运行正常！${RESET}"
+
+    # 安装 Composer
+    echo -e "${YELLOW}正在安装 Composer（PHP 容器内）...${RESET}"
+    docker exec php bash -c 'if ! command -v composer; then curl -sS https://getcomposer.org/installer | php && mv composer.phar /usr/local/bin/composer; fi'
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}Composer 安装失败，请检查 PHP 容器日志！运行 'docker logs php' 查看详情。${RESET}"
+        read -p "按回车键返回主菜单..."
+        continue
+    fi
+
+    # 安装 Composer 依赖
+    echo -e "${YELLOW}正在安装 Composer 依赖...${RESET}"
+    docker exec php composer install --no-dev -d /var/www/html/dujiaoka
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}Composer 依赖安装失败，请检查 PHP 容器日志！运行 'docker logs php' 查看详情。${RESET}"
         read -p "按回车键返回主菜单..."
         continue
     fi
