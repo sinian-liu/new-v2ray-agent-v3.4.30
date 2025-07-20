@@ -4745,20 +4745,32 @@ EOF"
 
     # 检查并修复 dpkg 中断问题
     echo -e "${YELLOW}正在检查 dpkg 状态...${RESET}"
-    if sudo dpkg -l | grep -q "ii"; then
-        echo -e "${GREEN}dpkg 状态正常，继续安装...${RESET}"
-    else
-        echo -e "${YELLOW}检测到 dpkg 中断，正在尝试修复...${RESET}"
+    if [ -f /var/lib/dpkg/lock-frontend ] || [ -f /var/cache/apt/archives/lock ] || ! sudo dpkg --configure -a 2>/dev/null; then
+        echo -e "${YELLOW}检测到 dpkg 中断或锁定，正在尝试修复...${RESET}"
+        sudo killall -9 apt apt-get dpkg 2>/dev/null || true
+        sleep 2
+        sudo rm -f /var/lib/dpkg/lock-frontend /var/cache/apt/archives/lock 2>/dev/null
         sudo dpkg --configure -a
         if [ $? -ne 0 ]; then
-            echo -e "${RED}dpkg 修复失败，请手动运行 'sudo dpkg --configure -a' 或检查锁定文件！${RESET}"
-            echo -e "${YELLOW}可能的锁定文件：/var/lib/dpkg/lock-frontend, /var/cache/apt/archives/lock${RESET}"
-            echo -e "${YELLOW}尝试手动修复：sudo rm -f /var/lib/dpkg/lock-frontend /var/cache/apt/archives/lock && sudo dpkg --configure -a${RESET}"
+            echo -e "${RED}dpkg 修复失败！${RESET}"
+            echo -e "${YELLOW}请手动运行以下命令修复：${RESET}"
+            echo -e "${YELLOW}1. 检查占用 dpkg 的进程：sudo lsof /var/lib/dpkg/lock-frontend${RESET}"
+            echo -e "${YELLOW}2. 终止进程：sudo killall -9 apt apt-get dpkg${RESET}"
+            echo -e "${YELLOW}3. 清理锁定文件：sudo rm -f /var/lib/dpkg/lock-frontend /var/cache/apt/archives/lock${RESET}"
+            echo -e "${YELLOW}4. 修复 dpkg：sudo dpkg --configure -a${RESET}"
+            echo -e "${YELLOW}5. 修复依赖：sudo apt-get install -f${RESET}"
             read -p "按回车键返回主菜单..."
             continue
         fi
-        sudo rm -f /var/lib/dpkg/lock-frontend /var/cache/apt/archives/lock 2>/dev/null
+        sudo apt-get install -f -y
+        if [ $? -ne 0 ]; then
+            echo -e "${RED}依赖修复失败，请手动运行 'sudo apt-get install -f' 查看详情！${RESET}"
+            read -p "按回车键返回主菜单..."
+            continue
+        fi
         echo -e "${GREEN}dpkg 中断问题已修复！${RESET}"
+    else
+        echo -e "${GREEN}dpkg 状态正常，继续安装...${RESET}"
     fi
 
     # 更新系统并安装必要工具
@@ -5018,6 +5030,48 @@ EOF
     fi
     echo -e "${GREEN}PHP 容器运行正常！${RESET}"
 
+    # 安装 PHP 扩展（移到 Composer 之前）
+    echo -e "${YELLOW}正在安装 PHP 扩展...${RESET}"
+    docker exec php apt update
+    docker exec php apt install -y build-essential libmariadb-dev-compat libmariadb-dev libzip-dev libpng-dev libjpeg-dev libfreetype6-dev libmagickwand-dev imagemagick
+    docker exec php docker-php-ext-configure gd --with-freetype --with-jpeg
+    docker exec php docker-php-ext-install pdo_mysql zip bcmath gd intl opcache
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}PHP 扩展安装失败，请检查 Docker 容器日志！运行 'docker logs php' 查看详情。${RESET}"
+        echo -e "${YELLOW}手动排查命令：${RESET}"
+        echo -e "${YELLOW}1. 检查日志：docker logs php${RESET}"
+        echo -e "${YELLOW}2. 检查已安装扩展：docker exec php php -m${RESET}"
+        read -p "按回车键返回主菜单..."
+        continue
+    fi
+    # 显式启用扩展
+    docker exec php sh -c 'echo "extension=zip.so" > /usr/local/etc/php/conf.d/docker-php-ext-zip.ini'
+    docker exec php sh -c 'echo "extension=gd.so" > /usr/local/etc/php/conf.d/docker-php-ext-gd.ini'
+    docker exec php sh -c 'echo "extension=bcmath.so" > /usr/local/etc/php/conf.d/docker-php-ext-bcmath.ini'
+    docker exec php pecl install redis
+    docker exec php sh -c 'echo "extension=redis.so" > /usr/local/etc/php/conf.d/docker-php-ext-redis.ini'
+    # 检查扩展是否启用
+    echo -e "${YELLOW}正在检查 PHP 扩展是否启用...${RESET}"
+    if ! docker exec php php -m | grep -qE 'zip|gd|bcmath|redis'; then
+        echo -e "${RED}PHP 扩展（zip, gd, bcmath, redis）未全部启用！运行 'docker exec php php -m' 查看详情。${RESET}"
+        echo -e "${YELLOW}手动排查命令：${RESET}"
+        echo -e "${YELLOW}1. 检查已加载的扩展：docker exec php php -m${RESET}"
+        echo -e "${YELLOW}2. 检查 PHP 配置文件：docker exec php php --ini${RESET}"
+        echo -e "${YELLOW}3. 检查日志：docker logs php${RESET}"
+        read -p "按回车键返回主菜单..."
+        continue
+    fi
+    echo -e "${GREEN}PHP 扩展（zip, gd, bcmath, redis）已成功启用！${RESET}"
+
+    # 重启 PHP 容器以应用扩展
+    echo -e "${YELLOW}正在重启 PHP 容器...${RESET}"
+    docker restart php
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}PHP 容器重启失败，请检查 Docker 容器状态！运行 'docker ps' 查看详情。${RESET}"
+        read -p "按回车键返回主菜单..."
+        continue
+    fi
+
     # 安装 Composer
     echo -e "${YELLOW}正在安装 Composer（PHP 容器内）...${RESET}"
     docker exec php bash -c 'if ! command -v composer; then curl -sS https://getcomposer.org/installer | php && mv composer.phar /usr/local/bin/composer; fi'
@@ -5043,41 +5097,6 @@ EOF
     docker exec php chmod -R 777 /var/www/html
     if [ $? -ne 0 ]; then
         echo -e "${RED}权限赋予失败，请检查 Docker 容器状态！运行 'docker ps' 查看详情。${RESET}"
-        read -p "按回车键返回主菜单..."
-        continue
-    fi
-
-    # 安装 PHP 扩展
-    echo -e "${YELLOW}正在安装 PHP 扩展...${RESET}"
-    docker exec php apt update
-    docker exec php apt install -y libmariadb-dev-compat libmariadb-dev libzip-dev libpng-dev libjpeg-dev libfreetype6-dev libmagickwand-dev imagemagick
-    docker exec php docker-php-ext-configure gd --with-freetype --with-jpeg
-    docker exec php docker-php-ext-install pdo_mysql zip bcmath gd intl opcache
-    if [ $? -ne 0 ]; then
-        echo -e "${RED}PHP 扩展安装失败，请检查 Docker 容器日志！运行 'docker logs php' 查看详情。${RESET}"
-        read -p "按回车键返回主菜单..."
-        continue
-    fi
-    # 显式启用扩展
-    docker exec php sh -c 'echo "extension=zip.so" > /usr/local/etc/php/conf.d/docker-php-ext-zip.ini'
-    docker exec php sh -c 'echo "extension=gd.so" > /usr/local/etc/php/conf.d/docker-php-ext-gd.ini'
-    docker exec php sh -c 'echo "extension=bcmath.so" > /usr/local/etc/php/conf.d/docker-php-ext-bcmath.ini'
-    docker exec php pecl install redis
-    docker exec php sh -c 'echo "extension=redis.so" > /usr/local/etc/php/conf.d/docker-php-ext-redis.ini'
-    # 检查扩展是否启用
-    echo -e "${YELLOW}正在检查 PHP 扩展是否启用...${RESET}"
-    if ! docker exec php php -m | grep -qE 'zip|gd|bcmath|redis'; then
-        echo -e "${RED}PHP 扩展（zip, gd, bcmath, redis）未全部启用！运行 'docker exec php php -m' 查看详情。${RESET}"
-        read -p "按回车键返回主菜单..."
-        continue
-    fi
-    echo -e "${GREEN}PHP 扩展（zip, gd, bcmath, redis）已成功启用！${RESET}"
-
-    # 重启 PHP 容器
-    echo -e "${YELLOW}正在重启 PHP 容器...${RESET}"
-    docker restart php
-    if [ $? -ne 0 ]; then
-        echo -e "${RED}PHP 容器重启失败，请检查 Docker 容器状态！运行 'docker ps' 查看详情。${RESET}"
         read -p "按回车键返回主菜单..."
         continue
     fi
