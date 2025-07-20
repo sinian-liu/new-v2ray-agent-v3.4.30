@@ -4730,18 +4730,29 @@ EOF"
     if [ "$SYSTEM" == "ubuntu" ] || [ "$SYSTEM" == "debian" ]; then
         sudo apt update
         sudo apt install -y git nginx mysql-server php php-cli php-fpm php-mysql php-xml php-mbstring php-curl php-zip php-gd redis-server unzip
-        sudo systemctl enable mysql nginx php-fpm redis
-        sudo systemctl start mysql nginx php-fpm redis
+        PHP_VERSION=$(php -v | head -n 1 | cut -d " " -f 2 | cut -d "." -f 1,2)
+        PHP_FPM_SERVICE="php${PHP_VERSION}-fpm"
+        sudo systemctl enable mysql nginx "${PHP_FPM_SERVICE}" redis
+        sudo systemctl start mysql nginx "${PHP_FPM_SERVICE}" redis
     elif [ "$SYSTEM" == "centos" ]; then
         sudo yum install -y epel-release
         sudo yum install -y git nginx mariadb-server php php-cli php-fpm php-mysqlnd php-xml php-mbstring php-curl php-zip php-gd redis unzip
-        sudo systemctl enable mariadb nginx php-fpm redis
-        sudo systemctl start mariadb nginx php-fpm redis
+        PHP_VERSION=$(php -v | head -n 1 | cut -d " " -f 2 | cut -d "." -f 1,2)
+        PHP_FPM_SERVICE="php-fpm"
+        sudo systemctl enable mariadb nginx "${PHP_FPM_SERVICE}" redis
+        sudo systemctl start mariadb nginx "${PHP_FPM_SERVICE}" redis
     fi
     if [ $? -ne 0 ]; then
-        echo -e "${RED}依赖安装失败，请手动检查！${RESET}"
+        echo -e "${RED}依赖安装或服务启动失败，请检查系统日志（systemctl status nginx ${PHP_FPM_SERVICE} mysql/mariadb redis）！${RESET}"
         read -p "按回车键返回主菜单..."
         continue
+    fi
+
+    # 停止 Apache2（若已安装）
+    if systemctl is-active apache2 >/dev/null 2>&1; then
+        echo -e "${YELLOW}检测到 Apache2 正在运行，正在停止以释放端口...${RESET}"
+        sudo systemctl stop apache2
+        sudo systemctl disable apache2
     fi
 
     # 安装 Composer
