@@ -4745,11 +4745,31 @@ EOF"
 
     # 检查并修复 dpkg 中断问题
     echo -e "${YELLOW}正在检查 dpkg 状态...${RESET}"
-    if [ -f /var/lib/dpkg/lock-frontend ] || [ -f /var/cache/apt/archives/lock ] || ! sudo dpkg --configure -a 2>/dev/null; then
+    if [ -f /var/lib/dpkg/lock-frontend ] || [ -f /var/cache/apt/archives/lock ] || ! sudo dpkg --configure -a 2>/dev/null || sudo dpkg -l | grep -v '^ii' | grep -q .; then
         echo -e "${YELLOW}检测到 dpkg 中断或锁定，正在尝试修复...${RESET}"
+        # 终止占用 dpkg 的进程
         sudo killall -9 apt apt-get dpkg 2>/dev/null || true
         sleep 2
+        # 清理锁定文件
         sudo rm -f /var/lib/dpkg/lock-frontend /var/cache/apt/archives/lock 2>/dev/null
+        # 清理 apt 缓存
+        sudo apt-get clean
+        sudo apt-get update
+        # 检查并修复损坏的包
+        BROKEN_PACKAGES=$(sudo dpkg -l | grep -v '^ii' | awk '{print $2}' | grep -v '^$')
+        if [ -n "$BROKEN_PACKAGES" ]; then
+            echo -e "${YELLOW}检测到损坏的包：${BROKEN_PACKAGES}${RESET}"
+            for pkg in $BROKEN_PACKAGES; do
+                echo -e "${YELLOW}尝试重新安装包 $pkg...${RESET}"
+                sudo apt-get install --reinstall -y $pkg
+                if [ $? -ne 0 ]; then
+                    echo -e "${YELLOW}重新安装 $pkg 失败，尝试强制移除并重新安装...${RESET}"
+                    sudo dpkg --purge --force-all $pkg
+                    sudo apt-get install -y $pkg
+                fi
+            done
+        fi
+        # 修复 dpkg 配置
         sudo dpkg --configure -a
         if [ $? -ne 0 ]; then
             echo -e "${RED}dpkg 修复失败！${RESET}"
@@ -4757,11 +4777,14 @@ EOF"
             echo -e "${YELLOW}1. 检查占用 dpkg 的进程：sudo lsof /var/lib/dpkg/lock-frontend${RESET}"
             echo -e "${YELLOW}2. 终止进程：sudo killall -9 apt apt-get dpkg${RESET}"
             echo -e "${YELLOW}3. 清理锁定文件：sudo rm -f /var/lib/dpkg/lock-frontend /var/cache/apt/archives/lock${RESET}"
-            echo -e "${YELLOW}4. 修复 dpkg：sudo dpkg --configure -a${RESET}"
-            echo -e "${YELLOW}5. 修复依赖：sudo apt-get install -f${RESET}"
+            echo -e "${YELLOW}4. 清理 apt 缓存：sudo apt-get clean && sudo apt-get update${RESET}"
+            echo -e "${YELLOW}5. 修复 dpkg：sudo dpkg --configure -a${RESET}"
+            echo -e "${YELLOW}6. 修复依赖：sudo apt-get install -f${RESET}"
+            echo -e "${YELLOW}7. 重新安装损坏的包（例如 libpam-cap）：sudo apt-get install --reinstall libpam-cap${RESET}"
             read -p "按回车键返回主菜单..."
             continue
         fi
+        # 修复依赖
         sudo apt-get install -f -y
         if [ $? -ne 0 ]; then
             echo -e "${RED}依赖修复失败，请手动运行 'sudo apt-get install -f' 查看详情！${RESET}"
@@ -5030,7 +5053,7 @@ EOF
     fi
     echo -e "${GREEN}PHP 容器运行正常！${RESET}"
 
-    # 安装 PHP 扩展（移到 Composer 之前）
+    # 安装 PHP 扩展
     echo -e "${YELLOW}正在安装 PHP 扩展...${RESET}"
     docker exec php apt update
     docker exec php apt install -y build-essential libmariadb-dev-compat libmariadb-dev libzip-dev libpng-dev libjpeg-dev libfreetype6-dev libmagickwand-dev imagemagick
@@ -5063,7 +5086,7 @@ EOF
     fi
     echo -e "${GREEN}PHP 扩展（zip, gd, bcmath, redis）已成功启用！${RESET}"
 
-    # 重启 PHP 容器以应用扩展
+    # 重启 PHP 容器
     echo -e "${YELLOW}正在重启 PHP 容器...${RESET}"
     docker restart php
     if [ $? -ne 0 ]; then
