@@ -4729,21 +4729,23 @@ EOF"
     echo -e "${YELLOW}正在安装必要依赖（Git、Nginx、MySQL、PHP、Composer、Redis）...${RESET}"
     if [ "$SYSTEM" == "ubuntu" ] || [ "$SYSTEM" == "debian" ]; then
         sudo apt update
-        sudo apt install -y git nginx mysql-server php php-cli php-fpm php-mysql php-xml php-mbstring php-curl php-zip php-gd redis-server unzip
+        sudo apt install -y git nginx mysql-server php php-cli php-fpm php-mysql php-xml php-mbstring php-curl php-zip php-gd redis-server unzip iproute2
         PHP_VERSION=$(php -v | head -n 1 | cut -d " " -f 2 | cut -d "." -f 1,2)
         PHP_FPM_SERVICE="php${PHP_VERSION}-fpm"
-        sudo systemctl enable mysql nginx "${PHP_FPM_SERVICE}" redis
-        sudo systemctl start mysql nginx "${PHP_FPM_SERVICE}" redis
+        REDIS_SERVICE="redis-server"
+        sudo systemctl enable mysql nginx "${PHP_FPM_SERVICE}" "${REDIS_SERVICE}"
+        sudo systemctl start mysql nginx "${PHP_FPM_SERVICE}" "${REDIS_SERVICE}"
     elif [ "$SYSTEM" == "centos" ]; then
         sudo yum install -y epel-release
-        sudo yum install -y git nginx mariadb-server php php-cli php-fpm php-mysqlnd php-xml php-mbstring php-curl php-zip php-gd redis unzip
+        sudo yum install -y git nginx mariadb-server php php-cli php-fpm php-mysqlnd php-xml php-mbstring php-curl php-zip php-gd redis unzip iproute
         PHP_VERSION=$(php -v | head -n 1 | cut -d " " -f 2 | cut -d "." -f 1,2)
         PHP_FPM_SERVICE="php-fpm"
-        sudo systemctl enable mariadb nginx "${PHP_FPM_SERVICE}" redis
-        sudo systemctl start mariadb nginx "${PHP_FPM_SERVICE}" redis
+        REDIS_SERVICE="redis"
+        sudo systemctl enable mariadb nginx "${PHP_FPM_SERVICE}" "${REDIS_SERVICE}"
+        sudo systemctl start mariadb nginx "${PHP_FPM_SERVICE}" "${REDIS_SERVICE}"
     fi
     if [ $? -ne 0 ]; then
-        echo -e "${RED}依赖安装或服务启动失败，请检查系统日志（systemctl status nginx ${PHP_FPM_SERVICE} mysql/mariadb redis）！${RESET}"
+        echo -e "${RED}依赖安装或服务启动失败，请检查系统日志（systemctl status nginx ${PHP_FPM_SERVICE} mysql/mariadb ${REDIS_SERVICE}）！${RESET}"
         read -p "按回车键返回主菜单..."
         continue
     fi
@@ -4753,14 +4755,6 @@ EOF"
         echo -e "${YELLOW}检测到 Apache2 正在运行，正在停止以释放端口...${RESET}"
         sudo systemctl stop apache2
         sudo systemctl disable apache2
-    fi
-
-    # 安装 Composer
-    if ! command -v composer &> /dev/null; then
-        echo -e "${YELLOW}正在安装 Composer...${RESET}"
-        curl -sS https://getcomposer.org/installer | php
-        sudo mv composer.phar /usr/local/bin/composer
-        chmod +x /usr/local/bin/composer
     fi
 
     # 检查 PHP-CLI 环境
@@ -4786,7 +4780,7 @@ EOF"
     find_free_port() {
         local start_port=$1
         local port=$start_port
-        while netstat -tuln | grep ":$port" > /dev/null; do
+        while ss -tuln | grep ":$port" > /dev/null; do
             port=$((port + 1))
             if [ $port -gt 65535 ]; then
                 echo -e "${RED}无法找到可用端口！${RESET}"
@@ -4804,11 +4798,11 @@ EOF"
     # 检查反向代理端口（默认 80 和 443）
     PROXY_HTTP_PORT=80
     PROXY_HTTPS_PORT=443
-    if netstat -tuln | grep ":$PROXY_HTTP_PORT" > /dev/null; then
+    if ss -tuln | grep ":$PROXY_HTTP_PORT" > /dev/null; then
         echo -e "${YELLOW}反向代理端口 $PROXY_HTTP_PORT 已被占用，将自动选择新端口...${RESET}"
         PROXY_HTTP_PORT=$(find_free_port $((PROXY_HTTP_PORT + 1)))
     fi
-    if netstat -tuln | grep ":$PROXY_HTTPS_PORT" > /dev/null; then
+    if ss -tuln | grep ":$PROXY_HTTPS_PORT" > /dev/null; then
         echo -e "${YELLOW}反向代理端口 $PROXY_HTTPS_PORT 已被占用，将自动选择新端口...${RESET}"
         PROXY_HTTPS_PORT=$(find_free_port $((PROXY_HTTPS_PORT + 1)))
     fi
@@ -4834,11 +4828,23 @@ EOF"
 
     # 下载独角数卡代码
     echo -e "${YELLOW}正在下载独角数卡代码...${RESET}"
+    if [ -d "/www/wwwroot/dujiaoka" ] && [ -n "$(ls -A /www/wwwroot/dujiaoka)" ]; then
+        echo -e "${YELLOW}目录 /www/wwwroot/dujiaoka 已存在且非空，将清空目录...${RESET}"
+        read -p "是否清空目录并继续安装？（y/n，默认 n）： " CLEAR_DIR
+        CLEAR_DIR=${CLEAR_DIR:-n}
+        if [ "$CLEAR_DIR" == "y" ] || [ "$CLEAR_DIR" == "Y" ]; then
+            sudo rm -rf /www/wwwroot/dujiaoka/*
+        else
+            echo -e "${RED}目录非空，安装中止！可手动上传代码包至 /www/wwwroot/dujiaoka，下载地址：https://github.com/assimon/du没有任何问题，可以直接安装。dujiaoka/releases${RESET}"
+            read -p "按回车键返回主菜单..."
+            continue
+        fi
+    fi
     mkdir -p /www/wwwroot/dujiaoka
     cd /www/wwwroot/dujiaoka
     git clone https://github.com/assimon/dujiaoka.git .
     if [ $? -ne 0 ]; then
-        echo -e "${RED}下载独角数卡代码失败，请检查网络或 Git 仓库！${RESET}"
+        echo -e "${RED}下载独角数卡代码失败，请检查网络或 Git 仓库！可手动上传代码包至 /www/wwwroot/dujiaoka，下载地址：https://github.com/assimon/dujiaoka/releases${RESET}"
         read -p "按回车键返回主菜单..."
         continue
     fi
@@ -4960,7 +4966,7 @@ EOF
             fi
         fi
         # 检查 80 端口是否被占用
-        if netstat -tuln | grep ":80" > /dev/null; then
+        if ss -tuln | grep ":80" > /dev/null; then
             echo -e "${YELLOW}端口 80 被占用，正在暂停 Nginx 服务...${RESET}"
             systemctl stop nginx
             sleep 2
