@@ -1425,10 +1425,10 @@ EOF
                             if docker ps --format '{{.Names}}' | grep -q "^npm$"; then
                                 server_ip=$(curl -s4 ifconfig.me || echo "你的服务器IP")
                                 echo "✅ Nginx Proxy Manager 安装成功！"
-                                echo "➜ 访问地址：http://$server_ip:$DEFAULT_PORT"
-                                echo "➜ 默认用户名：admin@example.com"
-                                echo "➜ 默认密码：changeme"
-                                echo "⚠️ 请尽快登录并修改默认密码！"
+                                echo -e "\e[33m➜ 访问地址：http://$server_ip:$DEFAULT_PORT\e[0m"
+                                echo -e "\e[33m➜ 默认用户名：admin@example.com\e[0m"
+                                echo -e "\e[33m➜ 默认密码：changeme\e[0m"
+                                echo -e "\e[31m⚠️ 请尽快登录并修改默认密码！\e[0m"
                             else
                                 echo "❌ Nginx Proxy Manager 容器未正常运行，请检查以下日志："
                                 docker logs npm
