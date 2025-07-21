@@ -4743,29 +4743,58 @@ EOF"
             fi
             echo -e "${YELLOW}检测到 /home/web 所在分区剩余空间：${DISK_SPACE}MB，满足要求。${RESET}"
 
-            # 检查并修复 dpkg 中断问题
+            # 检查并修复 dpkg 中断问题（优化避免无限循环）
             echo -e "${YELLOW}正在检查 dpkg 状态...${RESET}"
-            dpkg_status=$(sudo dpkg -l | grep -v '^ii' | awk '{print $2}' | grep -v '^$')
+            dpkg_status=$(sudo dpkg -l | grep -v '^ii' | awk '{print $2}' | grep -v '^$' | sort -u)
             if [ -f /var/lib/dpkg/lock-frontend ] || [ -f /var/cache/apt/archives/lock ] || [ -n "$dpkg_status" ] || ! sudo dpkg --configure -a 2>/dev/null; then
                 echo -e "${YELLOW}检测到 dpkg 中断或损坏的包，正在尝试修复...${RESET}"
+                # 清理锁定文件和进程
                 sudo killall -9 apt apt-get dpkg 2>/dev/null || true
                 sleep 2
-                sudo rm -f /var/lib/dpkg/lock-frontend /var/cache/apt/archives/lock 2>/dev/null
-                if [ ! -f /var/lib/apt/lists/lock ] && [ "$(find /var/lib/apt/lists -maxdepth 1 -mmin +60 | wc -l)" -gt 0 ]; then
-                    sudo apt-get clean
-                    sudo apt-get update
+                sudo rm -f /var/lib/dpkg/lock-frontend /var/cache/apt/archives/lock /var/lib/apt/lists/lock 2>/dev/null
+                # 清理并重建 apt 缓存
+                sudo apt-get clean
+                sudo apt-get update --fix-missing
+                if [ $? -ne 0 ]; then
+                    echo -e "${RED}apt-get update 失败，请检查网络或软件源！运行 'cat /etc/apt/sources.list' 查看详情。${RESET}"
+                    read -p "按回车键返回主菜单..."
+                    continue
                 fi
+                # 修复损坏的包（最多尝试3次）
                 if [ -n "$dpkg_status" ]; then
                     echo -e "${YELLOW}检测到损坏的包：${dpkg_status}${RESET}"
+                    max_attempts=3
+                    attempt=1
+                    failed_pkgs=""
                     for pkg in $dpkg_status; do
-                        echo -e "${YELLOW}尝试重新安装包 $pkg...${RESET}"
-                        sudo apt-get install --reinstall -y --no-install-recommends $pkg
-                        if [ $? -ne 0 ]; then
+                        while [ $attempt -le $max_attempts ]; do
+                            echo -e "${YELLOW}尝试重新安装包 $pkg （第 $attempt 次）...${RESET}"
+                            sudo apt-get install --reinstall -y --no-install-recommends $pkg
+                            if [ $? -eq 0 ]; then
+                                break
+                            fi
                             echo -e "${YELLOW}重新安装 $pkg 失败，尝试强制移除并重新安装...${RESET}"
-                            sudo dpkg --purge --force-all $pkg
+                            sudo dpkg --purge --force-all $pkg 2>/dev/null
                             sudo apt-get install -y --no-install-recommends $pkg
-                        fi
+                            if [ $? -eq 0 ]; then
+                                break
+                            fi
+                            attempt=$((attempt + 1))
+                            if [ $attempt -gt $max_attempts ]; then
+                                echo -e "${RED}包 $pkg 修复失败，跳过此包...${RESET}"
+                                failed_pkgs="$failed_pkgs $pkg"
+                            fi
+                            sleep 1
+                        done
+                        attempt=1
                     done
+                    if [ -n "$failed_pkgs" ]; then
+                        echo -e "${RED}以下包修复失败：$failed_pkgs${RESET}"
+                        echo -e "${YELLOW}继续安装，但可能影响系统稳定性。建议手动修复：${RESET}"
+                        echo -e "${YELLOW}1. 查看 dpkg 状态：dpkg -l | grep -v '^ii'${RESET}"
+                        echo -e "${YELLOW}2. 手动修复包：sudo apt-get install --reinstall <package>${RESET}"
+                        echo -e "${YELLOW}3. 检查 apt 日志：cat /var/log/apt/history.log${RESET}"
+                    fi
                 fi
                 sudo dpkg --configure -a
                 sudo apt-get install -f -y --no-install-recommends
@@ -4774,8 +4803,8 @@ EOF"
                     echo -e "${YELLOW}请手动运行以下命令修复：${RESET}"
                     echo -e "${YELLOW}1. 检查占用 dpkg 的进程：sudo lsof /var/lib/dpkg/lock-frontend${RESET}"
                     echo -e "${YELLOW}2. 终止进程：sudo killall -9 apt apt-get dpkg${RESET}"
-                    echo -e "${YELLOW}3. 清理锁定文件：sudo rm -f /var/lib/dpkg/lock-frontend /var/cache/apt/archives/lock${RESET}"
-                    echo -e "${YELLOW}4. 清理 apt 缓存：sudo apt-get clean && sudo apt-get update${RESET}"
+                    echo -e "${YELLOW}3. 清理锁定文件：sudo rm -f /var/lib/dpkg/lock-frontend /var/cache/apt/archives/lock /var/lib/apt/lists/lock${RESET}"
+                    echo -e "${YELLOW}4. 清理 apt 缓存：sudo apt-get clean && sudo apt-get update --fix-missing${RESET}"
                     echo -e "${YELLOW}5. 修复 dpkg：sudo dpkg --configure -a${RESET}"
                     echo -e "${YELLOW}6. 修复依赖：sudo apt-get install -f${RESET}"
                     read -p "按回车键返回主菜单..."
@@ -4790,7 +4819,7 @@ EOF"
             echo -e "${YELLOW}正在更新系统并安装必要工具...${RESET}"
             if [ "$SYSTEM" == "ubuntu" ] || [ "$SYSTEM" == "debian" ]; then
                 if [ "$(find /var/lib/apt/lists -maxdepth 1 -mmin +60 | wc -l)" -gt 0 ]; then
-                    sudo apt-get update -y
+                    sudo apt-get update -y --fix-missing
                 fi
                 sudo apt-get install -y --no-install-recommends curl wget sudo socat tar iproute2
             elif [ "$SYSTEM" == "centos" ]; then
@@ -4806,7 +4835,7 @@ EOF"
             # 安装 Docker
             echo -e "${YELLOW}正在安装 Docker...${RESET}"
             if ! command -v docker &> /dev/null; then
-                curl -fsSL https://get.docker.com | sh
+                curl -fsSL --retry 3 --retry-delay 5 https://get.docker.com | sh
                 if [ $? -ne 0 ]; then
                     echo -e "${RED}Docker 安装失败，请检查网络或脚本！运行 'docker --version' 查看详情。${RESET}"
                     read -p "按回车键返回主菜单..."
