@@ -1172,49 +1172,48 @@ EOL
                 read -p "按回车键返回主菜单..."
                 ;;
             16)
-# 共用端口（反代NPM）
-if [ "$EUID" -ne 0 ]; then
-    echo "❌ 请使用sudo或root用户运行此脚本"
-else
-    proxy_management() {
-        while true; do
-            echo "🛠️ 共用端口（反代）管理"
-            echo "------------------------"
-            echo "1) 手动设置反代"
-            echo "2) Nginx Proxy Manager 面板安装"
-            echo "3) Nginx Proxy Manager 面板卸载"
-            echo "4) 返回主菜单"
-            read -p "请输入选项 [1-4]: " proxy_choice
-            case $proxy_choice in
-                1)
-                    # 手动设置反代
-                    install_dependencies() {
-                        echo "➜ 检查并安装依赖..."
-                        apt-get update > /dev/null 2>&1
-                        if ! command -v nginx &> /dev/null; then
-                            apt-get install -y nginx > /dev/null 2>&1
-                        fi
-                        if ! command -v certbot &> /dev/null; then
-                            apt-get install -y certbot python3-certbot-nginx > /dev/null 2>&1
-                        fi
-                        echo "✅ 依赖已安装"
-                    }
+        if [ "$EUID" -ne 0 ]; then
+            echo "❌ 请使用sudo或root用户运行此脚本"
+        else
+            proxy_management() {
+                while true; do
+                    echo "🛠️ 共用端口（反代）管理"
+                    echo "------------------------"
+                    echo "1) 手动设置反代"
+                    echo "2) Nginx Proxy Manager 面板安装"
+                    echo "3) Nginx Proxy Manager 面板卸载"
+                    echo "4) 返回主菜单"
+                    read -p "请输入选项 [1-4]: " proxy_choice
+                    case $proxy_choice in
+                        1)
+                            # 手动设置反代
+                            install_dependencies() {
+                                echo "➜ 检查并安装依赖..."
+                                apt-get update > /dev/null 2>&1
+                                if ! command -v nginx &> /dev/null; then
+                                    apt-get install -y nginx > /dev/null 2>&1
+                                fi
+                                if ! command -v certbot &> /dev/null; then
+                                    apt-get install -y certbot python3-certbot-nginx > /dev/null 2>&1
+                                fi
+                                echo "✅ 依赖已安装"
+                            }
 
-                    request_certificate() {
-                        local domain=$1
-                        echo "➜ 为域名 $domain 申请SSL证书..."
-                        if certbot --nginx --non-interactive --agree-tos -m $ADMIN_EMAIL -d $domain > /dev/null 2>&1; then
-                            echo "✅ 证书申请成功"
-                        else
-                            echo "❌ 证书申请失败，请检查域名DNS解析或端口开放情况"
-                        fi
-                    }
+                            request_certificate() {
+                                local domain=$1
+                                echo "➜ 为域名 $domain 申请SSL证书..."
+                                if certbot --nginx --non-interactive --agree-tos -m $ADMIN_EMAIL -d $domain > /dev/null 2>&1; then
+                                    echo "✅ 证书申请成功"
+                                else
+                                    echo "❌ 证书申请失败，请检查域名DNS解析或端口开放情况"
+                                fi
+                            }
 
-                    configure_nginx() {
-                        local domain=$1
-                        local port=$2
-                        local conf_file="/etc/nginx/conf.d/alone.conf"
-                        cat >> $conf_file <<EOF
+                            configure_nginx() {
+                                local domain=$1
+                                local port=$2
+                                local conf_file="/etc/nginx/conf.d/alone.conf"
+                                cat >> $conf_file <<EOF
 server {
     listen 80;
     server_name $domain;
@@ -1240,253 +1239,263 @@ server {
     add_header Strict-Transport-Security "max-age=63072000" always;
 }
 EOF
-                        echo "✅ Nginx配置完成"
-                    }
+                                echo "✅ Nginx配置完成"
+                            }
 
-                    check_cert_expiry() {
-                        local domain=$1
-                        if [ -f /etc/letsencrypt/live/$domain/cert.pem ]; then
-                            local expiry_date=$(openssl x509 -enddate -noout -in /etc/letsencrypt/live/$domain/cert.pem | cut -d= -f2)
-                            local expiry_seconds=$(date -d "$expiry_date" +%s)
-                            local current_seconds=$(date +%s)
-                            local days_left=$(( (expiry_seconds - current_seconds) / 86400 ))
-                            echo "➜ 域名 $domain 的SSL证书将在 $days_left 天后到期"
-                            if [ $days_left -lt 30 ]; then
-                                echo "⚠️ 证书即将到期，建议尽快续签"
-                            fi
-                        else
-                            echo "❌ 未找到域名 $domain 的证书文件"
-                        fi
-                    }
+                            check_cert_expiry() {
+                                local domain=$1
+                                if [ -f /etc/letsencrypt/live/$domain/cert.pem ]; then
+                                    local expiry_date=$(openssl x509 -enddate -noout -in /etc/letsencrypt/live/$domain/cert.pem | cut -d= -f2)
+                                    local expiry_seconds=$(date -d "$expiry_date" +%s)
+                                    local current_seconds=$(date +%s)
+                                    local days_left=$(( (expiry_seconds - current_seconds) / 86400 ))
+                                    echo "➜ 域名 $domain 的SSL证书将在 $days_left 天后到期"
+                                    if [ $days_left -lt 30 ]; then
+                                        echo "⚠️ 证书即将到期，建议尽快续签"
+                                    fi
+                                else
+                                    echo "❌ 未找到域名 $domain 的证书文件"
+                                fi
+                            }
 
-                    echo "🛠️ Nginx多域名部署脚本"
-                    echo "------------------------"
-                    echo "🔍 检查当前已配置的域名和端口："
-                    if [ -f /etc/nginx/conf.d/alone.conf ]; then
-                        grep -oP 'server_name \K[^;]+' /etc/nginx/conf.d/alone.conf | sort | uniq | while read -r domain; do
-                            echo "  域名: $domain"
-                        done
-                    else
-                        echo "⚠️ 未找到 /etc/nginx/conf.d/alone.conf 文件，将创建新配置"
-                    fi
-
-                    read -p "请输入管理员邮箱（用于证书通知）: " ADMIN_EMAIL
-                    declare -A domains
-                    while true; do
-                        read -p "请输入域名（留空结束）: " domain
-                        if [ -z "$domain" ]; then
-                            break
-                        fi
-                        read -p "请输入 $domain 对应的端口号: " port
-                        domains[$domain]=$port
-                    done
-
-                    if [ ${#domains[@]} -eq 0 ]; then
-                        echo "❌ 未输入任何域名，退出脚本"
-                    else
-                        install_dependencies
-                        for domain in "${!domains[@]}"; do
-                            port=${domains[$domain]}
-                            configure_nginx $domain $port
-                            request_certificate $domain
-                            check_cert_expiry $domain
-                        done
-
-                        echo "➜ 配置防火墙..."
-                        if command -v ufw &> /dev/null; then
-                            ufw allow 80/tcp > /dev/null
-                            ufw allow 443/tcp > /dev/null
-                            echo "✅ UFW已放行80/443端口"
-                        elif command -v firewall-cmd &> /dev/null; then
-                            firewall-cmd --permanent --add-service=http > /dev/null
-                            firewall-cmd --permanent --add-service=https > /dev/null
-                            firewall-cmd --reload > /dev/null
-                            echo "✅ Firewalld已放行80/443端口"
-                        else
-                            echo "⚠️ 未检测到防火墙工具，请手动放行端口"
-                        fi
-
-                        (crontab -l 2>/dev/null; echo "0 3 * * * /usr/bin/certbot renew --quiet") | crontab -
-                        echo "✅ 已添加证书自动续签任务"
-
-                        echo -e "\n🔌 当前服务状态："
-                        echo "Nginx状态: $(systemctl is-active nginx)"
-                        echo "监听端口:"
-                        ss -tuln | grep -E ':80|:443'
-                        echo -e "\n🎉 部署完成！"
-                    fi
-                    read -p "按回车键返回上一级..."
-                    ;;
-                2)
-                    # 安装 Nginx Proxy Manager 面板
-                    echo "➜ 正在安装 Nginx Proxy Manager 面板..."
-                    
-                    # 检查 Docker 是否安装
-                    if ! command -v docker &> /dev/null; then
-                        echo "➜ 检测到 Docker 未安装，正在安装..."
-                        check_system
-                        if [ "$SYSTEM" == "ubuntu" ] || [ "$SYSTEM" == "debian" ]; then
-                            apt-get update > /dev/null 2>&1
-                            apt-get install -y docker.io > /dev/null 2>&1
-                        elif [ "$SYSTEM" == "centos" ]; then
-                            yum install -y docker > /dev/null 2>&1
-                            systemctl enable docker > /dev/null 2>&1
-                            systemctl start docker > /dev/null 2>&1
-                        elif [ "$SYSTEM" == "fedora" ]; then
-                            dnf install -y docker > /dev/null 2>&1
-                            systemctl enable docker > /dev/null 2>&1
-                            systemctl start docker > /dev/null 2>&1
-                        else
-                            echo "❌ 无法识别系统，无法安装 Docker！"
-                            read -p "按回车键返回上一级..."
-                            continue
-                        fi
-                        if [ $? -ne 0 ]; then
-                            echo "❌ Docker 安装失败，请手动检查！"
-                            read -p "按回车键返回上一级..."
-                            continue
-                        fi
-                        echo "✅ Docker 安装成功！"
-                    fi
-                    
-                    # 默认端口
-                    DEFAULT_PORT=81
-                    check_port() {
-                        local port=$1
-                        if ss -tuln | grep ":$port" > /dev/null; then
-                            return 1
-                        else
-                            return 0
-                        fi
-                    }
-                    
-                    # 检查端口是否占用
-                    check_port $DEFAULT_PORT
-                    if [ $? -eq 1 ]; then
-                        echo "❌ 端口 $DEFAULT_PORT 已被占用！"
-                        read -p "请输入其他端口号（1-65535）： " new_port
-                        while ! [[ "$new_port" =~ ^[0-9]+$ ]] || [ "$new_port" -lt 1 ] || [ "$new_port" -gt 65535 ]; do
-                            echo "❌ 无效端口，请输入 1-65535 之间的数字！"
-                            read -p "请输入其他端口号（1-65535）： " new_port
-                        done
-                        check_port $new_port
-                        while [ $? -eq 1 ]; do
-                            echo "❌ 端口 $new_port 已被占用，请选择其他端口！"
-                            read -p "请输入其他端口号（1-65535）： " new_port
-                            while ! [[ "$new_port" =~ ^[0-9]+$ ]] || [ "$new_port" -lt 1 ] || [ "$new_port" -gt 65535 ]; do
-                                echo "❌ 无效端口，请输入 1-65535 之间的数字！"
-                                read -p "请输入其他端口号（1-65535）： " new_port
-                            done
-                            check_port $new_port
-                        done
-                        DEFAULT_PORT=$new_port
-                    fi
-                    
-                    # 开放端口
-                    echo "➜ 正在开放端口 80, 443, $DEFAULT_PORT..."
-                    if command -v ufw &> /dev/null; then
-                        ufw allow 80/tcp > /dev/null
-                        ufw allow 443/tcp > /dev/null
-                        ufw allow $DEFAULT_PORT/tcp > /dev/null
-                        ufw reload > /dev/null
-                        echo "✅ UFW 防火墙端口 80, 443, $DEFAULT_PORT 已开放！"
-                    elif command -v firewall-cmd &> /dev/null; then
-                        firewall-cmd --permanent --add-port=80/tcp > /dev/null
-                        firewall-cmd --permanent --add-port=443/tcp > /dev/null
-                        firewall-cmd --permanent --add-port=$DEFAULT_PORT/tcp > /dev/null
-                        firewall-cmd --reload > /dev/null
-                        echo "✅ Firewalld 防火墙端口 80, 443, $DEFAULT_PORT 已开放！"
-                    else
-                        echo "⚠️ 未检测到常见防火墙工具，请手动开放端口 80, 443, $DEFAULT_PORT！"
-                    fi
-                    
-                    # 运行 Nginx Proxy Manager 容器
-                    echo "➜ 正在启动 Nginx Proxy Manager 容器..."
-                    docker run -d --name npm -p 80:80 -p $DEFAULT_PORT:81 -p 443:443 \
-                        -v ./data:/data -v ./letsencrypt:/etc/letsencrypt \
-                        chishin/nginx-proxy-manager-zh:latest > /dev/null 2>&1
-                    if [ $? -ne 0 ]; then
-                        echo "❌ 启动 Nginx Proxy Manager 容器失败，请检查 Docker 状态或日志！"
-                        docker logs npm
-                        read -p "按回车键返回上一级..."
-                        continue
-                    fi
-                    
-                    # 检查容器状态
-                    sleep 3
-                    if docker ps --format '{{.Names}}' | grep -q "^npm$"; then
-                        server_ip=$(curl -s4 ifconfig.me || echo "你的服务器IP")
-                        echo "✅ Nginx Proxy Manager 安装成功！"
-                        echo "➜ 访问地址：http://$server_ip:$DEFAULT_PORT"
-                        echo "➜ 默认用户名：admin@example.com"
-                        echo "➜ 默认密码：changeme"
-                        echo "⚠️ 请尽快登录并修改默认密码！"
-                    else
-                        echo "❌ Nginx Proxy Manager 容器未正常运行，请检查以下日志："
-                        docker logs npm
-                    fi
-                    read -p "按回车键返回上一级..."
-                    ;;
-                3)
-                    # 卸载 Nginx Proxy Manager 面板
-                    echo "➜ 正在卸载 Nginx Proxy Manager 面板..."
-                    echo "⚠️ 注意：卸载将删除 Nginx Proxy Manager 数据，请确保已备份 ./data 和 ./letsencrypt 目录"
-                    read -p "是否继续卸载？（y/n，默认 n）： " confirm_uninstall
-                    if [ "$confirm_uninstall" != "y" ] && [ "$confirm_uninstall" != "Y" ]; then
-                        echo "⚠️ 取消卸载操作"
-                        read -p "按回车键返回上一级..."
-                        continue
-                    fi
-                    
-                    # 停止并移除容器
-                    if docker ps -a --format '{{.Names}}' | grep -q "^npm$"; then
-                        docker stop npm > /dev/null 2>&1
-                        docker rm npm > /dev/null 2>&1
-                        echo "✅ 已停止并移除 Nginx Proxy Manager 容器"
-                    else
-                        echo "⚠️ 未检测到 Nginx Proxy Manager 容器"
-                    fi
-                    
-                    # 删除数据目录
-                    if [ -d "./data" ] || [ -d "./letsencrypt" ]; then
-                        rm -rf ./data ./letsencrypt
-                        if [ $? -eq 0 ]; then
-                            echo "✅ 已删除 Nginx Proxy Manager 数据目录"
-                        else
-                            echo "❌ 删除数据目录失败，请手动检查！"
-                        fi
-                    fi
-                    
-                    # 移除镜像
-                    if docker images | grep -q "chishin/nginx-proxy-manager-zh"; then
-                        read -p "是否移除 Nginx Proxy Manager 的 Docker 镜像？（y/n，默认 n）： " remove_image
-                        if [ "$remove_image" == "y" ] || [ "$remove_image" == "Y" ]; then
-                            docker rmi chishin/nginx-proxy-manager-zh:latest > /dev/null 2>&1 || true
-                            if [ $? -eq 0 ]; then
-                                echo "✅ 已移除镜像 chishin/nginx-proxy-manager-zh:latest"
+                            echo "🛠️ Nginx多域名部署脚本"
+                            echo "------------------------"
+                            echo "🔍 检查当前已配置的域名和端口："
+                            if [ -f /etc/nginx/conf.d/alone.conf ]; then
+                                grep -oP 'server_name \K[^;]+' /etc/nginx/conf.d/alone.conf | sort | uniq | while read -r domain; do
+                                    echo "  域名: $domain"
+                                done
                             else
-                                echo "❌ 移除镜像失败，可能被其他容器使用！"
+                                echo "⚠️ 未找到 /etc/nginx/conf.d/alone.conf 文件，将创建新配置"
                             fi
-                        fi
-                    fi
-                    
-                    echo "✅ Nginx Proxy Manager 卸载完成！"
-                    read -p "按回车键返回上一级..."
-                    ;;
-                4)
-                    echo "➜ 返回主菜单..."
-                    break
-                    ;;
-                *)
-                    echo "❌ 无效选项，请重新输入！"
-                    read -p "按回车键继续..."
-                    ;;
-            esac
-        done
-    }
-    proxy_management
-fi
-read -p "按回车键返回主菜单..."
+
+                            read -p "请输入管理员邮箱（用于证书通知）: " ADMIN_EMAIL
+                            declare -A domains
+                            while true; do
+                                read -p "请输入域名（留空结束）: " domain
+                                if [ -z "$domain" ]; then
+                                    break
+                                fi
+                                read -p "请输入 $domain 对应的端口号: " port
+                                domains[$domain]=$port
+                            done
+
+                            if [ ${#domains[@]} -eq 0 ]; then
+                                echo "❌ 未输入任何域名，退出脚本"
+                            else
+                                install_dependencies
+                                for domain in "${!domains[@]}"; do
+                                    port=${domains[$domain]}
+                                    configure_nginx $domain $port
+                                    request_certificate $domain
+                                    check_cert_expiry $domain
+                                done
+
+                                echo "➜ 配置防火墙..."
+                                if command -v ufw &> /dev/null; then
+                                    ufw allow 80/tcp > /dev/null
+                                    ufw allow 443/tcp > /dev/null
+                                    echo "✅ UFW已放行80/443端口"
+                                elif command -v firewall-cmd &> /dev/null; then
+                                    firewall-cmd --permanent --add-service=http > /dev/null
+                                    firewall-cmd --permanent --add-service=https > /dev/null
+                                    firewall-cmd --reload > /dev/null
+                                    echo "✅ Firewalld已放行80/443端口"
+                                else
+                                    echo "⚠️ 未检测到防火墙工具，请手动放行端口"
+                                fi
+
+                                (crontab -l 2>/dev/null; echo "0 3 * * * /usr/bin/certbot renew --quiet") | crontab -
+                                echo "✅ 已添加证书自动续签任务"
+
+                                echo -e "\n🔌 当前服务状态："
+                                echo "Nginx状态: $(systemctl is-active nginx)"
+                                echo "监听端口:"
+                                ss -tuln | grep -E ':80|:443'
+                                echo -e "\n🎉 部署完成！"
+                            fi
+                            read -p "按回车键返回上一级..."
+                            ;;
+                        2)
+                            # 安装 Nginx Proxy Manager 面板
+                            echo "➜ 正在安装 Nginx Proxy Manager 面板..."
+                            
+                            # 检查 Docker 是否安装
+                            if ! command -v docker &> /dev/null; then
+                                echo "➜ 检测到 Docker 未安装，正在安装..."
+                                check_system() {
+                                    if [ -f /etc/os-release ]; then
+                                        . /etc/os-release
+                                        SYSTEM=$ID
+                                    else
+                                        echo "❌ 无法识别系统！"
+                                        return 1
+                                    fi
+                                }
+                                check_system
+                                if [ "$SYSTEM" == "ubuntu" ] || [ "$SYSTEM" == "debian" ]; then
+                                    apt-get update > /dev/null 2>&1
+                                    apt-get install -y docker.io > /dev/null 2>&1
+                                elif [ "$SYSTEM" == "centos" ]; then
+                                    yum install -y docker > /dev/null 2>&1
+                                    systemctl enable docker > /dev/null 2>&1
+                                    systemctl start docker > /dev/null 2>&1
+                                elif [ "$SYSTEM" == "fedora" ]; then
+                                    dnf install -y docker > /dev/null 2>&1
+                                    systemctl enable docker > /dev/null 2>&1
+                                    systemctl start docker > /dev/null 2>&1
+                                else
+                                    echo "❌ 无法识别系统，无法安装 Docker！"
+                                    read -p "按回车键返回上一级..."
+                                    continue
+                                fi
+                                if [ $? -ne 0 ]; then
+                                    echo "❌ Docker 安装失败，请手动检查！"
+                                    read -p "按回车键返回上一级..."
+                                    continue
+                                fi
+                                echo "✅ Docker 安装成功！"
+                            fi
+                            
+                            # 默认端口
+                            DEFAULT_PORT=81
+                            check_port() {
+                                local port=$1
+                                if ss -tuln | grep ":$port" > /dev/null; then
+                                    return 1
+                                else
+                                    return 0
+                                fi
+                            }
+                            
+                            # 检查端口是否占用
+                            check_port $DEFAULT_PORT
+                            if [ $? -eq 1 ]; then
+                                echo "❌ 端口 $DEFAULT_PORT 已被占用！"
+                                read -p "请输入其他端口号（1-65535）： " new_port
+                                while ! [[ "$new_port" =~ ^[0-9]+$ ]] || [ "$new_port" -lt 1 ] || [ "$new_port" -gt 65535 ]; do
+                                    echo "❌ 无效端口，请输入 1-65535 之间的数字！"
+                                    read -p "请输入其他端口号（1-65535）： " new_port
+                                done
+                                check_port $new_port
+                                while [ $? -eq 1 ]; do
+                                    echo "❌ 端口 $new_port 已被占用，请选择其他端口！"
+                                    read -p "请输入其他端口号（1-65535）： " new_port
+                                    while ! [[ "$new_port" =~ ^[0-9]+$ ]] || [ "$new_port" -lt 1 ] || [ "$new_port" -gt 65535 ]; do
+                                        echo "❌ 无效端口，请输入 1-65535 之间的数字！"
+                                        read -p "请输入其他端口号（1-65535）： " new_port
+                                    done
+                                    check_port $new_port
+                                done
+                                DEFAULT_PORT=$new_port
+                            fi
+                            
+                            # 开放端口
+                            echo "➜ 正在开放端口 80, 443, $DEFAULT_PORT..."
+                            if command -v ufw &> /dev/null; then
+                                ufw allow 80/tcp > /dev/null
+                                ufw allow 443/tcp > /dev/null
+                                ufw allow $DEFAULT_PORT/tcp > /dev/null
+                                ufw reload > /dev/null
+                                echo "✅ UFW 防火墙端口 80, 443, $DEFAULT_PORT 已开放！"
+                            elif command -v firewall-cmd &> /dev/null; then
+                                firewall-cmd --permanent --add-port=80/tcp > /dev/null
+                                firewall-cmd --permanent --add-port=443/tcp > /dev/null
+                                firewall-cmd --permanent --add-port=$DEFAULT_PORT/tcp > /dev/null
+                                firewall-cmd --reload > /dev/null
+                                echo "✅ Firewalld 防火墙端口 80, 443, $DEFAULT_PORT 已开放！"
+                            else
+                                echo "⚠️ 未检测到常见防火墙工具，请手动开放端口 80, 443, $DEFAULT_PORT！"
+                            fi
+                            
+                            # 运行 Nginx Proxy Manager 容器
+                            echo "➜ 正在启动 Nginx Proxy Manager 容器..."
+                            docker run -d --name npm -p 80:80 -p $DEFAULT_PORT:81 -p 443:443 \
+                                -v ./data:/data -v ./letsencrypt:/etc/letsencrypt \
+                                chishin/nginx-proxy-manager-zh:latest > /dev/null 2>&1
+                            if [ $? -ne 0 ]; then
+                                echo "❌ 启动 Nginx Proxy Manager 容器失败，请检查 Docker 状态或日志！"
+                                docker logs npm
+                                read -p "按回车键返回上一级..."
+                                continue
+                            fi
+                            
+                            # 检查容器状态
+                            sleep 3
+                            if docker ps --format '{{.Names}}' | grep -q "^npm$"; then
+                                server_ip=$(curl -s4 ifconfig.me || echo "你的服务器IP")
+                                echo "✅ Nginx Proxy Manager 安装成功！"
+                                echo "➜ 访问地址：http://$server_ip:$DEFAULT_PORT"
+                                echo "➜ 默认用户名：admin@example.com"
+                                echo "➜ 默认密码：changeme"
+                                echo "⚠️ 请尽快登录并修改默认密码！"
+                            else
+                                echo "❌ Nginx Proxy Manager 容器未正常运行，请检查以下日志："
+                                docker logs npm
+                            fi
+                            read -p "按回车键返回上一级..."
+                            ;;
+                        3)
+                            # 卸载 Nginx Proxy Manager 面板
+                            echo "➜ 正在卸载 Nginx Proxy Manager 面板..."
+                            echo "⚠️ 注意：卸载将删除 Nginx Proxy Manager 数据，请确保已备份 ./data 和 ./letsencrypt 目录"
+                            read -p "是否继续卸载？（y/n，默认 n）： " confirm_uninstall
+                            if [ "$confirm_uninstall" != "y" ] && [ "$confirm_uninstall" != "Y" ]; then
+                                echo "⚠️ 取消卸载操作"
+                                read -p "按回车键返回上一级..."
+                                continue
+                            fi
+                            
+                            # 停止并移除容器
+                            if docker ps -a --format '{{.Names}}' | grep -q "^npm$"; then
+                                docker stop npm > /dev/null 2>&1
+                                docker rm npm > /dev/null 2>&1
+                                echo "✅ 已停止并移除 Nginx Proxy Manager 容器"
+                            else
+                                echo "⚠️ 未检测到 Nginx Proxy Manager 容器"
+                            fi
+                            
+                            # 删除数据目录
+                            if [ -d "./data" ] || [ -d "./letsencrypt" ]; then
+                                rm -rf ./data ./letsencrypt
+                                if [ $? -eq 0 ]; then
+                                    echo "✅ 已删除 Nginx Proxy Manager 数据目录"
+                                else
+                                    echo "❌ 删除数据目录失败，请手动检查！"
+                                fi
+                            fi
+                            
+                            # 移除镜像
+                            if docker images | grep -q "chishin/nginx-proxy-manager-zh"; then
+                                read -p "是否移除 Nginx Proxy Manager 的 Docker 镜像？（y/n，默认 n）： " remove_image
+                                if [ "$remove_image" == "y" ] || [ "$remove_image" == "Y" ]; then
+                                    docker rmi chishin/nginx-proxy-manager-zh:latest > /dev/null 2>&1 || true
+                                    if [ $? -eq 0 ]; then
+                                        echo "✅ 已移除镜像 chishin/nginx-proxy-manager-zh:latest"
+                                    else
+                                        echo "❌ 移除镜像失败，可能被其他容器使用！"
+                                    fi
+                                fi
+                            fi
+                            
+                            echo "✅ Nginx Proxy Manager 卸载完成！"
+                            read -p "按回车键返回上一级..."
+                            ;;
+                        4)
+                            echo "➜ 返回主菜单..."
+                            break
+                            ;;
+                        *)
+                            echo "❌ 无效选项，请重新输入！"
+                            read -p "按回车键继续..."
+                            ;;
+                    esac
+                done
+            }
+            proxy_management
+        fi
+        read -p "按回车键返回主菜单..."
+        ;;
 17)
                 # 安装 curl 和 wget
                 echo -e "${GREEN}正在安装 curl 和 wget ...${RESET}"
