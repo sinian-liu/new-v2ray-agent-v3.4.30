@@ -4704,139 +4704,149 @@ EOF"
                 fi
                 read -p "按回车键返回主菜单..."
                 ;;
-24)
-    # 独角数卡一键安装（Docker）
-    echo -e "${GREEN}正在安装独角数卡（Docker 部署）...${RESET}"
+        24)
+            # 独角数卡一键安装（Docker）
+            echo -e "${GREEN}正在安装独角数卡（Docker 部署）...${RESET}"
 
-    # 检查系统类型
-    check_system
-    if [ "$SYSTEM" != "ubuntu" ] && [ "$SYSTEM" != "debian" ] && [ "$SYSTEM" != "centos" ]; then
-        echo -e "${RED}不支持的系统类型！独角数卡仅支持 Ubuntu、Debian 或 CentOS！${RESET}"
-        read -p "按回车键返回主菜单..."
-        continue
-    fi
+            # 检查系统类型
+            check_system
+            if [ "$SYSTEM" != "ubuntu" ] && [ "$SYSTEM" != "debian" ] && [ "$SYSTEM" != "centos" ]; then
+                echo -e "${RED}不支持的系统类型！独角数卡仅支持 Ubuntu、Debian 或 CentOS！${RESET}"
+                read -p "按回车键返回主菜单..."
+                continue
+            fi
 
-    # 检查内存大小
-    TOTAL_MEMORY=$(free -m | awk '/^Mem:/{print $2}')
-    if [ "$TOTAL_MEMORY" -lt 512 ]; then
-        echo -e "${RED}系统内存不足（当前 ${TOTAL_MEMORY}MB，建议至少 512MB）！${RESET}"
-        read -p "按回车键返回主菜单..."
-        continue
-    fi
-    echo -e "${YELLOW}检测到系统内存：${TOTAL_MEMORY}MB，满足独角数卡要求。${RESET}"
+            # 检查内存大小
+            TOTAL_MEMORY=$(free -m | awk '/^Mem:/{print $2}')
+            if [ "$TOTAL_MEMORY" -lt 512 ]; then
+                echo -e "${RED}系统内存不足（当前 ${TOTAL_MEMORY}MB，建议至少 512MB）！${RESET}"
+                read -p "按回车键返回主菜单..."
+                continue
+            fi
+            echo -e "${YELLOW}检测到系统内存：${TOTAL_MEMORY}MB，满足独角数卡要求。${RESET}"
 
-    # 检查磁盘空间（针对 /home/web 目录所在分区）
-    echo -e "${YELLOW}正在检查磁盘空间...${RESET}"
-    mkdir -p /home/web # 确保 /home/web 存在
-    DISK_SPACE=$(df -BM /home/web | awk 'NR==2 {print $4}' | grep -o '[0-9]\+')
-    if [ -z "$DISK_SPACE" ]; then
-        echo -e "${RED}无法检测 /home/web 所在分区的磁盘空间，请检查文件系统！运行 'df -h /home/web' 查看详情。${RESET}"
-        df -h /home/web
-        read -p "按回车键返回主菜单..."
-        continue
-    fi
-    if [ "$DISK_SPACE" -lt 2048 ]; then
-        echo -e "${RED}磁盘空间不足（当前 ${DISK_SPACE}MB，建议至少 2048MB）！运行 'df -h /home/web' 查看详情。${RESET}"
-        df -h /home/web
-        read -p "按回车键返回主菜单..."
-        continue
-    fi
-    echo -e "${YELLOW}检测到 /home/web 所在分区剩余空间：${DISK_SPACE}MB，满足要求。${RESET}"
+            # 检查磁盘空间（针对 /home/web 目录所在分区）
+            echo -e "${YELLOW}正在检查磁盘空间...${RESET}"
+            mkdir -p /home/web
+            DISK_SPACE=$(df -BM /home/web | awk 'NR==2 {print $4}' | grep -o '[0-9]\+')
+            if [ -z "$DISK_SPACE" ]; then
+                echo -e "${RED}无法检测 /home/web 所在分区的磁盘空间，请检查文件系统！运行 'df -h /home/web' 查看详情。${RESET}"
+                df -h /home/web
+                read -p "按回车键返回主菜单..."
+                continue
+            fi
+            if [ "$DISK_SPACE" -lt 2048 ]; then
+                echo -e "${RED}磁盘空间不足（当前 ${DISK_SPACE}MB，建议至少 2048MB）！运行 'df -h /home/web' 查看详情。${RESET}"
+                df -h /home/web
+                read -p "按回车键返回主菜单..."
+                continue
+            fi
+            echo -e "${YELLOW}检测到 /home/web 所在分区剩余空间：${DISK_SPACE}MB，满足要求。${RESET}"
 
-    # 检查并修复 dpkg 中断问题（优化性能）
-    echo -e "${YELLOW}正在检查 dpkg 状态...${RESET}"
-    dpkg_status=$(sudo dpkg -l | grep -v '^ii' | awk '{print $2}' | grep -v '^$')
-    if [ -f /var/lib/dpkg/lock-frontend ] || [ -f /var/cache/apt/archives/lock ] || [ -n "$dpkg_status" ] || ! sudo dpkg --configure -a 2>/dev/null; then
-        echo -e "${YELLOW}检测到 dpkg 中断或损坏的包，正在尝试修复...${RESET}"
-        sudo killall -9 apt apt-get dpkg 2>/dev/null || true
-        sleep 2
-        sudo rm -f /var/lib/dpkg/lock-frontend /var/cache/apt/archives/lock 2>/dev/null
-        # 检查 apt 缓存是否需要更新（避免重复更新）
-        if [ ! -f /var/lib/apt/lists/lock ] && [ "$(find /var/lib/apt/lists -maxdepth 1 -mmin +60 | wc -l)" -gt 0 ]; then
-            sudo apt-get clean
-            sudo apt-get update
-        fi
-        if [ -n "$dpkg_status" ]; then
-            echo -e "${ YELLOW}检测到损坏的包：${dpkg_status}${RESET}"
-            for pkg in $dpkg_status; do
-                echo -e "${YELLOW}尝试重新安装包 $pkg...${RESET}"
-                sudo apt-get install --reinstall -y --no-install-recommends $pkg
-                if [ $? -ne 0 ]; then
-                    echo -e "${YELLOW}重新安装 $pkg 失败，尝试强制移除并重新安装...${RESET}"
-                    sudo dpkg --purge --force-all $pkg
-                    sudo apt-get install -y --no-install-recommends $pkg
+            # 检查并修复 dpkg 中断问题
+            echo -e "${YELLOW}正在检查 dpkg 状态...${RESET}"
+            dpkg_status=$(sudo dpkg -l | grep -v '^ii' | awk '{print $2}' | grep -v '^$')
+            if [ -f /var/lib/dpkg/lock-frontend ] || [ -f /var/cache/apt/archives/lock ] || [ -n "$dpkg_status" ] || ! sudo dpkg --configure -a 2>/dev/null; then
+                echo -e "${YELLOW}检测到 dpkg 中断或损坏的包，正在尝试修复...${RESET}"
+                sudo killall -9 apt apt-get dpkg 2>/dev/null || true
+                sleep 2
+                sudo rm -f /var/lib/dpkg/lock-frontend /var/cache/apt/archives/lock 2>/dev/null
+                if [ ! -f /var/lib/apt/lists/lock ] && [ "$(find /var/lib/apt/lists -maxdepth 1 -mmin +60 | wc -l)" -gt 0 ]; then
+                    sudo apt-get clean
+                    sudo apt-get update
                 fi
-            done
-        fi
-        sudo dpkg --configure -a
-        sudo apt-get install -f -y --no-install-recommends
-        if [ $? -ne 0 ]; then
-            echo -e "${RED}dpkg 修复失败！${RESET}"
-            echo -e "${YELLOW}请手动运行以下命令修复：${RESET}"
-            echo -e "${YELLOW}1. 检查占用 dpkg 的进程：sudo lsof /var/lib/dpkg/lock-frontend${RESET}"
-            echo -e "${YELLOW}2. 终止进程：sudo killall -9 apt apt-get dpkg${RESET}"
-            echo -e "${YELLOW}3. 清理锁定文件：sudo rm -f /var/lib/dpkg/lock-frontend /var/cache/apt/archives/lock${RESET}"
-            echo -e "${YELLOW}4. 清理 apt 缓存：sudo apt-get clean && sudo apt-get update${RESET}"
-            echo -e "${YELLOW}5. 修复 dpkg：sudo dpkg --configure -a${RESET}"
-            echo -e "${YELLOW}6. 修复依赖：sudo apt-get install -f${RESET}"
-            read -p "按回车键返回主菜单..."
-            continue
-        fi
-        echo -e "${GREEN}dpkg 中断问题已修复！${RESET}"
-    else
-        echo -e "${GREEN}没有检测到损坏的包，跳过修复...${RESET}"
-    fi
+                if [ -n "$dpkg_status" ]; then
+                    echo -e "${YELLOW}检测到损坏的包：${dpkg_status}${RESET}"
+                    for pkg in $dpkg_status; do
+                        echo -e "${YELLOW}尝试重新安装包 $pkg...${RESET}"
+                        sudo apt-get install --reinstall -y --no-install-recommends $pkg
+                        if [ $? -ne 0 ]; then
+                            echo -e "${YELLOW}重新安装 $pkg 失败，尝试强制移除并重新安装...${RESET}"
+                            sudo dpkg --purge --force-all $pkg
+                            sudo apt-get install -y --no-install-recommends $pkg
+                        fi
+                    done
+                fi
+                sudo dpkg --configure -a
+                sudo apt-get install -f -y --no-install-recommends
+                if [ $? -ne 0 ]; then
+                    echo -e "${RED}dpkg 修复失败！${RESET}"
+                    echo -e "${YELLOW}请手动运行以下命令修复：${RESET}"
+                    echo -e "${YELLOW}1. 检查占用 dpkg 的进程：sudo lsof /var/lib/dpkg/lock-frontend${RESET}"
+                    echo -e "${YELLOW}2. 终止进程：sudo killall -9 apt apt-get dpkg${RESET}"
+                    echo -e "${YELLOW}3. 清理锁定文件：sudo rm -f /var/lib/dpkg/lock-frontend /var/cache/apt/archives/lock${RESET}"
+                    echo -e "${YELLOW}4. 清理 apt 缓存：sudo apt-get clean && sudo apt-get update${RESET}"
+                    echo -e "${YELLOW}5. 修复 dpkg：sudo dpkg --configure -a${RESET}"
+                    echo -e "${YELLOW}6. 修复依赖：sudo apt-get install -f${RESET}"
+                    read -p "按回车键返回主菜单..."
+                    continue
+                fi
+                echo -e "${GREEN}dpkg 中断问题已修复！${RESET}"
+            else
+                echo -e "${GREEN}没有检测到损坏的包，跳过修复...${RESET}"
+            fi
 
-    # 更新系统并安装必要工具（优化性能）
-    echo -e "${YELLOW}正在更新系统并安装必要工具...${RESET}"
-    if [ "$SYSTEM" == "ubuntu" ] || [ "$SYSTEM" == "debian" ]; then
-        if [ "$(find /var/lib/apt/lists -maxdepth 1 -mmin +60 | wc -l)" -gt 0 ]; then
-            sudo apt-get update -y
-        fi
-        sudo apt-get install -y --no-install-recommends curl wget sudo socat tar iproute2
-    elif [ "$SYSTEM" == "centos" ]; then
-        sudo yum update -y
-        sudo yum install -y curl wget sudo socat tar iproute
-    fi
-    if [ $? -ne 0 ]; then
-        echo -e "${RED}系统更新或工具安装失败，请检查网络或包管理器！运行 'sudo apt update' 或 'sudo yum update' 查看详情。${RESET}"
-        read -p "按回车键返回主菜单..."
-        continue
-    fi
+            # 更新系统并安装必要工具
+            echo -e "${YELLOW}正在更新系统并安装必要工具...${RESET}"
+            if [ "$SYSTEM" == "ubuntu" ] || [ "$SYSTEM" == "debian" ]; then
+                if [ "$(find /var/lib/apt/lists -maxdepth 1 -mmin +60 | wc -l)" -gt 0 ]; then
+                    sudo apt-get update -y
+                fi
+                sudo apt-get install -y --no-install-recommends curl wget sudo socat tar iproute2
+            elif [ "$SYSTEM" == "centos" ]; then
+                sudo yum update -y
+                sudo yum install -y curl wget sudo socat tar iproute
+            fi
+            if [ $? -ne 0 ]; then
+                echo -e "${RED}系统更新或工具安装失败，请检查网络或包管理器！运行 'sudo apt update' 或 'sudo yum update' 查看详情。${RESET}"
+                read -p "按回车键返回主菜单..."
+                continue
+            fi
 
-    # 安装 Docker
-    echo -e "${YELLOW}正在安装 Docker...${RESET}"
-    curl -fsSL https://get.docker.com | sh
-    if [ $? -ne 0 ]; then
-        echo -e "${RED}Docker 安装失败，请检查网络或脚本！运行 'docker --version' 查看详情。${RESET}"
-        read -p "按回车键返回主菜单..."
-        continue
-    fi
+            # 安装 Docker
+            echo -e "${YELLOW}正在安装 Docker...${RESET}"
+            if ! command -v docker &> /dev/null; then
+                curl -fsSL https://get.docker.com | sh
+                if [ $? -ne 0 ]; then
+                    echo -e "${RED}Docker 安装失败，请检查网络或脚本！运行 'docker --version' 查看详情。${RESET}"
+                    read -p "按回车键返回主菜单..."
+                    continue
+                fi
+            fi
+            check_docker_service
+            if [ $? -ne 0 ]; then
+                read -p "按回车键返回主菜单..."
+                continue
+            fi
 
-    # 安装 Docker Compose
-    echo -e "${YELLOW}正在安装 Docker Compose...${RESET}"
-    curl -L "https://github.com/docker/compose/releases/download/v2.18.1/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-    chmod +x /usr/local/bin/docker-compose
-    if [ $? -ne 0 ]; then
-        echo -e "${RED}Docker Compose 安装失败，请检查网络或权限！运行 'docker-compose --version' 查看详情。${RESET}"
-        read -p "按回车键返回主菜单..."
-        continue
-    fi
+            # 安装 Docker Compose
+            echo -e "${YELLOW}正在安装 Docker Compose...${RESET}"
+            if ! command -v docker-compose &> /dev/null; then
+                curl -L --retry 3 --retry-delay 5 "https://github.com/docker/compose/releases/download/v2.18.1/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+                chmod +x /usr/local/bin/docker-compose
+                if [ $? -ne 0 ]; then
+                    echo -e "${RED}Docker Compose 安装失败，请检查网络或权限！运行 'docker-compose --version' 查看详情。${RESET}"
+                    read -p "按回车键返回主菜单..."
+                    continue
+                fi
+            fi
 
-    # 创建目录
-    echo -e "${YELLOW}正在创建目录结构...${RESET}"
-    cd /home
-    mkdir -p web/html web/mysql web/certs web/redis
-    touch web/nginx.conf web/docker-compose.yml
-    if [ $? -ne 0 ]; then
-        echo -e "${RED}目录创建失败，请检查权限或磁盘空间！运行 'df -h /home/web' 查看详情。${RESET}"
-        read -p "按回车键返回主菜单..."
-        continue
-    fi
+            # 创建目录
+            echo -e "${YELLOW}正在创建目录结构...${RESET}"
+            cd /home
+            mkdir -p web/html web/mysql web/certs web/redis
+            touch web/nginx.conf web/docker-compose.yml
+            if [ $? -ne 0 ]; then
+                echo -e "${RED}目录创建失败，请检查权限或磁盘空间！运行 'df -h /home/web' 查看详情。${RESET}"
+                read -p "按回车键返回主菜单..."
+                continue
+            fi
+            chmod -R 777 /home/web
+            chown -R $(whoami):$(whoami) /home/web
 
-    # 配置 docker-compose.yml
-    echo -e "${YELLOW}正在配置 docker-compose.yml...${RESET}"
-    cat > /home/web/docker-compose.yml <<EOF
+            # 配置 docker-compose.yml
+            echo -e "${YELLOW}正在配置 docker-compose.yml...${RESET}"
+            cat > /home/web/docker-compose.yml <<EOF
 version: '3.8'
 
 services:
@@ -4879,90 +4889,83 @@ services:
       - ./redis:/data
 EOF
 
-    # 自动查找未占用端口
-    find_free_port() {
-        local start_port=$1
-        local port=$start_port
-        while ss -tuln | grep ":$port" > /dev/null; do
-            port=$((port + 1))
-            if [ $port -gt 65535 ]; then
-                echo -e "${RED}无法找到可用端口！${RESET}"
-                read -p "按回车键返回主菜单..."
-                exit 1
+            # 自动查找未占用端口
+            PROXY_HTTP_PORT=80
+            PROXY_HTTPS_PORT=443
+            if ss -tuln | grep ":$PROXY_HTTP_PORT" > /dev/null; then
+                echo -e "${YELLOW}反向代理端口 $PROXY_HTTP_PORT 已被占用，将自动选择新端口...${RESET}"
+                PROXY_HTTP_PORT=$(find_free_port $((PROXY_HTTP_PORT + 1)))
+                if [ $? -ne 0 ]; then
+                    read -p "按回车键返回主菜单..."
+                    continue
+                fi
             fi
-        done
-        echo $port
-    }
+            if ss -tuln | grep ":$PROXY_HTTPS_PORT" > /dev/null; then
+                echo -e "${YELLOW}反向代理端口 $PROXY_HTTPS_PORT 已被占用，将自动选择新端口...${RESET}"
+                PROXY_HTTPS_PORT=$(find_free_port $((PROXY_HTTPS_PORT + 1)))
+                if [ $? -ne 0 ]; then
+                    read -p "按回车键返回主菜单..."
+                    continue
+                fi
+            fi
+            echo -e "${YELLOW}反向代理使用 HTTP 端口：$PROXY_HTTP_PORT，HTTPS 端口：$PROXY_HTTPS_PORT${RESET}"
 
-    # 检查反向代理端口（默认 80 和 443）
-    PROXY_HTTP_PORT=80
-    PROXY_HTTPS_PORT=443
-    if ss -tuln | grep ":$PROXY_HTTP_PORT" > /dev/null; then
-        echo -e "${YELLOW}反向代理端口 $PROXY_HTTP_PORT 已被占用，将自动选择新端口...${RESET}"
-        PROXY_HTTP_PORT=$(find_free_port $((PROXY_HTTP_PORT + 1)))
-    fi
-    if ss -tuln | grep ":$PROXY_HTTPS_PORT" > /dev/null; then
-        echo -e "${YELLOW}反向代理端口 $PROXY_HTTPS_PORT 已被占用，将自动选择新端口...${RESET}"
-        PROXY_HTTPS_PORT=$(find_free_port $((PROXY_HTTPS_PORT + 1)))
-    fi
-    echo -e "${YELLOW}反向代理使用 HTTP 端口：$PROXY_HTTP_PORT，HTTPS 端口：$PROXY_HTTPS_PORT${RESET}"
+            # 更新 docker-compose.yml 中的端口
+            sed -i "s/- 80:80/- $PROXY_HTTP_PORT:80/" /home/web/docker-compose.yml
+            sed -i "s/- 443:443/- $PROXY_HTTPS_PORT:443/" /home/web/docker-compose.yml
 
-    # 更新 docker-compose.yml 中的端口
-    sed -i "s/- 80:80/- $PROXY_HTTP_PORT:80/" /home/web/docker-compose.yml
-    sed -i "s/- 443:443/- $PROXY_HTTPS_PORT:443/" /home/web/docker-compose.yml
+            # 开放防火墙端口
+            if command -v ufw &> /dev/null; then
+                sudo ufw allow $PROXY_HTTP_PORT/tcp
+                sudo ufw allow $PROXY_HTTPS_PORT/tcp
+                sudo ufw reload
+                echo -e "${GREEN}UFW 防火墙端口 $PROXY_HTTP_PORT 和 $PROXY_HTTPS_PORT 已开放！${RESET}"
+            elif command -v firewall-cmd &> /dev/null; then
+                sudo firewall-cmd --permanent --add-port=$PROXY_HTTP_PORT/tcp
+                sudo firewall-cmd --permanent --add-port=$PROXY_HTTPS_PORT/tcp
+                sudo firewall-cmd --reload
+                echo -e "${GREEN}Firewalld 防火墙端口 $PROXY_HTTP_PORT 和 $PROXY_HTTPS_PORT 已开放！${RESET}"
+            elif command -v iptables &> /dev/null; then
+                sudo iptables -A INPUT -p tcp --dport $PROXY_HTTP_PORT -j ACCEPT
+                sudo iptables -A INPUT -p tcp --dport $PROXY_HTTPS_PORT -j ACCEPT
+                sudo iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
+                echo -e "${GREEN}iptables 防火墙端口 $PROXY_HTTP_PORT 和 $PROXY_HTTPS_PORT 已开放！${RESET}"
+            fi
 
-    # 开放防火墙端口
-    if command -v ufw &> /dev/null; then
-        sudo ufw allow $PROXY_HTTP_PORT/tcp
-        sudo ufw allow $PROXY_HTTPS_PORT/tcp
-        sudo ufw reload
-        echo -e "${GREEN}UFW 防火墙端口 $PROXY_HTTP_PORT 和 $PROXY_HTTPS_PORT 已开放！${RESET}"
-    elif command -v firewall-cmd &> /dev/null; then
-        sudo firewall-cmd --permanent --add-port=$PROXY_HTTP_PORT/tcp
-        sudo firewall-cmd --permanent --add-port=$PROXY_HTTPS_PORT/tcp
-        sudo firewall-cmd --reload
-        echo -e "${GREEN}Firewalld 防火墙端口 $PROXY_HTTP_PORT 和 $PROXY_HTTPS_PORT 已开放！${RESET}"
-    elif command -v iptables &> /dev/null; then
-        sudo iptables -A INPUT -p tcp --dport $PROXY_HTTP_PORT -j ACCEPT
-        sudo iptables -A INPUT -p tcp --dport $PROXY_HTTPS_PORT -j ACCEPT
-        sudo iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
-        echo -e "${GREEN}iptables 防火墙端口 $PROXY_HTTP_PORT 和 $PROXY_HTTPS_PORT 已开放！${RESET}"
-    fi
+            # 申请 Let's Encrypt 证书
+            echo -e "${YELLOW}请输入站点域名（例如 example2.com）：${RESET}"
+            read -p "" DOMAIN
+            while [ -z "$DOMAIN" ]; do
+                echo -e "${RED}域名不能为空，请重新输入！${RESET}"
+                read -p "请输入站点域名（例如 example2.com）： " DOMAIN
+            done
+            read -p "是否启用 HTTPS？（y/n，默认 y）： " ENABLE_HTTPS
+            ENABLE_HTTPS=${ENABLE_HTTPS:-y}
 
-    # 申请 Let's Encrypt 证书
-    echo -e "${YELLOW}请输入站点域名（例如 example2.com）：${RESET}"
-    read -p "" DOMAIN
-    while [ -z "$DOMAIN" ]; do
-        echo -e "${RED}域名不能为空，请重新输入！${RESET}"
-        read -p "请输入站点域名（例如 example2.com）： " DOMAIN
-    done
-    read -p "是否启用 HTTPS？（y/n，默认 y）： " ENABLE_HTTPS
-    ENABLE_HTTPS=${ENABLE_HTTPS:-y}
+            if [ "$ENABLE_HTTPS" == "y" ] || [ "$ENABLE_HTTPS" == "Y" ]; then
+                echo -e "${YELLOW}正在申请 Let's Encrypt 证书...${RESET}"
+                curl --retry 3 --retry-delay 5 https://get.acme.sh | sh
+                ~/.acme.sh/acme.sh --register-account -m admin@$DOMAIN
+                if ss -tuln | grep ":80" > /dev/null; then
+                    echo -e "${YELLOW}端口 80 被占用，正在暂停现有服务...${RESET}"
+                    systemctl stop nginx >/dev/null 2>&1 || true
+                    docker stop nginx >/dev/null 2>&1 || true
+                    sleep 2
+                fi
+                ~/.acme.sh/acme.sh --issue -d "$DOMAIN" --standalone
+                if [ $? -eq 0 ]; then
+                    ~/.acme.sh/acme.sh --installcert -d "$DOMAIN" --key-file /home/web/certs/key.pem --fullchain-file /home/web/certs/cert.pem
+                    echo -e "${GREEN}Let's Encrypt 证书申请成功！${RESET}"
+                else
+                    echo -e "${RED}Let's Encrypt 证书申请失败，请检查域名解析或网络！运行 'tail -n 50 ~/.acme.sh/acme.sh.log' 查看详情。${RESET}"
+                    read -p "按回车键返回主菜单..."
+                    continue
+                fi
+            fi
 
-    if [ "$ENABLE_HTTPS" == "y" ] || [ "$ENABLE_HTTPS" == "Y" ]; then
-        echo -e "${YELLOW}正在申请 Let's Encrypt 证书...${RESET}"
-        curl https://get.acme.sh | sh
-        ~/.acme.sh/acme.sh --register-account -m admin@$DOMAIN
-        if ss -tuln | grep ":80" > /dev/null; then
-            echo -e "${YELLOW}端口 80 被占用，正在暂停现有服务...${RESET}"
-            systemctl stop nginx >/dev/null 2>&1 || true
-            docker stop nginx >/dev/null 2>&1 || true
-            sleep 2
-        fi
-        ~/.acme.sh/acme.sh --issue -d "$DOMAIN" --standalone
-        if [ $? -eq 0 ]; then
-            ~/.acme.sh/acme.sh --installcert -d "$DOMAIN" --key-file /home/web/certs/key.pem --fullchain-file /home/web/certs/cert.pem
-            echo -e "${GREEN}Let's Encrypt 证书申请成功！${RESET}"
-        else
-            echo -e "${RED}Let's Encrypt 证书申请失败，请检查域名解析或网络！运行 'tail -n 50 ~/.acme.sh/acme.sh.log' 查看详情。${RESET}"
-            read -p "按回车键返回主菜单..."
-            continue
-        fi
-    fi
-
-    # 配置 Nginx
-    echo -e "${YELLOW}正在配置 Nginx...${RESET}"
-    cat > /home/web/nginx.conf <<EOF
+            # 配置 Nginx
+            echo -e "${YELLOW}正在配置 Nginx...${RESET}"
+            cat > /home/web/nginx.conf <<EOF
 events {
     worker_connections 1024;
 }
@@ -5001,257 +5004,287 @@ http {
     }
 }
 EOF
-    if [ ! "$ENABLE_HTTPS" == "y" ] && [ ! "$ENABLE_HTTPS" == "Y" ]; then
-        sed -i '/listen 443 ssl http2;/,/ssl_certificate_key.*;/d' /home/web/nginx.conf
-        sed -i '/return 301 https:\/\/$host$request_uri;/d' /home/web/nginx.conf
-    fi
+            if [ ! "$ENABLE_HTTPS" == "y" ] && [ ! "$ENABLE_HTTPS" == "Y" ]; then
+                sed -i '/listen 443 ssl http2;/,/ssl_certificate_key.*;/d' /home/web/nginx.conf
+                sed -i '/return 301 https:\/\/$host$request_uri;/d' /home/web/nginx.conf
+            fi
 
-    # 下载独角数卡源码
-    echo -e "${YELLOW}正在下载独角数卡源码...${RESET}"
-    if [ -d "/home/web/html/dujiaoka" ] && [ -n "$(ls -A /home/web/html/dujiaoka)" ]; then
-        echo -e "${YELLOW}目录 /home/web/html/dujiaoka 已存在且非空，将清空目录...${RESET}"
-        read -p "是否清空目录并继续安装？（y/n，默认 n）： " CLEAR_DIR
-        CLEAR_DIR=${CLEAR_DIR:-n}
-        if [ "$CLEAR_DIR" == "y" ] || [ "$CLEAR_DIR" == "Y" ]; then
-            sudo rm -rf /home/web/html/dujiaoka/*
-        else
-            echo -e "${RED}目录非空，安装中止！可手动上传代码包至 /home/web/html/dujiaoka，下载地址：https://github.com/assimon/dujiaoka/releases${RESET}"
+            # 下载独角数卡源码
+            echo -e "${YELLOW}正在下载独角数卡源码...${RESET}"
+            if [ -d "/home/web/html/dujiaoka" ] && [ -n "$(ls -A /home/web/html/dujiaoka)" ]; then
+                echo -e "${YELLOW}目录 /home/web/html/dujiaoka 已存在且非空，将清空目录...${RESET}"
+                read -p "是否清空目录并继续安装？（y/n，默认 n）： " CLEAR_DIR
+                CLEAR_DIR=${CLEAR_DIR:-n}
+                if [ "$CLEAR_DIR" == "y" ] || [ "$CLEAR_DIR" == "Y" ]; then
+                    sudo rm -rf /home/web/html/dujiaoka/*
+                else
+                    echo -e "${RED}目录非空，安装中止！可手动上传代码包至 /home/web/html/dujiaoka，下载地址：https://github.com/assimon/dujiaoka/releases${RESET}"
+                    read -p "按回车键返回主菜单..."
+                    continue
+                fi
+            fi
+            cd /home/web/html
+            DUJIAOKA_VERSION="2.0.6"
+            wget --retry-connrefused --waitretry=5 --tries=3 https://github.com/assimon/dujiaoka/releases/download/$DUJIAOKA_VERSION/$DUJIAOKA_VERSION-antibody.tar.gz && tar -zxvf $DUJIAOKA_VERSION-antibody.tar.gz && rm $DUJIAOKA_VERSION-antibody.tar.gz
+            if [ $? -ne 0 ]; then
+                echo -e "${YELLOW}下载 $DUJIAOKA_VERSION 失败，尝试备用版本 2.0.5...${RESET}"
+                DUJIAOKA_VERSION="2.0.5"
+                wget --retry-connrefused --waitretry=5 --tries=3 https://github.com/assimon/dujiaoka/releases/download/$DUJIAOKA_VERSION/$DUJIAOKA_VERSION-antibody.tar.gz && tar -zxvf $DUJIAOKA_VERSION-antibody.tar.gz && rm $DUJIAOKA_VERSION-antibody.tar.gz
+                if [ $? -ne 0 ]; then
+                    echo -e "${RED}下载或解压独角数卡源码失败，请检查网络或磁盘空间！下载地址：https://github.com/assimon/dujiaoka/releases${RESET}"
+                    read -p "按回车键返回主菜单..."
+                    continue
+                fi
+            fi
+
+            # 验证源码完整性
+            echo -e "${YELLOW}正在验证独角数卡源码完整性...${RESET}"
+            if [ ! -d "/home/web/html/dujiaoka/database/migrations" ] || [ -z "$(ls /home/web/html/dujiaoka/database/migrations)" ]; then
+                echo -e "${RED}独角数卡源码不完整，迁移文件缺失！${RESET}"
+                echo -e "${YELLOW}请手动检查或重新下载：${RESET}"
+                echo -e "${YELLOW}1. 检查迁移目录：ls -l /home/web/html/dujiaoka/database/migrations${RESET}"
+                echo -e "${YELLOW}2. 重新下载源码：wget https://github.com/assimon/dujiaoka/releases/download/$DUJIAOKA_VERSION/$DUJIAOKA_VERSION-antibody.tar.gz${RESET}"
+                read -p "按回车键返回主菜单..."
+                continue
+            fi
+            echo -e "${GREEN}独角数卡源码验证通过！${RESET}"
+
+            # 启动 Docker 容器
+            echo -e "${YELLOW}正在启动 Docker 容器...${RESET}"
+            cd /home/web
+            docker-compose up -d
+            if [ $? -ne 0 ]; then
+                echo -e "${RED}Docker 容器启动失败，请检查 docker-compose 配置或日志！${RESET}"
+                docker-compose logs | tail -n 20
+                echo -e "${YELLOW}手动排查命令：${RESET}"
+                echo -e "${YELLOW}1. 查看日志：docker-compose logs${RESET}"
+                echo -e "${YELLOW}2. 检查 Docker 状态：docker ps -a${RESET}"
+                read -p "按回车键返回主菜单..."
+                continue
+            fi
+
+            # 检查 PHP 容器是否运行
+            echo -e "${YELLOW}正在检查 PHP 容器状态...${RESET}"
+            sleep 5
+            if ! docker ps | grep -q "php"; then
+                echo -e "${RED}PHP 容器未运行，请检查 Docker 状态！${RESET}"
+                docker logs php | tail -n 20
+                echo -e "${YELLOW}手动排查命令：${RESET}"
+                echo -e "${YELLOW}1. 查看 PHP 日志：docker logs php${RESET}"
+                echo -e "${YELLOW}2. 检查容器状态：docker ps -a${RESET}"
+                read -p "按回车键返回主菜单..."
+                continue
+            fi
+            echo -e "${GREEN}PHP 容器运行正常！${RESET}"
+
+            # 安装 PHP 扩展
+            echo -e "${YELLOW}正在安装 PHP 扩展...${RESET}"
+            docker exec php apt-get update -y
+            docker exec php apt-get install -y --no-install-recommends build-essential libmariadb-dev-compat libmariadb-dev libzip-dev libpng-dev libjpeg-dev libfreetype6-dev libmagickwand-dev imagemagick
+            docker exec php docker-php-ext-configure gd --with-freetype --with-jpeg
+            docker exec php docker-php-ext-install pdo_mysql zip bcmath gd intl opcache
+            if [ $? -ne 0 ]; then
+                echo -e "${RED}PHP 扩展安装失败，请检查 Docker 容器日志！${RESET}"
+                docker logs php | tail -n 20
+                echo -e "${YELLOW}手动排查命令：${RESET}"
+                echo -e "${YELLOW}1. 查看日志：docker logs php${RESET}"
+                echo -e "${YELLOW}2. 检查已安装扩展：docker exec php php -m${RESET}"
+                read -p "按回车键返回主菜单..."
+                continue
+            fi
+            docker exec php sh -c 'echo "extension=zip.so" > /usr/local/etc/php/conf.d/docker-php-ext-zip.ini'
+            docker exec php sh -c 'echo "extension=gd.so" > /usr/local/etc/php/conf.d/docker-php-ext-gd.ini'
+            docker exec php sh -c 'echo "extension=bcmath.so" > /usr/local/etc/php/conf.d/docker-php-ext-bcmath.ini'
+            docker exec php pecl install redis
+            docker exec php sh -c 'echo "extension=redis.so" > /usr/local/etc/php/conf.d/docker-php-ext-redis.ini'
+            echo -e "${YELLOW}正在检查 PHP 扩展是否启用...${RESET}"
+            if ! docker exec php php -m | grep -qE 'zip|gd|bcmath|redis'; then
+                echo -e "${RED}PHP 扩展（zip, gd, bcmath, redis）未全部启用！${RESET}"
+                docker exec php php -m
+                echo -e "${YELLOW}手动排查命令：${RESET}"
+                echo -e "${YELLOW}1. 检查已加载的扩展：docker exec php php -m${RESET}"
+                echo -e "${YELLOW}2. 检查 PHP 配置文件：docker exec php php --ini${RESET}"
+                echo -e "${YELLOW}3. 查看日志：docker logs php${RESET}"
+                read -p "按回车键返回主菜单..."
+                continue
+            fi
+            echo -e "${GREEN}PHP 扩展（zip, gd, bcmath, redis）已成功启用！${RESET}"
+
+            # 重启 PHP 容器
+            echo -e "${YELLOW}正在重启 PHP 容器...${RESET}"
+            docker restart php
+            if [ $? -ne 0 ]; then
+                echo -e "${RED}PHP 容器重启失败，请检查 Docker 容器状态！${RESET}"
+                docker logs php | tail -n 20
+                read -p "按回车键返回主菜单..."
+                continue
+            fi
+
+            # 安装 Composer
+            echo -e "${YELLOW}正在安装 Composer（PHP 容器内）...${RESET}"
+            docker exec php bash -c 'if ! command -v composer; then curl -sS --retry 3 --retry-delay 5 https://getcomposer.org/installer | php && mv composer.phar /usr/local/bin/composer; fi'
+            if [ $? -ne 0 ]; then
+                echo -e "${RED}Composer 安装失败，请检查 PHP 容器日志！${RESET}"
+                docker logs php | tail -n 20
+                read -p "按回车键返回主菜单..."
+                continue
+            fi
+
+            # 配置 Composer 国内镜像并安装依赖
+            echo -e "${YELLOW}正在配置 Composer 国内镜像并安装依赖...${RESET}"
+            docker exec php composer config -g repo.packagist composer https://mirrors.aliyun.com/composer/
+            docker exec php composer remove paypal/rest-api-sdk-php swiftmailer/swiftmailer -d /var/www/html/dujiaoka
+            docker exec php composer require symfony/mailer -d /var/www/html/dujiaoka
+            if [ -f /home/web/html/dujiaoka/composer.lock ]; then
+                docker exec php composer install --no-interaction --prefer-dist -d /var/www/html/dujiaoka
+            else
+                docker exec php composer update --no-interaction --prefer-dist -d /var/www/html/dujiaoka
+            fi
+            if [ $? -ne 0 ]; then
+                echo -e "${YELLOW}Composer 依赖安装失败，尝试安装 fakerphp/faker...${RESET}"
+                docker exec php composer require fakerphp/faker --dev --no-interaction -d /var/www/html/dujiaoka
+                if [ $? -ne 0 ]; then
+                    echo -e "${RED}Composer 依赖安装失败，请检查 PHP 容器日志！${RESET}"
+                    docker logs php | tail -n 20
+                    echo -e "${YELLOW}手动排查命令：${RESET}"
+                    echo -e "${YELLOW}1. 检查已安装依赖：docker exec php composer show -d /var/www/html/dujiaoka${RESET}"
+                    echo -e "${YELLOW}2. 手动安装 fakerphp/faker：docker exec php composer require fakerphp/faker --dev -d /var/www/html/dujiaoka${RESET}"
+                    read -p "按回车键返回主菜单..."
+                    continue
+                fi
+                docker exec php composer install --no-interaction --prefer-dist -d /var/www/html/dujiaoka
+                if [ $? -ne 0 ]; then
+                    echo -e "${RED}Composer 依赖安装失败，请检查 PHP 容器日志！${RESET}"
+                    docker logs php | tail -n 20
+                    read -p "按回车键返回主菜单..."
+                    continue
+                fi
+            fi
+            echo -e "${GREEN}Composer 依赖安装成功！${RESET}"
+
+            # 赋予权限
+            echo -e "${YELLOW}正在赋予目录权限...${RESET}"
+            docker exec nginx chmod -R 777 /var/www/html
+            docker exec php chmod -R 777 /var/www/html
+            if [ $? -ne 0 ]; then
+                echo -e "${RED}权限赋予失败，请检查 Docker 容器状态！${RESET}"
+                docker ps -a
+                read -p "按回车键返回主菜单..."
+                continue
+            fi
+
+            # 配置 .env 文件
+            echo -e "${YELLOW}正在配置 .env 文件...${RESET}"
+            cd /home/web/html/dujiaoka
+            cp .env.example .env
+            sed -i "s/DB_DATABASE=.*/DB_DATABASE=web/" .env
+            sed -i "s/DB_USERNAME=.*/DB_USERNAME=sinian/" .env
+            sed -i "s/DB_PASSWORD=.*/DB_PASSWORD=sinian1/" .env
+            sed -i "s/DB_HOST=.*/DB_HOST=mysql/" .env
+            sed -i "s/REDIS_HOST=.*/REDIS_HOST=redis/" .env
+            sed -i "s/REDIS_PORT=.*/REDIS_PORT=6379/" .env
+            if [ "$ENABLE_HTTPS" == "y" ] || [ "$ENABLE_HTTPS" == "Y" ]; then
+                sed -i "s/APP_URL=.*/APP_URL=https:\/\/$DOMAIN/" .env
+                sed -i "s/ADMIN_HTTPS=.*/ADMIN_HTTPS=true/" .env
+            else
+                sed -i "s/APP_URL=.*/APP_URL=http:\/\/$DOMAIN/" .env
+                sed -i "s/ADMIN_HTTPS=.*/ADMIN_HTTPS=false/" .env
+            fi
+            sed -i "s/APP_DEBUG=.*/APP_DEBUG=false/" .env
+            if [ $? -ne 0 ]; then
+                echo -e "${RED}.env 文件配置失败，请检查 /home/web/html/dujiaoka/.env 是否存在！${RESET}"
+                read -p "按回车键返回主菜单..."
+                continue
+            fi
+
+            # 重置 MySQL 数据库并更新用户
+            echo -e "${YELLOW}正在重置 MySQL 数据库并更新用户...${RESET}"
+            docker exec mysql sh -c 'echo "[client]\nuser=root\npassword=webroot" > /tmp/my.cnf'
+            docker exec mysql mysql --defaults-file=/tmp/my.cnf -e "DROP DATABASE IF EXISTS web; CREATE DATABASE web;"
+            if [ $? -ne 0 ]; then
+                echo -e "${RED}MySQL 数据库重置失败，请检查 MySQL 容器日志！${RESET}"
+                docker logs mysql | tail -n 20
+                echo -e "${YELLOW}手动排查命令：${RESET}"
+                echo -e "${YELLOW}1. 检查 MySQL 用户：docker exec mysql mysql -u root -pwebroot -e 'SELECT User, Host FROM mysql.user;'${RESET}"
+                echo -e "${YELLOW}2. 手动创建数据库：docker exec mysql mysql -u root -pwebroot -e 'DROP DATABASE IF EXISTS web; CREATE DATABASE web;'${RESET}"
+                read -p "按回车键返回主菜单..."
+                continue
+            fi
+            docker exec mysql mysql --defaults-file=/tmp/my.cnf -e "SELECT User FROM mysql.user WHERE User='sinian' AND Host='%';" | grep -q sinian && docker exec mysql mysql --defaults-file=/tmp/my.cnf -e "ALTER USER 'sinian'@'%' IDENTIFIED BY 'sinian1'; FLUSH PRIVILEGES;" || docker exec mysql mysql --defaults-file=/tmp/my.cnf -e "CREATE USER 'sinian'@'%' IDENTIFIED BY 'sinian1'; GRANT ALL PRIVILEGES ON web.* TO 'sinian'@'%'; FLUSH PRIVILEGES;"
+            if [ $? -ne 0 ]; then
+                echo -e "${RED}MySQL 用户更新失败，请检查 MySQL 容器日志！${RESET}"
+                docker logs mysql | tail -n 20
+                echo -e "${YELLOW}手动排查命令：${RESET}"
+                echo -e "${YELLOW}1. 检查 MySQL 用户：docker exec mysql mysql -u root -pwebroot -e 'SELECT User, Host FROM mysql.user;'${RESET}"
+                echo -e "${YELLOW}2. 手动创建用户：docker exec mysql mysql -u root -pwebroot -e \"CREATE USER 'sinian'@'%' IDENTIFIED BY 'sinian1'; GRANT ALL PRIVILEGES ON web.* TO 'sinian'@'%'; FLUSH PRIVILEGES;\"${RESET}"
+                read -p "按回车键返回主菜单..."
+                continue
+            fi
+            docker exec mysql rm -f /tmp/my.cnf
+            echo -e "${GREEN}MySQL 数据库和用户配置成功！${RESET}"
+
+            # 初始化独角数卡
+            echo -e "${YELLOW}正在初始化独角数卡...${RESET}"
+            docker exec php php /var/www/html/dujiaoka/artisan cache:clear
+            docker exec php php /var/www/html/dujiaoka/artisan config:clear
+            if [ -z "$(docker exec php ls /var/www/html/dujiaoka/database/migrations)" ]; then
+                echo -e "${RED}迁移文件缺失，请检查独角数卡源码完整性！${RESET}"
+                docker exec php ls -l /var/www/html/dujiaoka/database
+                echo -e "${YELLOW}手动排查命令：${RESET}"
+                echo -e "${YELLOW}1. 检查迁移目录：docker exec php ls -l /var/www/html/dujiaoka/database/migrations${RESET}"
+                echo -e "${YELLOW}2. 重新下载源码：wget https://github.com/assimon/dujiaoka/releases/download/$DUJIAOKA_VERSION/$DUJIAOKA_VERSION-antibody.tar.gz${RESET}"
+                read -p "按回车键返回主菜单..."
+                continue
+            fi
+            docker exec php php /var/www/html/dujiaoka/artisan key:generate
+            if [ $? -ne 0 ]; then
+                echo -e "${RED}应用密钥生成失败，请检查 PHP 容器日志！${RESET}"
+                docker logs php | tail -n 20
+                read -p "按回车键返回主菜单..."
+                continue
+            fi
+            docker exec php php /var/www/html/dujiaoka/artisan migrate:fresh --force
+            if [ $? -ne 0 ] || [ -n "$(docker exec php php /var/www/html/dujiaoka/artisan migrate:status --no-ansi | grep 'Nothing to migrate')" ]; then
+                echo -e "${RED}数据库迁移失败或迁移文件为空！${RESET}"
+                docker exec php php /var/www/html/dujiaoka/artisan migrate:status
+                echo -e "${YELLOW}手动排查命令：${RESET}"
+                echo -e "${YELLOW}1. 检查迁移文件：docker exec php ls -l /var/www/html/dujiaoka/database/migrations${RESET}"
+                echo -e "${YELLOW}2. 检查迁移状态：docker exec php php /var/www/html/dujiaoka/artisan migrate:status${RESET}"
+                echo -e "${YELLOW}3. 手动运行迁移：docker exec php php /var/www/html/dujiaoka/artisan migrate:fresh --force${RESET}"
+                read -p "按回车键返回主菜单..."
+                continue
+            fi
+            docker exec php php /var/www/html/dujiaoka/artisan db:seed --force
+            if [ $? -ne 0 ]; then
+                echo -e "${RED}独角数卡初始化失败，请检查 MySQL、Redis 或 Composer 依赖！${RESET}"
+                docker logs php | tail -n 20
+                docker logs mysql | tail -n 20
+                docker logs redis | tail -n 20
+                echo -e "${YELLOW}手动排查命令：${RESET}"
+                echo -e "${YELLOW}1. 检查 MySQL 日志：docker logs mysql${RESET}"
+                echo -e "${YELLOW}2. 检查 Redis 日志：docker logs redis${RESET}"
+                echo -e "${YELLOW}3. 检查 PHP 日志：docker logs php${RESET}"
+                echo -e "${YELLOW}4. 检查 Composer 依赖：docker exec php composer show -d /var/www/html/dujiaoka${RESET}"
+                echo -e "${YELLOW}5. 手动运行初始化：docker exec php php /var/www/html/dujiaoka/artisan migrate:fresh --force${RESET}"
+                echo -e "${YELLOW}6. 手动运行种子填充：docker exec php php /var/www/html/dujiaoka/artisan db:seed --force${RESET}"
+                read -p "按回车键返回主菜单..."
+                continue
+            fi
+
+            # 完成提示
+            server_ip=$(curl -s4 ifconfig.me || echo "你的服务器IP")
+            PROTOCOL="http"
+            if [ "$ENABLE_HTTPS" == "y" ] || [ "$ENABLE_HTTPS" == "Y" ]; then
+                PROTOCOL="https"
+            fi
+            echo -e "${GREEN}独角数卡安装完成！${RESET}"
+            echo -e "${YELLOW}访问地址：${PROTOCOL}://$DOMAIN${RESET}"
+            echo -e "${YELLOW}后台路径：${PROTOCOL}://$DOMAIN/admin${RESET}"
+            echo -e "${YELLOW}默认管理员账号：admin${RESET}"
+            echo -e "${YELLOW}默认管理员密码：admin${RESET}"
+            echo -e "${YELLOW}请确保域名已解析到 $server_ip${RESET}"
             read -p "按回车键返回主菜单..."
-            continue
-        fi
-    fi
-    cd /home/web/html
-    wget https://github.com/assimon/dujiaoka/releases/download/2.0.6/2.0.6-antibody.tar.gz && tar -zxvf 2.0.6-antibody.tar.gz && rm 2.0.6-antibody.tar.gz
-    if [ $? -ne 0 ]; then
-        echo -e "${RED}下载或解压独角数卡源码失败，请检查网络或磁盘空间！下载地址：https://github.com/assimon/dujiaoka/releases${RESET}"
-        read -p "按回车键返回主菜单..."
-        continue
-    fi
-
-    # 启动 Docker 容器
-    echo -e "${YELLOW}正在启动 Docker 容器...${RESET}"
-    cd /home/web
-    docker-compose up -d
-    if [ $? -ne 0 ]; then
-        echo -e "${RED}Docker 容器启动失败，请检查 docker-compose 配置或日志！运行 'docker-compose logs' 查看详情。${RESET}"
-        read -p "按回车键返回主菜单..."
-        continue
-    fi
-
-    # 检查 PHP 容器是否运行
-    echo -e "${YELLOW}正在检查 PHP 容器状态...${RESET}"
-    sleep 5 # 等待容器完全启动
-    if ! docker ps | grep -q "php"; then
-        echo -e "${RED}PHP 容器未运行，请检查 Docker 状态！运行 'docker-compose logs php' 查看详情。${RESET}"
-        read -p "按回车键返回主菜单..."
-        continue
-    fi
-    echo -e "${GREEN}PHP 容器运行正常！${RESET}"
-
-    # 安装 PHP 扩展
-    echo -e "${YELLOW}正在安装 PHP 扩展...${RESET}"
-    docker exec php apt update
-    docker exec php apt install -y --no-install-recommends build-essential libmariadb-dev-compat libmariadb-dev libzip-dev libpng-dev libjpeg-dev libfreetype6-dev libmagickwand-dev imagemagick
-    docker exec php docker-php-ext-configure gd --with-freetype --with-jpeg
-    docker exec php docker-php-ext-install pdo_mysql zip bcmath gd intl opcache
-    if [ $? -ne 0 ]; then
-        echo -e "${RED}PHP 扩展安装失败，请检查 Docker 容器日志！运行 'docker logs php' 查看详情。${RESET}"
-        echo -e "${YELLOW}手动排查命令：${RESET}"
-        echo -e "${YELLOW}1. 检查日志：docker logs php${RESET}"
-        echo -e "${YELLOW}2. 检查已安装扩展：docker exec php php -m${RESET}"
-        read -p "按回车键返回主菜单..."
-        continue
-    fi
-    # 显式启用扩展
-    docker exec php sh -c 'echo "extension=zip.so" > /usr/local/etc/php/conf.d/docker-php-ext-zip.ini'
-    docker exec php sh -c 'echo "extension=gd.so" > /usr/local/etc/php/conf.d/docker-php-ext-gd.ini'
-    docker exec php sh -c 'echo "extension=bcmath.so" > /usr/local/etc/php/conf.d/docker-php-ext-bcmath.ini'
-    docker exec php pecl install redis
-    docker exec php sh -c 'echo "extension=redis.so" > /usr/local/etc/php/conf.d/docker-php-ext-redis.ini'
-    # 检查扩展是否启用
-    echo -e "${YELLOW}正在检查 PHP 扩展是否启用...${RESET}"
-    if ! docker exec php php -m | grep -qE 'zip|gd|bcmath|redis'; then
-        echo -e "${RED}PHP 扩展（zip, gd, bcmath, redis）未全部启用！运行 'docker exec php php -m' 查看详情。${RESET}"
-        echo -e "${YELLOW}手动排查命令：${RESET}"
-        echo -e "${YELLOW}1. 检查已加载的扩展：docker exec php php -m${RESET}"
-        echo -e "${YELLOW}2. 检查 PHP 配置文件：docker exec php php --ini${RESET}"
-        echo -e "${YELLOW}3. 检查日志：docker logs php${RESET}"
-        read -p "按回车键返回主菜单..."
-        continue
-    fi
-    echo -e "${GREEN}PHP 扩展（zip, gd, bcmath, redis）已成功启用！${RESET}"
-
-    # 重启 PHP 容器
-    echo -e "${YELLOW}正在重启 PHP 容器...${RESET}"
-    docker restart php
-    if [ $? -ne 0 ]; then
-        echo -e "${RED}PHP 容器重启失败，请检查 Docker 容器状态！运行 'docker ps' 查看详情。${RESET}"
-        read -p "按回车键返回主菜单..."
-        continue
-    fi
-
-    # 安装 Composer
-    echo -e "${YELLOW}正在安装 Composer（PHP 容器内）...${RESET}"
-    docker exec php bash -c 'if ! command -v composer; then curl -sS https://getcomposer.org/installer | php && mv composer.phar /usr/local/bin/composer; fi'
-    if [ $? -ne 0 ]; then
-        echo -e "${RED}Composer 安装失败，请检查 PHP 容器日志！运行 'docker logs php' 查看详情。${RESET}"
-        read -p "按回车键返回主菜单..."
-        continue
-    fi
-
-    # 配置 Composer 国内镜像并安装依赖
-    echo -e "${YELLOW}正在配置 Composer 国内镜像并安装依赖...${RESET}"
-    docker exec php composer config -g repo.packagist composer https://mirrors.aliyun.com/composer/
-    # 移除废弃包并安装 symfony/mailer
-    docker exec php composer remove paypal/rest-api-sdk-php swiftmailer/swiftmailer -d /var/www/html/dujiaoka
-    docker exec php composer require symfony/mailer -d /var/www/html/dujiaoka
-    # 安装依赖，优先使用 composer.lock
-    if [ -f /home/web/html/dujiaoka/composer.lock ]; then
-        docker exec php composer install --no-interaction --prefer-dist -d /var/www/html/dujiaoka
-    else
-        docker exec php composer update --no-interaction --prefer-dist -d /var/www/html/dujiaoka
-    fi
-    if [ $? -ne 0 ]; then
-        echo -e "${YELLOW}Composer 依赖安装失败，尝试安装 fakerphp/faker...${RESET}"
-        docker exec php composer require fakerphp/faker --dev --no-interaction -d /var/www/html/dujiaoka
-        if [ $? -ne 0 ]; then
-            echo -e "${RED}Composer 依赖安装失败，请检查 PHP 容器日志！运行 'docker logs php' 查看详情。${RESET}"
-            echo -e "${YELLOW}可能缺少 PHP 扩展或网络问题。尝试手动运行：${RESET}"
-            echo -e "${YELLOW}1. 检查已安装依赖：docker exec php composer show -d /var/www/html/dujiaoka${RESET}"
-            echo -e "${YELLOW}2. 手动安装 fakerphp/faker：docker exec php composer require fakerphp/faker --dev -d /var/www/html/dujiaoka${RESET}"
-            read -p "按回车键返回主菜单..."
-            continue
-        fi
-        # 再次尝试安装所有依赖
-        docker exec php composer install --no-interaction --prefer-dist -d /var/www/html/dujiaoka
-        if [ $? -ne 0 ]; then
-            echo -e "${RED}Composer 依赖安装失败，请检查 PHP 容器日志！运行 'docker logs php' 查看详情。${RESET}"
-            read -p "按回车键返回主菜单..."
-            continue
-        fi
-    fi
-    echo -e "${GREEN}Composer 依赖安装成功！${RESET}"
-
-    # 赋予权限
-    echo -e "${YELLOW}正在赋予目录权限...${RESET}"
-    docker exec nginx chmod -R 777 /var/www/html
-    docker exec php chmod -R 777 /var/www/html
-    if [ $? -ne 0 ]; then
-        echo -e "${RED}权限赋予失败，请检查 Docker 容器状态！运行 'docker ps' 查看详情。${RESET}"
-        read -p "按回车键返回主菜单..."
-        continue
-    fi
-
-    # 配置 .env 文件
-    echo -e "${YELLOW}正在配置 .env 文件...${RESET}"
-    cd /home/web/html/dujiaoka
-    cp .env.example .env
-    sed -i "s/DB_DATABASE=.*/DB_DATABASE=web/" .env
-    sed -i "s/DB_USERNAME=.*/DB_USERNAME=sinian/" .env
-    sed -i "s/DB_PASSWORD=.*/DB_PASSWORD=sinian1/" .env
-    sed -i "s/DB_HOST=.*/DB_HOST=mysql/" .env
-    sed -i "s/REDIS_HOST=.*/REDIS_HOST=redis/" .env
-    sed -i "s/REDIS_PORT=.*/REDIS_PORT=6379/" .env
-    if [ "$ENABLE_HTTPS" == "y" ] || [ "$ENABLE_HTTPS" == "Y" ]; then
-        sed -i "s/APP_URL=.*/APP_URL=https:\/\/$DOMAIN/" .env
-        sed -i "s/ADMIN_HTTPS=.*/ADMIN_HTTPS=true/" .env
-    else
-        sed -i "s/APP_URL=.*/APP_URL=http:\/\/$DOMAIN/" .env
-        sed -i "s/ADMIN_HTTPS=.*/ADMIN_HTTPS=false/" .env
-    fi
-    sed -i "s/APP_DEBUG=.*/APP_DEBUG=false/" .env
-    if [ $? -ne 0 ]; then
-        echo -e "${RED}.env 文件配置失败，请检查 /home/web/html/dujiaoka/.env 是否存在！${RESET}"
-        read -p "按回车键返回主菜单..."
-        continue
-    fi
-
-    # 重置 MySQL 数据库并更新用户
-    echo -e "${YELLOW}正在重置 MySQL 数据库并更新用户...${RESET}"
-    # 在 MySQL 容器内创建临时配置文件
-    docker exec mysql sh -c 'echo "[client]\nuser=root\npassword=webroot" > /tmp/my.cnf'
-    # 重置数据库
-    docker exec mysql mysql --defaults-file=/tmp/my.cnf -e "DROP DATABASE IF EXISTS web; CREATE DATABASE web;"
-    if [ $? -ne 0 ]; then
-        echo -e "${RED}MySQL 数据库重置失败，请检查 MySQL 容器日志！运行 'docker logs mysql' 查看详情。${RESET}"
-        echo -e "${YELLOW}手动排查命令：${RESET}"
-        echo -e "${YELLOW}1. 检查 MySQL 用户：docker exec mysql mysql -u root -pwebroot -e 'SELECT User, Host FROM mysql.user;'${RESET}"
-        echo -e "${YELLOW}2. 手动创建数据库：docker exec mysql mysql -u root -pwebroot -e 'DROP DATABASE IF EXISTS web; CREATE DATABASE web;'${RESET}"
-        read -p "按回车键返回主菜单..."
-        continue
-    fi
-    # 检查并更新 sinian 用户
-    docker exec mysql mysql --defaults-file=/tmp/my.cnf -e "SELECT User FROM mysql.user WHERE User='sinian' AND Host='%';" | grep -q sinian && docker exec mysql mysql --defaults-file=/tmp/my.cnf -e "ALTER USER 'sinian'@'%' IDENTIFIED BY 'sinian1'; FLUSH PRIVILEGES;" || docker exec mysql mysql --defaults-file=/tmp/my.cnf -e "CREATE USER 'sinian'@'%' IDENTIFIED BY 'sinian1'; GRANT ALL PRIVILEGES ON web.* TO 'sinian'@'%'; FLUSH PRIVILEGES;"
-    if [ $? -ne 0 ]; then
-        echo -e "${RED}MySQL 用户更新失败，请检查 MySQL 容器日志！运行 'docker logs mysql' 查看详情。${RESET}"
-        echo -e "${YELLOW}手动排查命令：${RESET}"
-        echo -e "${YELLOW}1. 检查 MySQL 用户：docker exec mysql mysql -u root -pwebroot -e 'SELECT User, Host FROM mysql.user;'${RESET}"
-        echo -e "${YELLOW}2. 手动创建用户：docker exec mysql mysql -u root -pwebroot -e \"CREATE USER 'sinian'@'%' IDENTIFIED BY 'sinian1'; GRANT ALL PRIVILEGES ON web.* TO 'sinian'@'%'; FLUSH PRIVILEGES;\"${RESET}"
-        read -p "按回车键返回主菜单..."
-        continue
-    fi
-    # 清理临时配置文件
-    docker exec mysql rm -f /tmp/my.cnf
-    echo -e "${GREEN}MySQL 数据库和用户配置成功！${RESET}"
-
-    # 初始化独角数卡
-    echo -e "${YELLOW}正在初始化独角数卡...${RESET}"
-    # 清除 Laravel 缓存
-    docker exec php php /var/www/html/dujiaoka/artisan cache:clear
-    docker exec php php /var/www/html/dujiaoka/artisan config:clear
-    # 检查迁移文件
-    if [ -z "$(docker exec php ls /var/www/html/dujiaoka/database/migrations)" ]; then
-        echo -e "${RED}迁移文件缺失，请检查独角数卡源码完整性！${RESET}"
-        echo -e "${YELLOW}手动排查命令：${RESET}"
-        echo -e "${YELLOW}1. 检查迁移目录：docker exec php ls -l /var/www/html/dujiaoka/database/migrations${RESET}"
-        echo -e "${YELLOW}2. 重新下载源码：wget https://github.com/assimon/dujiaoka/releases/download/2.0.6/2.0.6-antibody.tar.gz${RESET}"
-        read -p "按回车键返回主菜单..."
-        continue
-    fi
-    docker exec php php /var/www/html/dujiaoka/artisan key:generate
-    if [ $? -ne 0 ]; then
-        echo -e "${RED}应用密钥生成失败，请检查 PHP 容器日志！运行 'docker logs php' 查看详情。${RESET}"
-        read -p "按回车键返回主菜单..."
-        continue
-    fi
-    docker exec php php /var/www/html/dujiaoka/artisan migrate:fresh --force
-    if [ $? -ne 0 ] || [ -n "$(docker exec php php /var/www/html/dujiaoka/artisan migrate:status --no-ansi | grep 'Nothing to migrate')" ]; then
-        echo -e "${RED}数据库迁移失败或迁移文件为空！${RESET}"
-        echo -e "${YELLOW}手动排查命令：${RESET}"
-        echo -e "${YELLOW}1. 检查迁移文件：docker exec php ls -l /var/www/html/dujiaoka/database/migrations${RESET}"
-        echo -e "${YELLOW}2. 检查迁移状态：docker exec php php /var/www/html/dujiaoka/artisan migrate:status${RESET}"
-        echo -e "${YELLOW}3. 手动运行迁移：docker exec php php /var/www/html/dujiaoka/artisan migrate:fresh --force${RESET}"
-        read -p "按回车键返回主菜单..."
-        continue
-    fi
-    docker exec php php /var/www/html/dujiaoka/artisan db:seed --force
-    if [ $? -ne 0 ]; then
-        echo -e "${RED}独角数卡初始化失败，请检查 MySQL、Redis 或 Composer 依赖！${RESET}"
-        echo -e "${YELLOW}手动排查命令：${RESET}"
-        echo -e "${YELLOW}1. 检查 MySQL 日志：docker logs mysql${RESET}"
-        echo -e "${YELLOW}2. 检查 Redis 日志：docker logs redis${RESET}"
-        echo -e "${YELLOW}3. 检查 PHP 日志：docker logs php${RESET}"
-        echo -e "${YELLOW}4. 检查 Composer 依赖：docker exec php composer show -d /var/www/html/dujiaoka${RESET}"
-        echo -e "${YELLOW}5. 手动运行初始化：docker exec php php /var/www/html/dujiaoka/artisan migrate:fresh --force${RESET}"
-        echo -e "${YELLOW}6. 手动运行种子填充：docker exec php php /var/www/html/dujiaoka/artisan db:seed --force${RESET}"
-        read -p "按回车键返回主菜单..."
-        continue
-    fi
-
-    # 完成提示
-    server_ip=$(curl -s4 ifconfig.me || echo "你的服务器IP")
-    PROTOCOL="http"
-    if [ "$ENABLE_HTTPS" == "y" ] || [ "$ENABLE_HTTPS" == "Y" ]; then
-        PROTOCOL="https"
-    fi
-    echo -e "${GREEN}独角数卡安装完成！${RESET}"
-    echo -e "${YELLOW}访问地址：${PROTOCOL}://$DOMAIN${RESET}"
-    echo -e "${YELLOW}后台路径：${PROTOCOL}://$DOMAIN/admin${RESET}"
-    echo -e "${YELLOW}默认管理员账号：admin${RESET}"
-    echo -e "${YELLOW}默认管理员密码：admin${RESET}"
-    echo -e "${YELLOW}请确保域名已解析到 $server_ip${RESET}"
-    read -p "按回车键返回主菜单..."
-    ;;
+            ;;
 esac
 done
 }
