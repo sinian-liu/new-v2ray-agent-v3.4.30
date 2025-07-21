@@ -1487,7 +1487,7 @@ EOF
     proxy_management
 fi
 read -p "按回车键返回主菜单..."
-            17)
+17)
                 # 安装 curl 和 wget
                 echo -e "${GREEN}正在安装 curl 和 wget ...${RESET}"
                 if ! command -v curl &> /dev/null; then
