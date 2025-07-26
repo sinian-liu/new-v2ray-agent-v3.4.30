@@ -1,3 +1,4 @@
+```bash
 #!/bin/bash
 
 # 日志输出到文件
@@ -19,17 +20,25 @@ DB_PASS=$(openssl rand -base64 12)
 APP_NAME="独角数卡"
 APP_KEY="base64:rKwRuI6eRpCw/9e2XZKKGj/Yx3iZy5e7+FQ6+aQl8Zg="
 PORT="8090"
+USE_DOMAIN="n"
+SERVER_IP=$(curl -s ip.sb)
 
-# 提示用户输入信息
-read -p "请输入你的域名（例如：shop.example.com）: " DOMAIN
-if ! [[ $DOMAIN =~ ^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]]; then
-    echo "无效的域名格式！"
-    exit 1
-fi
-read -p "请输入你的邮箱（用于 Let's Encrypt 证书通知）： " EMAIL
-if [ -z "$EMAIL" ]; then
-    echo "邮箱不能为空！"
-    exit 1
+# 提示用户是否使用域名
+read -p "是否使用域名访问？(y/n，默认 n，使用 IP: $SERVER_IP): " USE_DOMAIN
+USE_DOMAIN=${USE_DOMAIN:-n}
+if [ "$USE_DOMAIN" = "y" ]; then
+    read -p "请输入你的域名（例如：shop.example.com）: " DOMAIN
+    if ! [[ $DOMAIN =~ ^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]]; then
+        echo "无效的域名格式！"
+        exit 1
+    fi
+    read -p "请输入你的邮箱（用于 Let's Encrypt 证书通知）： " EMAIL
+    if [ -z "$EMAIL" ]; then
+        echo "邮箱不能为空！"
+        exit 1
+    fi
+else
+    DOMAIN="$SERVER_IP"
 fi
 read -p "请输入外部端口（默认 8090，输入 0 使用 80 端口）： " INPUT_PORT
 if [ "$INPUT_PORT" != "0" ] && ! [[ $INPUT_PORT =~ ^[0-9]+$ ]] || [ "$INPUT_PORT" -lt 0 ] || [ "$INPUT_PORT" -gt 65535 ]; then
@@ -38,27 +47,33 @@ else
     [ "$INPUT_PORT" != "0" ] && PORT="$INPUT_PORT"
 fi
 
-# 检查域名解析
-if ! ping -c 1 $DOMAIN &> /dev/null; then
-    echo "警告：域名 $DOMAIN 未解析到当前服务器，请确保 DNS 设置正确！"
-    read -p "是否继续？(y/n): " CONTINUE
-    if [ "$CONTINUE" != "y" ]; then
-        exit 1
+# 检查域名解析（仅当使用域名时）
+if [ "$USE_DOMAIN" = "y" ]; then
+    if ! ping -c 1 $DOMAIN &> /dev/null; then
+        echo "警告：域名 $DOMAIN 未解析到当前服务器，请确保 DNS 设置正确！"
+        read -p "是否继续？(y/n): " CONTINUE
+        if [ "$CONTINUE" != "y" ]; then
+            exit 1
+        fi
     fi
 fi
 
-# 检查端口占用
+# 检查端口占用（使用 ss 或安装 net-tools）
+if ! command -v ss &> /dev/null && ! command -v netstat &> /dev/null; then
+    echo "安装 net-tools 以检查端口占用..."
+    apt update -y && apt install -y net-tools || { echo "安装 net-tools 失败！"; exit 1; }
+fi
 if [ "$PORT" = "80" ]; then
-    if netstat -tulnp | grep -q ":80 "; then
+    if ss -tuln | grep -q ":80 " || netstat -tuln | grep -q ":80 "; then
         echo "错误：80 端口已被占用！"
-        netstat -tulnp | grep ":80 "
+        ss -tuln | grep ":80 " || netstat -tuln | grep ":80 "
         echo "请释放 80 端口或选择其他端口。"
         exit 1
     fi
 else
-    if netstat -tulnp | grep -q ":$PORT "; then
+    if ss -tuln | grep -q ":$PORT " || netstat -tuln | grep -q ":$PORT "; then
         echo "错误：端口 $PORT 已被占用！"
-        netstat -tulnp | grep ":$PORT "
+        ss -tuln | grep ":$PORT " || netstat -tuln | grep ":$PORT "
         echo "请释放 $PORT 端口或选择其他端口。"
         exit 1
     fi
@@ -66,9 +81,9 @@ fi
 
 # 检查并安装依赖工具
 if ! command -v curl &> /dev/null || ! command -v docker &> /dev/null || ! command -v docker-compose &> /dev/null; then
-    echo "正在安装 curl、Docker 和 Docker Compose..."
+    echo "正在安装 curl、lsof、Docker 和 Docker Compose..."
     if [[ -f /etc/redhat-release ]]; then
-        yum install -y epel-release curl || { echo "安装 curl 失败！"; exit 1; }
+        yum install -y epel-release curl lsof || { echo "安装 curl 或 lsof 失败！"; exit 1; }
         curl -fsSL https://get.docker.com | sh || { echo "安装 Docker 失败！"; exit 1; }
         systemctl start docker
         systemctl enable docker
@@ -90,19 +105,27 @@ fi
 # 创建安装目录
 mkdir -p $INSTALL_DIR
 cd $INSTALL_DIR
-mkdir -p storage uploads mysql redis certbot/www letsencrypt
+mkdir -p storage uploads mysql redis
+if [ "$USE_DOMAIN" = "y" ]; then
+    mkdir -p certbot/www letsencrypt
+fi
 chmod -R 777 storage uploads
 touch env.conf
 chmod -R 777 env.conf
 
 # 创建 env.conf
 echo "正在创建 env.conf 文件..."
+if [ "$USE_DOMAIN" = "y" ]; then
+    APP_URL="https://${DOMAIN}"
+else
+    APP_URL="http://${DOMAIN}:${PORT}"
+fi
 cat > env.conf <<EOF
 APP_NAME=$APP_NAME
 APP_ENV=local
 APP_KEY=$APP_KEY
 APP_DEBUG=true
-APP_URL=https://${DOMAIN}
+APP_URL=$APP_URL
 
 LOG_CHANNEL=stack
 
@@ -126,12 +149,13 @@ QUEUE_CONNECTION=redis
 
 DUJIAO_ADMIN_LANGUAGE=zh_CN
 ADMIN_ROUTE_PREFIX=/admin
-ADMIN_HTTPS=true
+ADMIN_HTTPS=$([ "$USE_DOMAIN" = "y" ] && echo "true" || echo "false")
 EOF
 
-# 创建 Nginx 配置文件
-echo "正在创建 Nginx 配置文件..."
-cat > nginx.conf <<EOF
+# 创建 Nginx 配置文件（仅当使用域名时）
+if [ "$USE_DOMAIN" = "y" ]; then
+    echo "正在创建 Nginx 配置文件..."
+    cat > nginx.conf <<EOF
 server {
     listen 80;
     server_name $DOMAIN;
@@ -163,6 +187,23 @@ server {
     }
 }
 EOF
+else
+    echo "无域名模式，跳过 Nginx HTTPS 配置..."
+    cat > nginx.conf <<EOF
+server {
+    listen 80;
+    server_name _;
+    location / {
+        proxy_pass http://web:80;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        rewrite ^/(.*)$ /\$1 break;
+    }
+}
+EOF
+fi
 
 # 创建 Docker Compose 配置文件
 echo "正在创建 docker-compose.yml 文件..."
@@ -176,14 +217,26 @@ services:
       - INSTALL=true
     volumes:
       - ./env.conf:/dujiaoka/.env
-      - ./uploads:/dujiaoka/public/uploads
+      - ./Uploads:/dujiaoka/public/uploads
       - ./storage:/dujiaoka/storage
       - ./nginx.conf:/etc/nginx/conf.d/default.conf
+EOF
+if [ "$USE_DOMAIN" = "y" ]; then
+    cat >> docker-compose.yml <<EOF
       - ./letsencrypt:/etc/letsencrypt
       - ./certbot/www:/var/www/certbot
+EOF
+fi
+cat >> docker-compose.yml <<EOF
     ports:
       - $PORT:80
+EOF
+if [ "$USE_DOMAIN" = "y" ]; then
+    cat >> docker-compose.yml <<EOF
       - 443:443
+EOF
+fi
+cat >> docker-compose.yml <<EOF
     restart: always
     depends_on:
       - db
@@ -213,6 +266,9 @@ services:
     restart: always
     networks:
       - dujiaoka_network
+EOF
+if [ "$USE_DOMAIN" = "y" ]; then
+    cat >> docker-compose.yml <<EOF
 
   certbot:
     image: certbot/certbot:latest
@@ -220,9 +276,12 @@ services:
     volumes:
       - ./letsencrypt:/etc/letsencrypt
       - ./certbot/www:/var/www/certbot
-    entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew; sleep 12h & wait \${!}; done;'"
+    entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew; sleep 12h & wait \$\${!}; done;'"
     networks:
       - dujiaoka_network
+EOF
+fi
+cat >> docker-compose.yml <<EOF
 
 networks:
   dujiaoka_network:
@@ -236,10 +295,15 @@ cat docker-compose.yml
 # 验证 Docker Compose 配置
 docker-compose config || { echo "Docker Compose 配置文件格式错误！请检查 $INSTALL_DIR/docker-compose.yml"; exit 1; }
 
-# 获取 Let's Encrypt 证书
-echo "正在获取 Let's Encrypt 证书..."
-docker-compose up -d web || { echo "Web 服务启动失败！"; exit 1; }
-docker-compose run --rm certbot certonly --webroot --webroot-path /var/www/certbot --email $EMAIL --agree-tos --no-eff-email -d $DOMAIN || { echo "Let's Encrypt 证书获取失败！请检查域名解析或网络！"; exit 1; }
+# 获取 Let's Encrypt 证书（仅当使用域名时）
+if [ "$USE_DOMAIN" = "y" ]; then
+    echo "正在获取 Let's Encrypt 证书..."
+    docker-compose up -d web || { echo "Web 服务启动失败！"; exit 1; }
+    docker-compose run --rm certbot certonly --webroot --webroot-path /var/www/certbot --email $EMAIL --agree-tos --no-eff-email -d $DOMAIN || { echo "Let's Encrypt 证书获取失败！请检查域名解析或网络！"; exit 1; }
+else
+    echo "无域名模式，跳过 Let's Encrypt 证书申请..."
+    docker-compose up -d web || { echo "Web 服务启动失败！"; exit 1; }
+fi
 
 # 修改配置以禁用安装模式
 sed -i 's/INSTALL=true/INSTALL=false/' docker-compose.yml
@@ -251,15 +315,22 @@ docker-compose up -d || { echo "Docker Compose 启动失败！"; exit 1; }
 
 # 输出完成信息
 echo "独角数卡安装完成！"
-echo "请访问 https://${DOMAIN} 进行网页端安装配置。"
+if [ "$USE_DOMAIN" = "y" ]; then
+    echo "请访问 https://${DOMAIN} 进行网页端安装配置。"
+else
+    echo "请访问 http://${DOMAIN}:${PORT} 进行网页端安装配置。"
+fi
 echo "网页安装时，数据库 host 填 'db'，Redis 填 'redis'，端口保持默认 3306。"
-echo "安装完成后，访问后台：https://${DOMAIN}/admin"
+echo "安装完成后，访问后台：$( [ "$USE_DOMAIN" = "y" ] && echo "https://${DOMAIN}/admin" || echo "http://${DOMAIN}:${PORT}/admin" )"
 echo "默认账户：admin"
 echo "默认密码：admin"
 echo "数据库信息："
 echo "  数据库名：$DB_NAME"
 echo "  用户名：$DB_USER"
 echo "  密码：$DB_PASS"
-echo "Let's Encrypt 邮箱：$EMAIL"
+if [ "$USE_DOMAIN" = "y" ]; then
+    echo "Let's Encrypt 邮箱：$EMAIL"
+fi
 echo "日志文件：/var/log/dujiaoka_install.log"
 echo "请妥善保存以上信息，并立即修改默认账户密码！"
+```
