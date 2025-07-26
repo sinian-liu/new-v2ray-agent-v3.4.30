@@ -1,249 +1,169 @@
-import paramiko
+#!/bin/bash
 
-servers = [
+# 设置颜色
+GREEN='\033[0;32m'
+NC='\033[0m' # 无色
 
-    {"name": "美国", "hostname": "1.1.1.1", "port": 22, "username": "root", "password": "123456", "domain": "yuming.com"},   
-    {"name": "不丹", "hostname": "1.1.1.1", "port": 22, "username": "root", "password": "123456", "domain": "yuming.com"},   
-    {"name": "毛里求斯", "hostname": "1.1.1.1", "port": 22, "username": "root", "password": "123456", "domain": "yuming.com"},   
-    # 添加更多服务器
+echo -e "${GREEN}▶️ 开始独角数卡一键部署...${NC}"
 
-]
+# ======= 交互填写参数 =======
+read -p "请输入你的域名（如 shop.example.com）: " DOMAIN
+read -p "请输入你的邮箱（用于SSL证书注册）: " EMAIL
+read -p "设置数据库ROOT密码（默认：webroot）: " DB_ROOT
+DB_ROOT=${DB_ROOT:-webroot}
+read -p "设置数据库名（默认：web）: " DB_NAME
+DB_NAME=${DB_NAME:-web}
+read -p "设置数据库用户名（默认：kejilion）: " DB_USER
+DB_USER=${DB_USER:-kejilion}
+read -p "设置数据库用户密码（默认：kejilionYYDS）: " DB_PASS
+DB_PASS=${DB_PASS:-kejilionYYDS}
 
-# 定义更新操作
-def update_server(name, hostname, port, username, password, domain):
-    try:
+# ======= 更新系统 =======
+echo -e "${GREEN}📦 正在更新系统并安装依赖...${NC}"
+apt update -y && apt upgrade -y && apt install -y curl wget sudo socat tar
 
-        # 连接服务器
-        client = paramiko.SSHClient()
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        client.connect(hostname, port=port, username=username, password=password)
+# ======= 安装Docker =======
+echo -e "${GREEN}🐳 正在安装 Docker 和 Docker Compose...${NC}"
+curl -fsSL https://get.docker.com | sh
+curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+chmod +x /usr/local/bin/docker-compose
 
+# ======= 创建目录 =======
+echo -e "${GREEN}📁 创建目录结构...${NC}"
+mkdir -p /home/web/{html,mysql,certs,redis}
+touch /home/web/nginx.conf
+cd /home/web
 
-        print(f" {name} 更新")
-        stdin, stdout, stderr = client.exec_command("apt update -y && apt install -y curl wget sudo socat")
-        
-        print(f"正在更新:")
-        while not stdout.channel.exit_status_ready():
-            if stdout.channel.recv_ready():
-                print(stdout.channel.recv(1024).decode(), end="")
+# ======= 写入 docker-compose.yml =======
+echo -e "${GREEN}📝 写入 docker-compose.yml 文件...${NC}"
+cat > docker-compose.yml <<EOF
+version: '3.8'
 
-        # 检查执行状态
-        if stderr.channel.recv_exit_status() == 0:
-            print(f"更新成功")
-        else:
-            print(f"更新失败")
-        
-        print()
+services:
+  nginx:
+    image: nginx:1.22
+    container_name: nginx
+    restart: always
+    ports:
+      - 80:80
+      - 443:443
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf
+      - ./certs:/etc/nginx/certs
+      - ./html:/var/www/html
 
-        print(f"{name} 安装 Docker")
-        stdin, stdout, stderr = client.exec_command("curl -fsSL https://get.docker.com | sh")
+  php:
+    image: php:7.4.33-fpm
+    container_name: php
+    restart: always
+    volumes:
+      - ./html:/var/www/html
 
-        print(f"正在安装 Docker:")
-        while not stdout.channel.exit_status_ready():
-            if stdout.channel.recv_ready():
-                print(stdout.channel.recv(1024).decode(), end="")
+  mysql:
+    image: mysql:5.7.42
+    container_name: mysql
+    restart: always
+    volumes:
+      - ./mysql:/var/lib/mysql
+    environment:
+      - MYSQL_ROOT_PASSWORD=$DB_ROOT
+      - MYSQL_DATABASE=$DB_NAME
+      - MYSQL_USER=$DB_USER
+      - MYSQL_PASSWORD=$DB_PASS
 
-        # 检查执行状态
-        if stderr.channel.recv_exit_status() == 0:
-            print(f"安装 Docker 成功")
-        else:
-            print(f"安装 Docker 失败")
+  redis:
+    image: redis:latest
+    container_name: redis
+    restart: always
+    volumes:
+      - ./redis:/data
+EOF
 
-        print()
+# ======= 申请 SSL =======
+echo -e "${GREEN}🔐 正在申请 SSL 证书，请确保域名 $DOMAIN 已解析到本机IP${NC}"
+curl https://get.acme.sh | sh
+~/.acme.sh/acme.sh --register-account -m $EMAIL
+~/.acme.sh/acme.sh --issue -d $DOMAIN --standalone
 
-        print(f"{name} 安装 Docker Compose")
-        stdin, stdout, stderr = client.exec_command('curl -L "https://github.com/docker/compose/releases/download/v2.18.1/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose && chmod +x /usr/local/bin/docker-compose')
+~/.acme.sh/acme.sh --installcert -d $DOMAIN \
+  --key-file /home/web/certs/key.pem \
+  --fullchain-file /home/web/certs/cert.pem
 
-        print(f"正在安装 Docker Compose:")
-        while not stdout.channel.exit_status_ready():
-            if stdout.channel.recv_ready():
-                print(stdout.channel.recv(1024).decode(), end="")
+# ======= 写入 nginx.conf =======
+echo -e "${GREEN}📝 写入 NGINX 配置文件...${NC}"
+cat > /home/web/nginx.conf <<EOF
+events {
+    worker_connections 1024;
+}
 
-        # 检查执行状态
-        if stderr.channel.recv_exit_status() == 0:
-            print(f"安装 Docker Compose 成功")
-        else:
-            print(f"安装 Docker Compose 失败")
+http {
+    include       /etc/nginx/mime.types;
+    default_type  application/octet-stream;
+    sendfile        on;
+    keepalive_timeout  65;
+    client_max_body_size 1000m;
 
-        print()
+    server {
+        listen 80;
+        server_name $DOMAIN;
+        return 301 https://\$host\$request_uri;
+    }
 
+    server {
+        listen 443 ssl http2;
+        server_name $DOMAIN;
 
-        print(f"{name} 创建web目录")
-        stdin, stdout, stderr = client.exec_command("cd /home && mkdir -p web/html web/mysql web/certs web/redis && touch web/nginx.conf web/docker-compose.yml")
+        ssl_certificate /etc/nginx/certs/cert.pem;
+        ssl_certificate_key /etc/nginx/certs/key.pem;
 
-        while not stdout.channel.exit_status_ready():
-            if stdout.channel.recv_ready():
-                print(stdout.channel.recv(1024).decode(), end="")
+        root /var/www/html/dujiaoka/public/;
+        index index.php;
 
-        # 检查执行状态
-        if stderr.channel.recv_exit_status() == 0:
-            print(f"创建目录成功")
-        else:
-            print(f"创建目录失败")
+        try_files \$uri \$uri/ /index.php?\$query_string;
 
-        print()
+        location ~ \.php\$ {
+            fastcgi_pass php:9000;
+            fastcgi_index index.php;
+            fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
+            include fastcgi_params;
+        }
+    }
+}
+EOF
 
-        print(f"{name} 申请证书")
-        stdin, stdout, stderr = client.exec_command("curl https://get.acme.sh | sh && ~/.acme.sh/acme.sh --register-account -m xxxx@gmail.com && ~/.acme.sh/acme.sh --issue -d {} --standalone".format(domain))
-        print(f"正在申请中:")
-        while not stdout.channel.exit_status_ready():
-            if stdout.channel.recv_ready():
-                print(stdout.channel.recv(1024).decode(), end="")
+# ======= 下载源码 =======
+echo -e "${GREEN}📥 下载独角数卡源码...${NC}"
+cd /home/web/html
+wget https://github.com/assimon/dujiaoka/releases/download/2.0.6/2.0.6-antibody.tar.gz
+tar -zxvf 2.0.6-antibody.tar.gz
+rm 2.0.6-antibody.tar.gz
 
-        # 检查执行状态
-        if stderr.channel.recv_exit_status() == 0:
-            print(f"申请成功")
-        else:
-            print(f"申请失败")
+# ======= 启动容器 =======
+echo -e "${GREEN}🚀 启动 Docker 容器...${NC}"
+cd /home/web
+docker-compose up -d
 
-        print()
+# ======= 设置权限 =======
+echo -e "${GREEN}🔧 设置权限...${NC}"
+docker exec -it nginx chmod -R 777 /var/www/html
+docker exec -it php chmod -R 777 /var/www/html
 
-        print(f"{name} 下载证书")
-        stdin, stdout, stderr = client.exec_command("~/.acme.sh/acme.sh --installcert -d {} --key-file /home/web/certs/key.pem --fullchain-file /home/web/certs/cert.pem".format(domain))
-        while not stdout.channel.exit_status_ready():
-            if stdout.channel.recv_ready():
-                print(stdout.channel.recv(1024).decode(), end="")
+# ======= 安装 PHP 扩展 =======
+echo -e "${GREEN}📦 安装 PHP 扩展...${NC}"
+docker exec php apt update
+docker exec php apt install -y libmariadb-dev-compat libmariadb-dev libzip-dev libmagickwand-dev imagemagick
+docker exec php docker-php-ext-install pdo_mysql zip bcmath gd intl opcache
+docker exec php pecl install redis
+docker exec php sh -c 'echo "extension=redis.so" > /usr/local/etc/php/conf.d/docker-php-ext-redis.ini'
 
-        # 检查执行状态
-        if stderr.channel.recv_exit_status() == 0:
-            print(f"下载证书成功")
-        else:
-            print(f"下载证书失败")
+# ======= 重启 PHP 容器 =======
+docker restart php
 
-        print()        
+# ======= 查看 PHP 扩展情况 =======
+docker exec -it php php -m
 
-        print(f"{name} 配置nginx")
-        stdin, stdout, stderr = client.exec_command('wget -O /home/web/nginx.conf https://raw.githubusercontent.com/kejilion/nginx/main/nginx7.conf && sed -i "s/yuming.com/' + domain + '/g" /home/web/nginx.conf')
-        while not stdout.channel.exit_status_ready():
-            if stdout.channel.recv_ready():
-                print(stdout.channel.recv(1024).decode(), end="")
+# ======= 修正 HTTPS 后台访问报错（可选） =======
+echo -e "${GREEN}⚙️ 修复后台登录HTTPS报错（如有）...${NC}"
+sed -i 's/ADMIN_HTTPS=false/ADMIN_HTTPS=true/g' /home/web/html/dujiaoka/.env
 
-        # 检查执行状态
-        if stderr.channel.recv_exit_status() == 0:
-            print(f"配置成功")
-        else:
-            print(f"配置失败")
-
-        print()
-
-        print(f"{name} 配置docker-compose.yml")
-        stdin, stdout, stderr = client.exec_command('wget -O /home/web/docker-compose.yml https://raw.githubusercontent.com/kejilion/docker/main/LNMP-docker-compose-2.yml')
-        while not stdout.channel.exit_status_ready():
-            if stdout.channel.recv_ready():
-                print(stdout.channel.recv(1024).decode(), end="")
-
-        # 检查执行状态
-        if stderr.channel.recv_exit_status() == 0:
-            print(f"配置成功")
-        else:
-            print(f"配置失败")
-
-        print()
-
-        print(f"{name} 下载网站源码-发卡网站")
-        stdin, stdout, stderr = client.exec_command('cd /home/web/html && wget https://github.com/assimon/dujiaoka/releases/download/2.0.6/2.0.6-antibody.tar.gz && apt install -y tar && tar -zxvf 2.0.6-antibody.tar.gz && rm 2.0.6-antibody.tar.gz')
-        while not stdout.channel.exit_status_ready():
-            if stdout.channel.recv_ready():
-                print(stdout.channel.recv(1024).decode(), end="")
-
-        # 检查执行状态
-        if stderr.channel.recv_exit_status() == 0:
-            print(f"配置成功")
-        else:
-            print(f"配置失败")
-
-
-        print()
-
-        print(f"{name} 启动环境")
-        stdin, stdout, stderr = client.exec_command('cd /home/web && docker-compose up -d')
-        print(f"启动中:")
-        while not stdout.channel.exit_status_ready():
-            if stdout.channel.recv_ready():
-                print(stdout.channel.recv(1024).decode(), end="")
-
-        # 检查执行状态
-        if stderr.channel.recv_exit_status() == 0:
-            print(f"启动成功")
-        else:
-            print(f"启动失败")
-
-        print()
-
-
-        print(f"{name} 赋予文件权限")
-        stdin, stdout, stderr = client.exec_command('docker exec nginx chmod -R 777 /var/www/html && docker exec php chmod -R 777 /var/www/html')
-        while not stdout.channel.exit_status_ready():
-            if stdout.channel.recv_ready():
-                print(stdout.channel.recv(1024).decode(), end="")
-
-        # 检查执行状态
-        if stderr.channel.recv_exit_status() == 0:
-            print(f"赋予成功")
-        else:
-            print(f"赋予失败")
-
-        print()
-
-        print(f"{name} 安装PHP依赖")
-        stdin, stdout, stderr = client.exec_command('docker exec php apt update && docker exec php apt install -y libmariadb-dev-compat libmariadb-dev libzip-dev')
-        print(f"安装中:")
-        while not stdout.channel.exit_status_ready():
-            if stdout.channel.recv_ready():
-                print(stdout.channel.recv(1024).decode(), end="")
-
-        # 检查执行状态
-        if stderr.channel.recv_exit_status() == 0:
-            print(f"安装成功")
-        else:
-            print(f"安装失败")
-
-        print()
-
-        print(f"{name} 安装PHP扩展")
-        stdin, stdout, stderr = client.exec_command('docker exec php docker-php-ext-install pdo_mysql zip bcmath && docker exec php pecl install redis && docker exec php sh -c \'echo "extension=redis.so" > /usr/local/etc/php/conf.d/docker-php-ext-redis.ini\' && docker restart php')
-        print(f"安装中:")
-        while not stdout.channel.exit_status_ready():
-            if stdout.channel.recv_ready():
-                print(stdout.channel.recv(1024).decode(), end="")
-
-        # 检查执行状态
-        if stderr.channel.recv_exit_status() == 0:
-            print(f"安装成功")
-        else:
-            print(f"安装失败")
-
-        print()
-
-
-
-
-        print(f"搭建完成\nhttps://{domain}")
-        print()
-        print()
-
-
-        print()
-        print()
-
-        # 关闭 SSH 连接
-        client.close()
-
-
-    except Exception as e:
-        print(f"连接 {name} 失败")
-
-
-# 遍历服务器列表，逐一更新
-for server in servers:
-    name = server["name"]
-    hostname = server["hostname"]
-    port = server["port"]
-    username = server["username"]
-    password = server["password"]
-    domain = server["domain"]
-    update_server(name, hostname, port, username, password, domain)
-
-# 等待用户按下任意键后关闭窗口
-input("按任意键关闭窗口...")
-
+echo -e "${GREEN}✅ 独角数卡安装完成！请访问：https://$DOMAIN 进行后台配置。${NC}"
