@@ -173,13 +173,21 @@ server {
 }
 EOF
 
+# 获取独角数卡镜像版本
+echo "正在获取独角数卡镜像版本..."
+DUJIAOKA_VERSION=$(curl --retry 3 --retry-delay 5 -s https://hub.docker.com/v2/repositories/stilleshan/dujiaoka/tags | jq -r '.results[] | select(.name != "latest") | .name' | head -n 1)
+if [ -z "$DUJIAOKA_VERSION" ]; then
+    echo "无法获取独角数卡镜像版本，使用 latest"
+    DUJIAOKA_VERSION="latest"
+fi
+
 # 创建 Docker Compose 配置文件
 echo "正在创建 Docker Compose 配置文件..."
 cat > docker-compose.yml <<EOF
 version: "3"
 services:
   web:
-    image: stilleshan/dujiaoka
+    image: stilleshan/dujiaoka:${DUJIAOKA_VERSION}
     container_name: dujiaoka_web
     environment:
       - INSTALL=true
