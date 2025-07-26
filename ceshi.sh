@@ -1,106 +1,100 @@
 #!/bin/bash
 set -e
 
-# 变量区
-DOMAIN=""
-EMAIL=""
-DEPLOY_DIR="/home/web/html/dujiaoka"
-MYSQL_ROOT_PASS="sinian"
-
-read -p "请输入你的域名（例如 example.com）: " DOMAIN
-read -p "请输入你的邮箱（用于申请 SSL）: " EMAIL
-
-echo "开始部署，目录：$DEPLOY_DIR"
-
-# 安装 Docker 和 Docker Compose（如果没有）
+# 1. 安装 Docker
 if ! command -v docker &> /dev/null; then
   echo "安装 Docker..."
-  apt-get update
-  apt-get install -y ca-certificates curl gnupg lsb-release
-  mkdir -p /etc/apt/keyrings
-  curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-  echo \
-    "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
-    $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
-  apt-get update
-  apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+  curl -fsSL https://get.docker.com | bash
+  systemctl start docker
+  systemctl enable docker
 fi
 
-# 创建目录
-mkdir -p $DEPLOY_DIR
-cd $DEPLOY_DIR
+# 2. 安装 Docker Compose v2
+if ! docker compose version &> /dev/null; then
+  echo "安装 Docker Compose v2..."
+  DOCKER_CONFIG=${DOCKER_CONFIG:-$HOME/.docker}
+  mkdir -p $DOCKER_CONFIG/cli-plugins
+  curl -SL https://github.com/docker/compose/releases/download/v2.38.2/docker-compose-linux-x86_64 -o $DOCKER_CONFIG/cli-plugins/docker-compose
+  chmod +x $DOCKER_CONFIG/cli-plugins/docker-compose
+fi
 
-# 下载源码
-echo "下载dujiaoka源码..."
-if [ ! -f "2.0.6-antibody.tar.gz" ]; then
+# 3. 创建目录
+WORKDIR=/home/web/html/dujiaoka
+mkdir -p /home/web/html
+cd /home/web/html
+
+# 4. 下载并解压源码
+echo "下载并解压 dujiaoka 源码..."
+if [ ! -d "$WORKDIR" ] || [ -z "$(ls -A $WORKDIR)" ]; then
   wget -q https://github.com/assimon/dujiaoka/releases/download/2.0.6/2.0.6-antibody.tar.gz
+  apt-get update && apt-get install -y tar
+  mkdir -p $WORKDIR
+  tar -zxvf 2.0.6-antibody.tar.gz -C $WORKDIR --strip-components=1
+  rm 2.0.6-antibody.tar.gz
+else
+  echo "$WORKDIR 目录已存在且不为空，跳过源码下载"
 fi
-tar -zxf 2.0.6-antibody.tar.gz
-rm 2.0.6-antibody.tar.gz
 
-# 写docker-compose.yml
-cat > ../docker-compose.yml <<EOF
-version: '3.8'
-
+# 5. 写 docker-compose.yml
+cat > $WORKDIR/docker-compose.yml <<EOF
+version: "3.9"
 services:
-  nginx:
-    image: nginx:alpine
-    container_name: dujiaoka-nginx
-    ports:
-      - "80:80"
+  db:
+    image: mysql:5.7
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: sinian
+      MYSQL_DATABASE: dujiaoka
+      MYSQL_USER: dujiaoka_user
+      MYSQL_PASSWORD: sinian
     volumes:
-      - ./html/dujiaoka:/var/www/html
-      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf
-    depends_on:
-      - php
+      - dbdata:/var/lib/mysql
+    networks:
+      - dujiaoka-net
+
+  redis:
+    image: redis:alpine
+    restart: always
     networks:
       - dujiaoka-net
 
   php:
-    build: ./php
-    container_name: dujiaoka-php
+    build:
+      context: $WORKDIR/php
+      dockerfile: Dockerfile
     volumes:
-      - ./html/dujiaoka:/var/www/html
+      - $WORKDIR:/var/www/html
     depends_on:
       - db
       - redis
     networks:
       - dujiaoka-net
 
-  db:
-    image: mysql:5.7
-    container_name: dujiaoka-db
-    environment:
-      MYSQL_ROOT_PASSWORD: $MYSQL_ROOT_PASS
-      MYSQL_DATABASE: dujiaoka
-      MYSQL_USER: dujiaoka
-      MYSQL_PASSWORD: $MYSQL_ROOT_PASS
-    volumes:
-      - ./mysql:/var/lib/mysql
+  nginx:
+    image: nginx:alpine
     ports:
-      - "3306:3306"
+      - "80:80"
+    volumes:
+      - $WORKDIR:/var/www/html
+      - $WORKDIR/nginx/default.conf:/etc/nginx/conf.d/default.conf
+    depends_on:
+      - php
     networks:
       - dujiaoka-net
 
-  redis:
-    image: redis:alpine
-    container_name: dujiaoka-redis
-    ports:
-      - "6379:6379"
-    networks:
-      - dujiaoka-net
+volumes:
+  dbdata:
 
 networks:
   dujiaoka-net:
-    driver: bridge
 EOF
 
-# 写 Nginx 配置
-mkdir -p ../nginx
-cat > ../nginx/default.conf <<EOF
+# 6. 写 nginx 配置
+mkdir -p $WORKDIR/nginx
+cat > $WORKDIR/nginx/default.conf <<EOF
 server {
     listen 80;
-    server_name $DOMAIN;
+    server_name localhost;
 
     root /var/www/html/public;
     index index.php index.html index.htm;
@@ -122,29 +116,28 @@ server {
 }
 EOF
 
-# 创建 PHP Dockerfile，安装扩展
-mkdir -p $DEPLOY_DIR/php
-cat > $DEPLOY_DIR/php/Dockerfile <<EOF
+# 7. 准备 php Dockerfile
+mkdir -p $WORKDIR/php
+cat > $WORKDIR/php/Dockerfile <<EOF
 FROM php:8.1-fpm
 
-RUN apt-get update && apt-get install -y libzip-dev libpng-dev libfreetype6-dev libjpeg-dev libonig-dev \
-    && docker-php-ext-configure zip \
-    && docker-php-ext-install zip gd bcmath pdo pdo_mysql mbstring
+RUN apt-get update && apt-get install -y \
+    libzip-dev libpng-dev libfreetype6-dev libjpeg-dev libonig-dev zip unzip git \
+    && docker-php-ext-configure gd --with-freetype --with-jpeg \
+    && docker-php-ext-install gd zip bcmath pdo_mysql mbstring
 
 WORKDIR /var/www/html
 EOF
 
-# 启动容器
-cd ..
-echo "启动容器..."
+# 8. 启动服务
+cd $WORKDIR
 docker compose up -d --build
 
-# 等待PHP容器启动
-echo "等待 PHP 容器启动..."
+# 9. 等待数据库启动
+echo "等待数据库启动，10秒后执行 composer 安装..."
 sleep 10
 
-# 在php容器内执行composer install
-echo "安装 Laravel 依赖..."
-docker exec -it dujiaoka-php bash -c "cd /var/www/html && php -r \"copy('https://getcomposer.org/installer', 'composer-setup.php');\" && php composer-setup.php && php -r \"unlink('composer-setup.php');\" && php composer.phar install --no-dev --optimize-autoloader"
+# 10. 运行 composer install
+docker exec -it $(docker ps -qf "name=php") sh -c "cd /var/www/html && php composer.phar install --no-dev --optimize-autoloader"
 
-echo "安装完成！请访问 http://$DOMAIN"
+echo "部署完成！请访问 http://服务器IP/ 查看。"
