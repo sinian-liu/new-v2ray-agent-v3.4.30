@@ -13,9 +13,9 @@ read -p "设置数据库ROOT密码（默认：webroot）: " DB_ROOT
 DB_ROOT=${DB_ROOT:-webroot}
 read -p "设置数据库名（默认：web）: " DB_NAME
 DB_NAME=${DB_NAME:-web}
-read -p "设置数据库用户名（默认：kejilion）: " DB_USER
+read -p "设置数据库用户名（默认：sinian）: " DB_USER
 DB_USER=${DB_USER:-kejilion}
-read -p "设置数据库用户密码（默认：kejilionYYDS）: " DB_PASS
+read -p "设置数据库用户密码（默认：sinian）: " DB_PASS
 DB_PASS=${DB_PASS:-kejilionYYDS}
 
 # ======= 更新系统 =======
