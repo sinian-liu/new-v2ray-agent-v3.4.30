@@ -9,9 +9,9 @@ echo -e "${GREEN}▶️ 开始独角数卡一键部署...${NC}"
 # ======= 交互填写参数 =======
 read -p "请输入你的域名（如 shop.example.com）: " DOMAIN
 read -p "请输入你的邮箱（用于SSL证书注册）: " EMAIL
-read -p "设置数据库ROOT密码（默认：webroot）: " DB_ROOT
+read -p "设置数据库ROOT密码（默认：sinian）: " DB_ROOT
 DB_ROOT=${DB_ROOT:-webroot}
-read -p "设置数据库名（默认：web）: " DB_NAME
+read -p "设置数据库名（默认：sinian）: " DB_NAME
 DB_NAME=${DB_NAME:-web}
 read -p "设置数据库用户名（默认：sinian）: " DB_USER
 DB_USER=${DB_USER:-kejilion}
