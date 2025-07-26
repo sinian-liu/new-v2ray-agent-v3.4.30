@@ -1,10 +1,18 @@
 ```bash
-#!/bin/bash
+#!/usr/bin/env bash
 
 # 调试模式：显示错误和命令
 set -e
-exec > >(tee -a /var/log/dujiaoka_install.log) 2>&1
 echo "脚本开始执行：$(date)"
+
+# 检查 tee 是否存在
+if ! command -v tee &> /dev/null; then
+    echo "错误：tee 未安装，正在安装..."
+    apt update -y && apt install -y coreutils || { echo "安装 coreutils 失败！"; exit 1; }
+fi
+
+# 日志输出到文件
+exec > >(tee -a /var/log/dujiaoka_install.log) 2>&1
 
 # 检查是否为 root 用户
 if [ "$(id -u)" != "0" ]; then
@@ -16,10 +24,6 @@ fi
 if ! command -v curl &> /dev/null; then
     echo "错误：curl 未安装，正在安装..."
     apt update -y && apt install -y curl || { echo "安装 curl 失败！"; exit 1; }
-fi
-if ! command -v tee &> /dev/null; then
-    echo "错误：tee 未安装，正在安装..."
-    apt update -y && apt install -y coreutils || { echo "安装 coreutils 失败！"; exit 1; }
 fi
 
 # 设置变量
