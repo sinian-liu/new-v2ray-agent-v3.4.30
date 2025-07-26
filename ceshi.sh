@@ -1,15 +1,19 @@
 #!/bin/bash
 set -e
 
-# -------- 配置区（请修改以下域名和邮箱为你的实际值） --------
-DOMAIN="your-domain.com"
-EMAIL="admin@${DOMAIN}"
+# -------- 交互输入配置区 --------
+read -p "请输入你的域名（例如 example.com）: " DOMAIN
+read -p "请输入你的邮箱（用于申请SSL）: " EMAIL
+
 APP_DIR="/opt/dujiaoka"
 MYSQL_ROOT_PASSWORD="sinian"
 REDIS_PASSWORD=""
 APP_NAME="独角数卡"
 ADMIN_ROUTE_PREFIX="/admin"
-# ------------------------------------------------------------------
+# -------------------------------
+
+echo "域名: $DOMAIN"
+echo "邮箱: $EMAIL"
 
 echo "=== 1. 检测系统类型 ==="
 if [ -f /etc/redhat-release ]; then
