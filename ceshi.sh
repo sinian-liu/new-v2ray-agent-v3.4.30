@@ -1,154 +1,115 @@
 #!/bin/bash
 set -e
 
-# -------- 交互输入配置区 --------
-read -p "请输入你的域名（例如 example.com）: " DOMAIN
-read -p "请输入你的邮箱（用于申请SSL）: " EMAIL
+echo "请输入你的域名（例如 example.com）:"
+read DOMAIN
+
+echo "请输入你的邮箱（用于申请SSL）:"
+read EMAIL
 
 APP_DIR="/opt/dujiaoka"
 MYSQL_ROOT_PASSWORD="sinian"
 REDIS_PASSWORD=""
-APP_NAME="独角数卡"
 ADMIN_ROUTE_PREFIX="/admin"
-# -------------------------------
 
-echo "域名: $DOMAIN"
-echo "邮箱: $EMAIL"
-
-echo "=== 1. 检测系统类型 ==="
-if [ -f /etc/redhat-release ]; then
-  OS="centos"
-elif [ -f /etc/debian_version ]; then
-  OS="debian"
+echo "=== 1. 检测系统 ==="
+if [ -f /etc/debian_version ]; then
+  SYSTEM="debian"
+elif [ -f /etc/redhat-release ]; then
+  SYSTEM="centos"
 else
-  echo "不支持的操作系统，脚本仅支持Debian/Ubuntu/CentOS"
+  echo "暂不支持该系统"
   exit 1
 fi
 
-echo "=== 2. 安装Docker和docker-compose ==="
+echo "=== 2. 安装 Docker 和 docker-compose ==="
 if ! command -v docker >/dev/null 2>&1; then
-  curl -fsSL https://get.docker.com | sh
+  if [ "$SYSTEM" == "debian" ]; then
+    curl -fsSL https://get.docker.com | bash
+  elif [ "$SYSTEM" == "centos" ]; then
+    curl -fsSL https://get.docker.com | bash
+  fi
 fi
 
-systemctl enable docker --now
+systemctl enable docker && systemctl start docker
 
-if ! command -v docker-compose >/dev/null 2>&1; then
-  DOCKER_COMPOSE_VER=$(curl -s https://api.github.com/repos/docker/compose/releases/latest | grep "tag_name" | head -1 | awk -F '"' '{print $4}')
-  curl -fsSL "https://github.com/docker/compose/releases/download/${DOCKER_COMPOSE_VER}/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-  chmod +x /usr/local/bin/docker-compose
-fi
+echo "=== 3. 创建目录并下载源码 ==="
+mkdir -p $APP_DIR
+cd $APP_DIR
 
-echo "=== 3. 创建目录及权限 ==="
-mkdir -p ${APP_DIR}/{dujiaoka,mysql_data,redis_data,storage,uploads,certs}
-chmod -R 777 ${APP_DIR}/storage ${APP_DIR}/uploads
+# 下载并解压独角数卡源码
+wget https://github.com/assimon/dujiaoka/releases/download/2.0.6/2.0.6-antibody.tar.gz
+apt-get update && apt-get install -y tar
+tar -zxvf 2.0.6-antibody.tar.gz
+rm -f 2.0.6-antibody.tar.gz
 
-echo "=== 4. 下载独角数卡源码 ==="
-if [ ! -d "${APP_DIR}/dujiaoka" ] || [ -z "$(ls -A ${APP_DIR}/dujiaoka)" ]; then
-  LATEST_VER=$(curl -s https://api.github.com/repos/assimon/dujiaoka/releases/latest | grep "tag_name" | head -1 | awk -F '"' '{print $4}')
-  wget -qO ${APP_DIR}/dujiaoka.tar.gz "https://github.com/assimon/dujiaoka/releases/download/${LATEST_VER}/${LATEST_VER}.tar.gz"
-  tar -zxf ${APP_DIR}/dujiaoka.tar.gz -C ${APP_DIR}
-  rm -f ${APP_DIR}/dujiaoka.tar.gz
-fi
-
-echo "=== 5. 生成 .env 文件 ==="
-cat > ${APP_DIR}/dujiaoka/.env <<EOF
-APP_NAME=${APP_NAME}
-APP_ENV=production
-APP_KEY=
-APP_DEBUG=false
-APP_URL=https://${DOMAIN}
-
-LOG_CHANNEL=stack
-
-DB_CONNECTION=mysql
-DB_HOST=db
-DB_PORT=3306
-DB_DATABASE=dujiaoka
-DB_USERNAME=root
-DB_PASSWORD=${MYSQL_ROOT_PASSWORD}
-
-REDIS_HOST=redis
-REDIS_PASSWORD=
-REDIS_PORT=6379
-
-BROADCAST_DRIVER=log
-SESSION_DRIVER=file
-SESSION_LIFETIME=120
-
-CACHE_DRIVER=redis
-QUEUE_CONNECTION=redis
-
-ADMIN_ROUTE_PREFIX=${ADMIN_ROUTE_PREFIX}
-ADMIN_HTTPS=true
-EOF
-
-echo "=== 6. 生成 docker-compose.yml ==="
-cat > ${APP_DIR}/docker-compose.yml <<EOF
-version: "3.8"
-
+echo "=== 4. 生成 docker-compose.yml ==="
+cat > $APP_DIR/docker-compose.yml <<EOF
+version: '3'
 services:
-  db:
-    image: mariadb:10.5
-    container_name: dujiaoka-mysql
+  mysql:
+    image: mysql:5.7
+    container_name: mysql
     restart: always
     environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_ROOT_PASSWORD: $MYSQL_ROOT_PASSWORD
       MYSQL_DATABASE: dujiaoka
+      MYSQL_USER: dujiaoka
+      MYSQL_PASSWORD: sinian
     volumes:
-      - ./mysql_data:/var/lib/mysql
+      - mysql_data:/var/lib/mysql
+    networks:
+      - dujiaoka-net
 
   redis:
-    image: redis:6-alpine
-    container_name: dujiaoka-redis
+    image: redis:latest
+    container_name: redis
     restart: always
-    command: redis-server --requirepass "${REDIS_PASSWORD}"
-    volumes:
-      - ./redis_data:/data
+    command: redis-server --requirepass "$REDIS_PASSWORD"
+    networks:
+      - dujiaoka-net
 
   php:
-    image: php:8.2-fpm
-    container_name: dujiaoka-php
-    restart: always
+    image: php:7.4-fpm
+    container_name: php
     volumes:
-      - ./dujiaoka:/var/www/dujiaoka
-      - ./storage:/var/www/dujiaoka/storage
-      - ./uploads:/var/www/dujiaoka/public/uploads
-    working_dir: /var/www/dujiaoka
+      - ./:/var/www/html
+    depends_on:
+      - mysql
+      - redis
+    networks:
+      - dujiaoka-net
 
   nginx:
-    image: nginx:stable-alpine
-    container_name: dujiaoka-nginx
-    restart: always
+    image: nginx:1.22
+    container_name: nginx
     ports:
       - "80:80"
       - "443:443"
     volumes:
-      - ./dujiaoka:/var/www/dujiaoka
-      - ./nginx.conf:/etc/nginx/conf.d/default.conf
-      - ./certs:/etc/nginx/certs
+      - ./:/var/www/html
+      - ./nginx/conf.d:/etc/nginx/conf.d
+    depends_on:
+      - php
+    networks:
+      - dujiaoka-net
+
+volumes:
+  mysql_data:
+
+networks:
+  dujiaoka-net:
 EOF
 
-echo "=== 7. 生成 nginx.conf ==="
-cat > ${APP_DIR}/nginx.conf <<EOF
+echo "=== 5. 配置 Nginx ==="
+mkdir -p $APP_DIR/nginx/conf.d
+cat > $APP_DIR/nginx/conf.d/dujiaoka.conf <<EOF
 server {
     listen 80;
-    server_name ${DOMAIN};
-    location /.well-known/acme-challenge/ {
-        root /var/www/dujiaoka/public;
-    }
-    location / {
-        return 301 https://\$host\$request_uri;
-    }
-}
-server {
-    listen 443 ssl http2;
-    server_name ${DOMAIN};
+    server_name $DOMAIN;
 
-    ssl_certificate /etc/nginx/certs/cert.pem;
-    ssl_certificate_key /etc/nginx/certs/key.pem;
-
-    root /var/www/dujiaoka/public;
-    index index.php index.html index.htm;
+    root /var/www/html/public;
+    index index.php index.html;
 
     location / {
         try_files \$uri \$uri/ /index.php?\$query_string;
@@ -157,31 +118,31 @@ server {
     location ~ \.php\$ {
         fastcgi_pass php:9000;
         fastcgi_index index.php;
-        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
         include fastcgi_params;
+        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
     }
 }
 EOF
 
-echo "=== 8. 申请 HTTPS 证书（acme.sh standalone 模式） ==="
-if ! command -v acme.sh >/dev/null 2>&1; then
-  curl https://get.acme.sh | sh
-fi
-~/.acme.sh/acme.sh --register-account -m "${EMAIL}" --server letsencrypt
-~/.acme.sh/acme.sh --issue -d ${DOMAIN} --standalone --force
-mkdir -p ${APP_DIR}/certs
-~/.acme.sh/acme.sh --install-cert -d ${DOMAIN} \
-  --key-file ${APP_DIR}/certs/key.pem \
-  --fullchain-file ${APP_DIR}/certs/cert.pem \
-  --reloadcmd "docker restart dujiaoka-nginx"
-
-echo "=== 9. 启动容器 ==="
-cd ${APP_DIR}
+echo "=== 6. 启动容器 ==="
 docker-compose up -d
 
-echo "=== 10. 生成 Laravel APP_KEY ==="
-sleep 10  # 等待容器启动
-docker exec dujiaoka-php php artisan key:generate
+echo "=== 7. 等待 MySQL 启动 ==="
+sleep 20
 
-echo "=== 安装完成 ==="
-echo "请确保 ${DOMAIN} 解析正确，浏览器访问 https://${DOMAIN} 即可进入独角数卡安装页面，点击安装。后台地址为 https://${DOMAIN}${ADMIN_ROUTE_PREFIX}"
+echo "=== 8. 运行 Laravel 依赖安装和配置 ==="
+docker exec php bash -c "cd /var/www/html && apt-get update && apt-get install -y unzip git && php -r \"copy('https://getcomposer.org/installer', 'composer-setup.php');\" && php composer-setup.php && php composer.phar install"
+docker exec php php /var/www/html/artisan key:generate
+docker exec php php /var/www/html/artisan config:cache
+
+echo "=== 9. 自动申请SSL证书（acme.sh） ==="
+if ! command -v acme.sh >/dev/null 2>&1; then
+  curl https://get.acme.sh | sh
+  ~/.acme.sh/acme.sh --issue -d $DOMAIN --standalone -m $EMAIL --force
+  ~/.acme.sh/acme.sh --install-cert -d $DOMAIN \
+    --key-file       $APP_DIR/ssl/$DOMAIN.key \
+    --fullchain-file $APP_DIR/ssl/$DOMAIN.cer \
+    --reloadcmd     "docker restart nginx"
+fi
+
+echo "安装完成！请打开浏览器访问 http://$DOMAIN 进行独角数卡安装界面点击安装。"
