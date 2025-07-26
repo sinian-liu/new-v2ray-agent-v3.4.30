@@ -1,41 +1,23 @@
 #!/bin/bash
 
-# 设置颜色
-GREEN='\033[0;32m'
-NC='\033[0m' # 无色
-
-echo -e "${GREEN}▶️ 开始独角数卡一键部署...${NC}"
-
-# ======= 交互填写参数 =======
 read -p "请输入你的域名（如 shop.example.com）: " DOMAIN
-read -p "请输入你的邮箱（用于SSL证书注册）: " EMAIL
-read -p "设置数据库ROOT密码（默认：webroot）: " DB_ROOT
-DB_ROOT=${DB_ROOT:-webroot}
-read -p "设置数据库名（默认：web）: " DB_NAME
-DB_NAME=${DB_NAME:-web}
-read -p "设置数据库用户名（默认：kejilion）: " DB_USER
-DB_USER=${DB_USER:-kejilion}
-read -p "设置数据库用户密码（默认：kejilionYYDS）: " DB_PASS
-DB_PASS=${DB_PASS:-kejilionYYDS}
+read -p "请输入你的 ACME 注册邮箱: " ACME_MAIL
 
-# ======= 更新系统 =======
-echo -e "${GREEN}📦 正在更新系统并安装依赖...${NC}"
-apt update -y && apt upgrade -y && apt install -y curl wget sudo socat tar
+# 更新系统和安装基础依赖
+apt update -y && apt upgrade -y && apt install -y curl wget sudo socat tar unzip
 
-# ======= 安装Docker =======
-echo -e "${GREEN}🐳 正在安装 Docker 和 Docker Compose...${NC}"
+# 安装 Docker 和 Docker Compose
 curl -fsSL https://get.docker.com | sh
 curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
 chmod +x /usr/local/bin/docker-compose
 
-# ======= 创建目录 =======
-echo -e "${GREEN}📁 创建目录结构...${NC}"
-mkdir -p /home/web/{html,mysql,certs,redis}
-touch /home/web/nginx.conf
+# 创建目录
+cd /home
+mkdir -p web/{html,mysql,certs,redis}
 cd /home/web
+touch nginx.conf docker-compose.yml
 
-# ======= 写入 docker-compose.yml =======
-echo -e "${GREEN}📝 写入 docker-compose.yml 文件...${NC}"
+# 写 docker-compose.yml
 cat > docker-compose.yml <<EOF
 version: '3.8'
 
@@ -46,10 +28,10 @@ services:
     restart: always
     ports:
       - 80:80
-      - 443:443
+      - 443:443      
     volumes:
       - ./nginx.conf:/etc/nginx/nginx.conf
-      - ./certs:/etc/nginx/certs
+      - ./certs:/etc/nginx/certs      
       - ./html:/var/www/html
 
   php:
@@ -66,10 +48,10 @@ services:
     volumes:
       - ./mysql:/var/lib/mysql
     environment:
-      - MYSQL_ROOT_PASSWORD=$DB_ROOT
-      - MYSQL_DATABASE=$DB_NAME
-      - MYSQL_USER=$DB_USER
-      - MYSQL_PASSWORD=$DB_PASS
+      - MYSQL_ROOT_PASSWORD=sinian
+      - MYSQL_DATABASE=sinian
+      - MYSQL_USER=sinian
+      - MYSQL_PASSWORD=sinian
 
   redis:
     image: redis:latest
@@ -79,19 +61,8 @@ services:
       - ./redis:/data
 EOF
 
-# ======= 申请 SSL =======
-echo -e "${GREEN}🔐 正在申请 SSL 证书，请确保域名 $DOMAIN 已解析到本机IP${NC}"
-curl https://get.acme.sh | sh
-~/.acme.sh/acme.sh --register-account -m $EMAIL
-~/.acme.sh/acme.sh --issue -d $DOMAIN --standalone
-
-~/.acme.sh/acme.sh --installcert -d $DOMAIN \
-  --key-file /home/web/certs/key.pem \
-  --fullchain-file /home/web/certs/cert.pem
-
-# ======= 写入 nginx.conf =======
-echo -e "${GREEN}📝 写入 NGINX 配置文件...${NC}"
-cat > /home/web/nginx.conf <<EOF
+# 写 nginx.conf
+cat > nginx.conf <<EOF
 events {
     worker_connections 1024;
 }
@@ -131,39 +102,70 @@ http {
 }
 EOF
 
-# ======= 下载源码 =======
-echo -e "${GREEN}📥 下载独角数卡源码...${NC}"
+# 安装 acme.sh 并申请证书
+curl https://get.acme.sh | sh
+~/.acme.sh/acme.sh --register-account -m $ACME_MAIL
+~/.acme.sh/acme.sh --issue -d $DOMAIN --standalone
+~/.acme.sh/acme.sh --installcert -d $DOMAIN \
+  --key-file /home/web/certs/key.pem \
+  --fullchain-file /home/web/certs/cert.pem
+
+# 下载独角数卡源码
 cd /home/web/html
 wget https://github.com/assimon/dujiaoka/releases/download/2.0.6/2.0.6-antibody.tar.gz
 tar -zxvf 2.0.6-antibody.tar.gz
 rm 2.0.6-antibody.tar.gz
 
-# ======= 启动容器 =======
-echo -e "${GREEN}🚀 启动 Docker 容器...${NC}"
+# 写 .env 文件
+cat > /home/web/html/dujiaoka/.env <<EOF
+APP_NAME=独角数卡
+APP_ENV=production
+APP_DEBUG=false
+APP_LOG_LEVEL=debug
+APP_URL=https://$DOMAIN
+
+DB_CONNECTION=mysql
+DB_HOST=mysql
+DB_PORT=3306
+DB_DATABASE=sinian
+DB_USERNAME=sinian
+DB_PASSWORD=sinian
+
+BROADCAST_DRIVER=log
+CACHE_DRIVER=file
+QUEUE_CONNECTION=sync
+SESSION_DRIVER=file
+SESSION_LIFETIME=120
+
+REDIS_HOST=redis
+REDIS_PASSWORD=null
+REDIS_PORT=6379
+
+ADMIN_HTTPS=true
+EOF
+
+# 启动容器
 cd /home/web
 docker-compose up -d
 
-# ======= 设置权限 =======
-echo -e "${GREEN}🔧 设置权限...${NC}"
+# 设置权限
 docker exec -it nginx chmod -R 777 /var/www/html
 docker exec -it php chmod -R 777 /var/www/html
 
-# ======= 安装 PHP 扩展 =======
-echo -e "${GREEN}📦 安装 PHP 扩展...${NC}"
+# 安装 PHP 扩展
 docker exec php apt update
 docker exec php apt install -y libmariadb-dev-compat libmariadb-dev libzip-dev libmagickwand-dev imagemagick
 docker exec php docker-php-ext-install pdo_mysql zip bcmath gd intl opcache
 docker exec php pecl install redis
 docker exec php sh -c 'echo "extension=redis.so" > /usr/local/etc/php/conf.d/docker-php-ext-redis.ini'
 
-# ======= 重启 PHP 容器 =======
+# 重启 PHP 容器
 docker restart php
 
-# ======= 查看 PHP 扩展情况 =======
-docker exec -it php php -m
+# 生成 APP_KEY
+docker exec php php /var/www/html/dujiaoka/artisan key:generate
 
-# ======= 修正 HTTPS 后台访问报错（可选） =======
-echo -e "${GREEN}⚙️ 修复后台登录HTTPS报错（如有）...${NC}"
-sed -i 's/ADMIN_HTTPS=false/ADMIN_HTTPS=true/g' /home/web/html/dujiaoka/.env
-
-echo -e "${GREEN}✅ 独角数卡安装完成！请访问：https://$DOMAIN 进行后台配置。${NC}"
+echo ""
+echo "✅ 独角数卡部署完成！请访问：https://$DOMAIN"
+echo "默认数据库信息：sinian / sinian / sinian"
+echo "安装页面打开后，直接点击【安装】按钮即可完成安装"
