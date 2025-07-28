@@ -1,157 +1,163 @@
 #!/bin/bash
 
-echo "===== 独角数卡 Docker 安装器 ====="
+# === 配置输入 ===
+echo "===== 独角数卡 Docker 安装器（修复版）====="
+read -p "站点名称 (APP_NAME) [dujiaoka]: " APP_NAME
+APP_NAME=${APP_NAME:-dujiaoka}
 
-# 获取用户输入
-read -p "站点名称 (APP_NAME) [dd]: " APP_NAME
-APP_NAME=${APP_NAME:-dd}
+read -p "域名 (不含 http) [localhost]: " SITE_URL
+SITE_URL=${SITE_URL:-localhost}
 
-read -p "域名 (不含 http) [localhost]: " APP_URL
-APP_URL=${APP_URL:-localhost}
+read -p "数据库名 [dujiaoka]: " DB_NAME
+DB_NAME=${DB_NAME:-dujiaoka}
 
-read -p "数据库名 [db]: " DB_DATABASE
-DB_DATABASE=${DB_DATABASE:-db}
+read -p "数据库用户名 [root]: " DB_USER
+DB_USER=${DB_USER:-root}
 
-read -p "数据库用户名 [root]: " DB_USERNAME
-DB_USERNAME=${DB_USERNAME:-root}
+read -p "数据库密码 [dujiaoka_pass]: " DB_PASS
+DB_PASS=${DB_PASS:-dujiaoka_pass}
 
-read -p "数据库密码: " DB_PASSWORD
+read -p "Redis 密码 (可留空): " REDIS_PASS
 
-read -p "Redis 密码 (可留空): " REDIS_PASSWORD
+read -p "安装路径 (默认 /home/web/html/web5): " INSTALL_DIR
+INSTALL_DIR=${INSTALL_DIR:-/home/web/html/web5}
 
-read -p "安装路径 (默认 /home/web/html/web5): " INSTALL_PATH
-INSTALL_PATH=${INSTALL_PATH:-/home/web/html/web5}
-
-# 安装依赖
-echo ">>> 检查并安装必要依赖..."
-apt update && apt install -y curl git sudo
-
-# 安装 Docker
-if ! command -v docker &>/dev/null; then
-  echo ">>> 安装 Docker..."
-  curl -fsSL https://get.docker.com | bash
+# === 安装 docker 和 docker-compose（如未安装） ===
+if ! command -v docker &> /dev/null; then
+  echo "安装 Docker..."
+  curl -fsSL https://get.docker.com | sh
 fi
 
-# 安装 Docker Compose 插件
-if ! docker compose version &>/dev/null; then
-  echo ">>> 安装 Docker Compose 插件..."
-  apt install docker-compose-plugin -y
+if ! command -v docker compose &> /dev/null; then
+  echo "安装 docker-compose 插件..."
+  apt install -y docker-compose-plugin
 fi
 
-# 创建目录
-mkdir -p "$INSTALL_PATH"
-cd "$INSTALL_PATH" || exit 1
+mkdir -p "$INSTALL_DIR"
+cd "$INSTALL_DIR" || exit
 
-# 下载源码
-echo ">>> 克隆独角数卡代码..."
-git clone https://github.com/assimon/dujiaoka.git dujiaoka
-cd dujiaoka || exit 1
+# === 克隆代码仓库 ===
+if [ -d "$INSTALL_DIR/dujiaoka" ]; then
+  echo "目录 dujiaoka 已存在，重命名为 dujiaoka.bak"
+  mv dujiaoka "dujiaoka.bak_$(date +%s)"
+fi
 
-# 创建必须目录
+git clone https://github.com/assimon/dujiaoka.git
+
+cd dujiaoka || exit
+
+# === 创建必要目录 ===
 mkdir -p public/uploads
-chmod -R 755 public/uploads
+chmod -R 777 public/uploads
 
-# 生成 .env
-cat >.env <<EOF
-APP_NAME=${APP_NAME}
-APP_URL=http://${APP_URL}
-APP_DEBUG=true
-
+# === 生成 .env 配置 ===
+cat > .env <<EOF
+APP_NAME="${APP_NAME}"
+APP_URL="http://${SITE_URL}"
 DB_CONNECTION=mysql
-DB_HOST=dujiaoka-mysql
+DB_HOST=db
 DB_PORT=3306
-DB_DATABASE=${DB_DATABASE}
-DB_USERNAME=${DB_USERNAME}
-DB_PASSWORD=${DB_PASSWORD}
-
-REDIS_HOST=dujiaoka-redis
-REDIS_PASSWORD=${REDIS_PASSWORD}
-REDIS_PORT=6379
+DB_DATABASE=${DB_NAME}
+DB_USERNAME=${DB_USER}
+DB_PASSWORD=${DB_PASS}
+REDIS_HOST=redis
+REDIS_PASSWORD=${REDIS_PASS}
+APP_DEBUG=true
 EOF
 
-# 生成 docker-compose.yml
-cat >../docker-compose.yml <<EOF
+# === docker-compose 文件 ===
+cat > docker-compose.yml <<EOF
 services:
-  dujiaoka-php:
-    image: sinian/dujiaoka-php:latest
+  php:
+    image: php:8.0-fpm
     container_name: dujiaoka-php
+    working_dir: /var/www/html
     volumes:
-      - ./dujiaoka:/var/www/html
-    depends_on:
-      - dujiaoka-mysql
-      - dujiaoka-redis
+      - ./:/var/www/html
+    networks:
+      - app_net
 
-  dujiaoka-nginx:
+  nginx:
     image: nginx:stable-alpine
     container_name: dujiaoka-nginx
     ports:
       - "80:80"
     volumes:
-      - ./dujiaoka:/var/www/html
       - ./nginx.conf:/etc/nginx/nginx.conf
+      - ./:/var/www/html
     depends_on:
-      - dujiaoka-php
+      - php
+    networks:
+      - app_net
 
-  dujiaoka-mysql:
+  db:
     image: mysql:5.7
     container_name: dujiaoka-mysql
     environment:
-      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD}
-      MYSQL_DATABASE: ${DB_DATABASE}
-      MYSQL_USER: ${DB_USERNAME}
-      MYSQL_PASSWORD: ${DB_PASSWORD}
+      MYSQL_ROOT_PASSWORD: ${DB_PASS}
+      MYSQL_DATABASE: ${DB_NAME}
+      MYSQL_USER: ${DB_USER}
+      MYSQL_PASSWORD: ${DB_PASS}
+    ports:
+      - "3306:3306"
     volumes:
       - mysql_data:/var/lib/mysql
+    networks:
+      - app_net
 
-  dujiaoka-redis:
+  redis:
     image: redis:alpine
     container_name: dujiaoka-redis
-    command: redis-server --requirepass ${REDIS_PASSWORD}
-    volumes:
-      - redis_data:/data
+    command: redis-server --requirepass "${REDIS_PASS}"
+    ports:
+      - "6379:6379"
+    networks:
+      - app_net
+
+networks:
+  app_net:
 
 volumes:
   mysql_data:
-  redis_data:
 EOF
 
-# 生成 nginx.conf
-cat >../nginx.conf <<EOF
-events { worker_connections 1024; }
-
+# === nginx 配置文件 ===
+cat > nginx.conf <<EOF
+events {}
 http {
     include       mime.types;
     default_type  application/octet-stream;
-
     sendfile        on;
-    keepalive_timeout 65;
 
     server {
-        listen 80;
-        server_name ${APP_URL};
+        listen       80;
+        server_name  localhost;
+        root   /var/www/html/public;
 
-        root /var/www/html/public;
         index index.php index.html index.htm;
 
         location / {
             try_files \$uri \$uri/ /index.php?\$query_string;
         }
 
-        location ~ \.php$ {
-            fastcgi_pass dujiaoka-php:9000;
-            fastcgi_index index.php;
-            fastcgi_param SCRIPT_FILENAME /var/www/html\$fastcgi_script_name;
+        location ~ \.php\$ {
             include fastcgi_params;
+            fastcgi_pass php:9000;
+            fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
+            fastcgi_index index.php;
+        }
+
+        location ~ /\.ht {
+            deny all;
         }
     }
 }
 EOF
 
-# 回到 docker-compose 根目录
-cd "$INSTALL_PATH" || exit 1
+# === 清除同名容器（如存在） ===
+docker rm -f dujiaoka-mysql dujiaoka-php dujiaoka-nginx dujiaoka-redis 2>/dev/null
 
-# 启动容器
-echo ">>> 启动 Docker 容器..."
+# === 启动服务 ===
 docker compose up -d
 
-echo "✅ 安装完成！请访问：http://${APP_URL} 继续设置独角数卡"
+echo "✅ 安装完成！请访问：http://${SITE_URL}"
