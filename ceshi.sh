@@ -3,6 +3,7 @@ set -e
 
 echo "开始安装 Docker 和 Docker Compose..."
 if ! command -v docker >/dev/null 2>&1; then
+  echo "检测到未安装 Docker，开始安装..."
   if [ -f /etc/redhat-release ]; then
     yum install -y yum-utils device-mapper-persistent-data lvm2
     yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
@@ -28,6 +29,7 @@ else
 fi
 
 if ! command -v docker-compose >/dev/null 2>&1; then
+  echo "检测到未安装 Docker Compose，开始安装..."
   DOCKER_COMPOSE_VER="v2.39.1"
   curl -L "https://github.com/docker/compose/releases/download/${DOCKER_COMPOSE_VER}/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
   chmod +x /usr/local/bin/docker-compose
@@ -41,7 +43,7 @@ WORKDIR="/opt/dujiaoka"
 mkdir -p "$WORKDIR"
 cd "$WORKDIR"
 
-echo "拉取独角数卡镜像 jiangjuhong/dujiaoka"
+echo "拉取独角数卡镜像 jiangjuhong/dujiaoka:latest"
 docker pull jiangjuhong/dujiaoka:latest
 
 cat > docker-compose.yml <<EOF
@@ -102,32 +104,27 @@ SESSION_DRIVER=file
 SESSION_LIFETIME=120
 EOF
 
-echo "请输入站点名称（默认 Dujiaoka）："
-read -r APP_NAME
+echo "请按提示输入站点相关配置，回车使用默认值"
+
+read -rp "站点名称 (默认 Dujiaoka): " APP_NAME
 APP_NAME=${APP_NAME:-Dujiaoka}
 
-echo "请输入站点域名（例：http://example.com，默认 http://localhost）："
-read -r APP_URL
+read -rp "站点域名 (例：http://example.com，默认 http://localhost): " APP_URL
 APP_URL=${APP_URL:-http://localhost}
 
-echo "请输入数据库名称（默认 dujiaoka）："
-read -r DB_DATABASE
+read -rp "数据库名称 (默认 dujiaoka): " DB_DATABASE
 DB_DATABASE=${DB_DATABASE:-dujiaoka}
 
-echo "请输入数据库用户名（默认 dujiaoka）："
-read -r DB_USERNAME
+read -rp "数据库用户名 (默认 dujiaoka): " DB_USERNAME
 DB_USERNAME=${DB_USERNAME:-dujiaoka}
 
-echo "请输入数据库密码（默认 dujiaoka_pass）："
-read -r DB_PASSWORD
+read -rp "数据库密码 (默认 dujiaoka_pass): " DB_PASSWORD
 DB_PASSWORD=${DB_PASSWORD:-dujiaoka_pass}
 
-echo "请输入MySQL root密码（默认 rootpassword）："
-read -r MYSQL_ROOT_PASSWORD
+read -rp "MySQL root密码 (默认 rootpassword): " MYSQL_ROOT_PASSWORD
 MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD:-rootpassword}
 
-echo "是否开启调试模式？(true/false，默认 false):"
-read -r APP_DEBUG
+read -rp "是否开启调试模式？(true/false，默认 false): " APP_DEBUG
 APP_DEBUG=${APP_DEBUG:-false}
 
 sed "s|APP_NAME=.*|APP_NAME=$APP_NAME|" .env.template | \
@@ -137,16 +134,19 @@ sed "s|DB_USERNAME=.*|DB_USERNAME=$DB_USERNAME|" | \
 sed "s|DB_PASSWORD=.*|DB_PASSWORD=$DB_PASSWORD|" | \
 sed "s|APP_DEBUG=.*|APP_DEBUG=$APP_DEBUG|" > .env
 
-sed -i "s/MYSQL_ROOT_PASSWORD: rootpassword/MYSQL_ROOT_PASSWORD: $MYSQL_ROOT_PASSWORD/" docker-compose.yml
-sed -i "s/MYSQL_DATABASE: dujiaoka/MYSQL_DATABASE: $DB_DATABASE/" docker-compose.yml
-sed -i "s/MYSQL_USER: dujiaoka/MYSQL_USER: $DB_USERNAME/" docker-compose.yml
-sed -i "s/MYSQL_PASSWORD: dujiaoka_pass/MYSQL_PASSWORD: $DB_PASSWORD/" docker-compose.yml
+sed -i "s/rootpassword/$MYSQL_ROOT_PASSWORD/" docker-compose.yml
+sed -i "s/dujiaoka/$DB_DATABASE/" docker-compose.yml
+sed -i "s/dujiaoka/$DB_USERNAME/" docker-compose.yml
+sed -i "s/dujiaoka_pass/$DB_PASSWORD/" docker-compose.yml
 
 echo "启动独角数卡服务..."
 docker-compose up -d
 
-echo "安装完成！请确保服务器端口 80 已开放，浏览器访问：$APP_URL"
-echo "首次访问可能需要进入容器执行以下命令进行数据库迁移和密钥生成："
+echo "安装完成！请确保服务器端口 80 已开放"
+echo "访问地址：$APP_URL"
+echo ""
+echo "首次访问可能需要进入容器执行以下命令进行初始化："
 echo "  docker exec -it dujiaoka php artisan key:generate"
 echo "  docker exec -it dujiaoka php artisan migrate --seed"
+echo ""
 echo "查看日志：docker logs dujiaoka"
