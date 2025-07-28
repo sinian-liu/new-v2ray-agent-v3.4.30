@@ -5,7 +5,6 @@ echo "✅ 开始安装 Docker 和 Docker Compose..."
 
 # 检测系统
 OS=$(grep '^ID=' /etc/os-release | cut -d= -f2 | tr -d '"')
-VERSION_ID=$(grep 'VERSION_ID=' /etc/os-release | cut -d= -f2 | tr -d '"')
 
 # 安装基础依赖
 if [[ $OS == "ubuntu" || $OS == "debian" ]]; then
@@ -33,28 +32,27 @@ fi
 
 docker --version
 docker-compose --version
-
 echo "✅ Docker 与 Compose 安装完成"
 
-# 创建目录
+# 创建项目目录
 mkdir -p /opt/dujiaoka && cd /opt/dujiaoka
 
-# 创建 .env 文件
+# 收集交互信息
+read -rp "请输入网站访问域名或服务器 IP（默认自动获取）: " CUSTOM_DOMAIN
+CUSTOM_DOMAIN=${CUSTOM_DOMAIN:-$(curl -s ipv4.ip.sb || curl -s ifconfig.me)}
+
+# 生成 .env 文件
 cat > .env <<EOF
 INSTALL=false
 APP_DEBUG=false
-APP_URL=http://$(curl -s ipv4.ip.sb || curl -s ifconfig.me)
+APP_URL=http://$CUSTOM_DOMAIN
 EOF
 
-# 提示用户是否要修改配置
-read -rp "❓ 是否要修改默认域名或配置文件 (.env)？[y/N]: " edit_env
-if [[ "$edit_env" =~ ^[Yy]$ ]]; then
-  nano .env
-fi
+echo "✅ .env 配置如下："
+cat .env
 
-# 创建 docker-compose.yml
+# 创建 docker-compose.yml 文件（无 version 字段）
 cat > docker-compose.yml <<EOF
-version: "3"
 services:
   web:
     image: stilleshan/dujiaoka
@@ -64,11 +62,11 @@ services:
     volumes:
       - ./uploads:/dujiaoka/public/uploads
       - ./storage:/dujiaoka/storage
-      - ./env:/dujiaoka/.env
+      - ./.env:/dujiaoka/.env
     restart: always
 EOF
 
-# 防火墙处理（如存在）
+# 开放防火墙端口
 if command -v ufw &>/dev/null; then
   ufw allow 80
 elif command -v firewall-cmd &>/dev/null; then
@@ -76,17 +74,13 @@ elif command -v firewall-cmd &>/dev/null; then
   firewall-cmd --reload
 fi
 
-# 创建 env 文件映射
-mkdir -p ./env
-cp .env ./env/.env
-
-# 启动容器
+# 启动服务
 docker-compose up -d
 
 IP=$(curl -s ipv4.ip.sb || curl -s ifconfig.me)
 
 echo ""
-echo "🎉 Dujiaoka 安装成功！"
-echo "📬 访问地址：http://$IP"
+echo "🎉 Dujiaoka 发卡系统已成功部署！"
+echo "📬 前台访问地址：http://$IP"
 echo "🔧 后台地址：http://$IP/admin"
-echo "👉 默认账户：admin（请登录后立即修改）"
+echo "👉 默认登录账号：admin（安装时设定，登录后请立即修改）"
