@@ -1,198 +1,197 @@
 #!/bin/bash
 set -e
 
-APP_ROOT="/home/web/html/web5"
-APP_CODE_DIR="$APP_ROOT/dujiaoka"
-DOCKER_COMPOSE_FILE="$APP_ROOT/docker-compose.yml"
-ENV_FILE="$APP_CODE_DIR/.env"
+# 1. 检测系统类型并安装基础工具
+if [ -f /etc/debian_version ]; then
+    PMT="apt-get -y"
+    UPDATE="apt-get update -y"
+elif [ -f /etc/redhat-release ]; then
+    PMT="yum -y"
+    UPDATE="yum makecache"
+else
+    echo "Unsupported OS"; exit 1
+fi
 
-MYSQL_ROOT_PASSWORD="root_pass_123"
-MYSQL_USER="dujiaoka"
-MYSQL_PASSWORD="dujiaoka_pass"
-MYSQL_DATABASE="dujiaoka"
+sudo $UPDATE
+sudo $PMT install curl git -y
 
-# 安装 Docker 和 Docker Compose（如未安装）
-install_docker() {
-  if command -v docker >/dev/null 2>&1 && command -v docker-compose >/dev/null 2>&1; then
-    echo "检测到已安装 Docker 和 Docker Compose，跳过安装。"
-  else
-    echo "开始安装 Docker 和 Docker Compose..."
-    curl -fsSL https://get.docker.com | sh
-    curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-    chmod +x /usr/local/bin/docker-compose
-    ln -sf /usr/local/bin/docker-compose /usr/bin/docker-compose
-    echo "Docker 与 Docker Compose 安装完成。"
-  fi
-}
+# 2. 安装 Docker（如果未安装）
+if ! command -v docker >/dev/null 2>&1; then
+    curl -fsSL https://get.docker.com -o get-docker.sh
+    sudo sh get-docker.sh
+fi
 
-# 安装 MySQL 容器（如未启动）
-install_mysql() {
-  if docker ps -q -f name=dujiaoka-mysql | grep -q .; then
-    echo "检测到 MySQL 容器已运行，跳过安装。"
-  else
-    echo "启动 MySQL 容器..."
-    docker run -d --name dujiaoka-mysql \
-      -e MYSQL_ROOT_PASSWORD="$MYSQL_ROOT_PASSWORD" \
-      -e MYSQL_USER="$MYSQL_USER" \
-      -e MYSQL_PASSWORD="$MYSQL_PASSWORD" \
-      -e MYSQL_DATABASE="$MYSQL_DATABASE" \
-      -v "$APP_ROOT/mysql:/var/lib/mysql" \
-      --restart unless-stopped \
-      mysql:5.7
-    echo "MySQL 容器启动完成。"
-  fi
-}
+# 3. 安装 Docker Compose（如果未安装）
+if ! (command -v docker-compose >/dev/null || docker compose version >/dev/null 2>&1); then
+    if [ -f /etc/debian_version ]; then
+        sudo apt-get update
+        sudo apt-get install -y docker-compose-plugin
+    else
+        sudo yum install -y docker-compose-plugin
+    fi
+fi
 
-# 下载独角数卡代码
-download_code() {
-  mkdir -p "$APP_ROOT"
-  cd "$APP_ROOT"
-  if [ -d "$APP_CODE_DIR" ]; then
-    echo "独角数卡代码目录已存在，跳过下载。"
-  else
-    echo "开始下载独角数卡代码..."
-    wget https://github.com/assimon/dujiaoka/releases/download/2.0.6/2.0.6-antibody.tar.gz
-    mkdir -p "$APP_CODE_DIR"
-    tar -zxvf 2.0.6-antibody.tar.gz -C "$APP_CODE_DIR" --strip-components=1
-    rm -f 2.0.6-antibody.tar.gz
-    echo "代码下载完成。"
-  fi
-}
+# 4. 交互式输入
+read -p "站点名称 (APP_NAME): " APP_NAME
+read -p "域名 (不含http)： " DOMAIN
+read -p "数据库名: " DB_NAME
+read -p "数据库用户名: " DB_USER
+read -s -p "数据库密码: " DB_PASS; echo
+read -s -p "Redis 密码 (可留空): " REDIS_PASS; echo
 
-# 生成 .env 配置文件
-generate_env() {
-  read -p "请输入站点名称（默认：Dujiaoka）: " APP_NAME
-  APP_NAME=${APP_NAME:-Dujiaoka}
+# 5. 设置安装路径
+read -p "安装路径 (默认 /home/web/html/web5): " INSTALL_PATH
+INSTALL_PATH=${INSTALL_PATH:-/home/web/html/web5}
+sudo mkdir -p "$INSTALL_PATH"
+sudo chown $(whoami):$(whoami) "$INSTALL_PATH"
+cd "$INSTALL_PATH"
 
-  read -p "请输入站点URL（默认：http://localhost）: " APP_URL
-  APP_URL=${APP_URL:-http://localhost}
+# 6. 检查并提示旧容器
+for cname in dujiaoka mysql redis dujiaoka-nginx; do
+    if docker ps -a --format '{{.Names}}' | grep -Eq "^${cname}$"; then
+        read -p "容器 '$cname' 已存在。是否删除旧容器并继续？[y/N] " yn
+        if [[ "$yn" =~ ^[Yy] ]]; then
+            sudo docker rm -f "$cname"
+        else
+            echo "跳过安装。"; exit 1
+        fi
+    fi
+done
 
-  read -p "请输入数据库名称（默认：$MYSQL_DATABASE）: " DB_DATABASE
-  DB_DATABASE=${DB_DATABASE:-$MYSQL_DATABASE}
+# 7. 获取代码
+if [ -d dujiaoka ]; then
+    read -p "目录 dujiaoka 已存在。是否删除后重新克隆？[y/N] " yn
+    if [[ "$yn" =~ ^[Yy] ]]; then
+        rm -rf dujiaoka
+    else
+        echo "已保留现有代码目录。"; exit 1
+    fi
+fi
+git clone https://github.com/assimon/dujiaoka.git dujiaoka
 
-  read -p "请输入数据库用户名（默认：$MYSQL_USER）: " DB_USERNAME
-  DB_USERNAME=${DB_USERNAME:-$MYSQL_USER}
-
-  read -p "请输入数据库密码（默认：$MYSQL_PASSWORD）: " DB_PASSWORD
-  DB_PASSWORD=${DB_PASSWORD:-$MYSQL_PASSWORD}
-
-  read -p "是否开启调试模式？(true/false，默认false): " APP_DEBUG
-  APP_DEBUG=${APP_DEBUG:-false}
-
-  cat > "$ENV_FILE" <<EOF
+# 8. 写入 .env 文件
+cat > dujiaoka/.env <<EOF
 APP_NAME=$APP_NAME
-APP_URL=$APP_URL
-APP_DEBUG=$APP_DEBUG
+APP_ENV=local
+APP_KEY=
+APP_DEBUG=false
+APP_URL=http://$DOMAIN
+
+LOG_CHANNEL=stack
 
 DB_CONNECTION=mysql
-DB_HOST=dujiaoka-mysql
+DB_HOST=mysql
 DB_PORT=3306
-DB_DATABASE=$DB_DATABASE
-DB_USERNAME=$DB_USERNAME
-DB_PASSWORD=$DB_PASSWORD
+DB_DATABASE=$DB_NAME
+DB_USERNAME=$DB_USER
+DB_PASSWORD=$DB_PASS
+
+REDIS_HOST=redis
+REDIS_PASSWORD=$REDIS_PASS
+REDIS_PORT=6379
+
+BROADCAST_DRIVER=log
+SESSION_DRIVER=file
+SESSION_LIFETIME=120
+CACHE_DRIVER=redis
+QUEUE_CONNECTION=redis
+DUJIAO_ADMIN_LANGUAGE=zh_CN
+ADMIN_ROUTE_PREFIX=/admin
 EOF
-  echo ".env 文件生成完成。"
+
+# 9. 设置目录权限:contentReference[oaicite:14]{index=14}
+chmod -R 777 dujiaoka/storage dujiaoka/bootstrap/cache dujiaoka/public/uploads
+
+# 10. 生成 nginx.conf
+cat > nginx.conf <<NGINX
+worker_processes 1;
+events { worker_connections 1024; }
+
+http {
+    include       /etc/nginx/mime.types;
+    default_type  application/octet-stream;
+    sendfile        on;
+    keepalive_timeout  65;
+    client_max_body_size 1000m;
+
+    server {
+        listen 80;
+        server_name $DOMAIN;
+
+        root /var/www/html/dujiaoka/public;
+        index index.php index.html;
+
+        try_files \$uri \$uri/ /index.php?\$query_string;
+
+        location ~ \.php$ {
+            fastcgi_pass   php:9000;
+            fastcgi_index  index.php;
+            fastcgi_param  SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
+            include        fastcgi_params;
+        }
+    }
 }
+NGINX
 
-# 生成docker-compose.yml
-generate_docker_compose() {
-  cat > "$DOCKER_COMPOSE_FILE" <<EOF
-version: '3.8'
+# 11. 生成 docker-compose.yml
+cat > docker-compose.yml <<EOF
+version: '3'
 services:
-  dujiaoka-php:
-    image: php:7.4-fpm
-    container_name: dujiaoka-php
-    volumes:
-      - ./dujiaoka:/var/www/html
-    working_dir: /var/www/html
-    depends_on:
-      - dujiaoka-mysql
-
-  dujiaoka-nginx:
-    image: nginx:stable-alpine
+  nginx:
+    image: nginx:latest
     container_name: dujiaoka-nginx
     ports:
       - "80:80"
     volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf
       - ./dujiaoka:/var/www/html
-      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
-    depends_on:
-      - dujiaoka-php
+    restart: always
 
-  dujiaoka-mysql:
+  php:
+    image: php:7.4-fpm
+    container_name: dujiaoka
+    volumes:
+      - ./dujiaoka:/var/www/html/dujiaoka
+    depends_on:
+      - mysql
+      - redis
+    restart: always
+
+  mysql:
     image: mysql:5.7
-    container_name: dujiaoka-mysql
-    restart: unless-stopped
+    container_name: mysql
     environment:
-      MYSQL_ROOT_PASSWORD: $MYSQL_ROOT_PASSWORD
-      MYSQL_DATABASE: $MYSQL_DATABASE
-      MYSQL_USER: $MYSQL_USER
-      MYSQL_PASSWORD: $MYSQL_PASSWORD
+      - MYSQL_ROOT_PASSWORD=$DB_PASS
+      - MYSQL_DATABASE=$DB_NAME
+      - MYSQL_USER=$DB_USER
+      - MYSQL_PASSWORD=$DB_PASS
     volumes:
       - ./mysql:/var/lib/mysql
+    restart: always
+
+  redis:
+    image: redis:alpine
+    container_name: redis
+    volumes:
+      - ./redis:/data
+    restart: always
 EOF
-  echo "docker-compose.yml 生成完成。"
-}
 
-# 生成简单 nginx 配置
-generate_nginx_conf() {
-  cat > "$APP_ROOT/nginx.conf" <<EOF
-server {
-  listen 80;
-  server_name localhost;
+# 12. 运行 Composer 安装依赖
+docker run --rm -v "$INSTALL_PATH/dujiaoka":/app composer install --ignore-platform-reqs --no-interaction
 
-  root /var/www/html/public;
-  index index.php index.html;
+# 13. 启动容器
+sudo docker-compose up -d
 
-  location / {
-    try_files \$uri \$uri/ /index.php?\$query_string;
-  }
+# 等待 MySQL 启动
+echo "正在等待数据库启动..."
+while ! sudo docker exec mysql mysqladmin ping -uroot -p"$DB_PASS" --silent; do
+    sleep 1
+done
 
-  location ~ \.php$ {
-    fastcgi_pass dujiaoka-php:9000;
-    fastcgi_index index.php;
-    include fastcgi_params;
-    fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
-  }
+# 14. Laravel 初始化
+sudo docker exec -i dujiaoka bash -c "cd /var/www/html/dujiaoka && php artisan key:generate --force"
+sudo docker exec -i dujiaoka bash -c "cd /var/www/html/dujiaoka && php artisan migrate --seed --force"
 
-  location ~ /\.ht {
-    deny all;
-  }
-}
-EOF
-  echo "nginx.conf 生成完成。"
-}
-
-# 启动容器
-start_containers() {
-  cd "$APP_ROOT"
-  docker-compose up -d
-  echo "容器启动完成。"
-}
-
-# 提示用户初始化数据库
-print_init_tips() {
-  echo
-  echo "独角数卡已启动！访问地址请打开：http://服务器IP 或 域名"
-  echo "首次运行请执行以下命令初始化数据库："
-  echo "docker exec -it dujiaoka-php bash"
-  echo "cd /var/www/html"
-  echo "php artisan key:generate"
-  echo "php artisan migrate --seed"
-  echo "初始化完成后即可访问后台。"
-  echo
-}
-
-# 主流程
-main() {
-  install_docker
-  download_code
-  generate_env
-  generate_nginx_conf
-  generate_docker_compose
-  install_mysql
-  start_containers
-  print_init_tips
-}
-
-main
+# 15. 完成提示
+echo "独角数卡部署完成！访问地址：http://$DOMAIN"
