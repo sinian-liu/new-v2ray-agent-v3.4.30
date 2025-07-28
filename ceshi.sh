@@ -3,24 +3,21 @@ set -e
 
 echo "✅ 开始安装 Docker 和 Docker Compose..."
 
-# 安装依赖并判断系统类型
 if command -v apt-get &>/dev/null; then
   apt-get update -y
-  apt-get install -y ca-certificates curl gnupg lsb-release
+  apt-get install -y ca-certificates curl git gnupg lsb-release
 elif command -v yum &>/dev/null; then
-  yum install -y ca-certificates curl gnupg2 redhat-lsb-core
+  yum install -y ca-certificates curl git gnupg2 redhat-lsb-core
 else
   echo "❌ 不支持的系统"
   exit 1
 fi
 
-# 安装 Docker（如果没装）
 if ! command -v docker &>/dev/null; then
   echo "🔧 安装 Docker..."
   curl -fsSL https://get.docker.com | sh
 fi
 
-# 安装 Docker Compose（如果没装）
 if ! command -v docker-compose &>/dev/null; then
   echo "🔧 安装 Docker Compose..."
   curl -L "https://github.com/docker/compose/releases/download/v2.39.1/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
@@ -29,16 +26,24 @@ fi
 
 echo "✅ Docker 与 Docker Compose 安装完成"
 
-# 准备安装目录
-INSTALL_DIR="/opt/dujiaoka"
-mkdir -p "$INSTALL_DIR"
-cd "$INSTALL_DIR"
+WORKDIR="/opt/dujiaoka"
+mkdir -p "$WORKDIR"
+cd "$WORKDIR"
 
-# 交互输入配置
-read -rp "请输入数据库名称（默认dujiaoka）: " DB_NAME
+# 克隆源码（如果存在则拉取更新）
+if [ -d "./dujiaoka" ]; then
+  cd dujiaoka
+  git pull
+else
+  git clone https://github.com/assimon/dujiaoka.git
+  cd dujiaoka
+fi
+
+# 交互填写配置
+read -rp "请输入数据库名称（默认 dujiaoka）: " DB_NAME
 DB_NAME=${DB_NAME:-dujiaoka}
 
-read -rp "请输入数据库用户名（默认root）: " DB_USER
+read -rp "请输入数据库用户名（默认 root）: " DB_USER
 DB_USER=${DB_USER:-root}
 
 while true; do
@@ -46,30 +51,28 @@ while true; do
   [[ -n "$DB_PASS" ]] && break
 done
 
-read -rp "请输入站点名称（默认独角数卡发卡系统）: " SITE_NAME
+read -rp "请输入站点名称（默认 独角数卡发卡系统）: " SITE_NAME
 SITE_NAME=${SITE_NAME:-独角数卡发卡系统}
 
-read -rp "请输入站点访问域名或IP（用于访问提示）: " DOMAIN
+read -rp "请输入访问域名或IP（用于访问提示）: " DOMAIN
 
-# 生成 .env 文件
-cat > .env <<EOF
-INSTALL=false
-APP_DEBUG=false
-APP_URL=http://$DOMAIN
-DB_HOST=db
-DB_PORT=3306
-DB_DATABASE=$DB_NAME
-DB_USERNAME=$DB_USER
-DB_PASSWORD=$DB_PASS
-APP_NAME="$SITE_NAME"
-EOF
+# 复制并修改 .env
+cp .env.example .env
+sed -i "s/^DB_DATABASE=.*/DB_DATABASE=$DB_NAME/" .env
+sed -i "s/^DB_USERNAME=.*/DB_USERNAME=$DB_USER/" .env
+sed -i "s/^DB_PASSWORD=.*/DB_PASSWORD=$DB_PASS/" .env
+sed -i "s/^APP_NAME=.*/APP_NAME=\"$SITE_NAME\"/" .env
+sed -i "s/^APP_URL=.*/APP_URL=http:\/\/$DOMAIN/" .env
+sed -i "s/^APP_DEBUG=.*/APP_DEBUG=false/" .env
+sed -i "s/^INSTALL=.*/INSTALL=false/" .env
 
-# 生成 docker-compose.yml
-cat > docker-compose.yml <<EOF
+# 生成 docker-compose.yml 文件
+cat > docker-compose.yml << EOF
 version: "3.8"
+
 services:
   dujiaoka:
-    image: jiangjuhong/dujiaoka:latest
+    build: .
     container_name: dujiaoka
     restart: always
     ports:
@@ -79,6 +82,7 @@ services:
     volumes:
       - ./uploads:/var/www/html/public/uploads
       - ./storage:/var/www/html/storage
+
   db:
     image: mysql:5.7
     container_name: dujiaoka-db
@@ -95,12 +99,12 @@ volumes:
   db_data:
 EOF
 
-echo "🚀 启动容器..."
-docker-compose up -d
+echo "🚀 正在构建并启动容器..."
+docker-compose up -d --build
 
 IP=$(curl -s https://ipinfo.io/ip || hostname -I | awk '{print $1}')
 
 echo ""
-echo "🎉 独角数卡已成功部署！"
-echo "🌐 访问前台: http://${DOMAIN:-$IP}"
+echo "🎉 独角数卡安装成功！"
+echo "🌐 前台访问: http://${DOMAIN:-$IP}"
 echo "🔧 管理后台: http://${DOMAIN:-$IP}/admin"
