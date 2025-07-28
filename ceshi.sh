@@ -1634,57 +1634,55 @@ while true; do
         return 0
     }
 
-1)
-    # 安装 Docker 环境
-    echo -e "${GREEN}正在安装 Docker 环境...${RESET}"
-    check_system
-    if [ "$SYSTEM" == "ubuntu" ] || [ "$SYSTEM" == "debian" ]; then
-        sudo apt update -y && sudo apt install -y curl ca-certificates gnupg lsb-release
-        sudo mkdir -p /etc/apt/keyrings
-        curl -fsSL https://download.docker.com/linux/$SYSTEM/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-        echo \
-        "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/$SYSTEM \
-        $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-        sudo apt update -y
-        sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-    elif [ "$SYSTEM" == "centos" ]; then
-        sudo yum install -y yum-utils
-        sudo yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
-        sudo yum install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
-    else
-        echo -e "${RED}不支持的系统类型，无法安装 Docker！${RESET}"
-        read -p "按回车键返回上一级..."
-        break
-    fi
+        1)
+            # 安装 Docker 环境
+            echo -e "${GREEN}正在安装 Docker 环境...${RESET}"
+            check_system
+            if [ "$SYSTEM" == "ubuntu" ] || [ "$SYSTEM" == "debian" ]; then
+                sudo apt update -y && sudo apt install -y curl ca-certificates gnupg lsb-release
+                sudo mkdir -p /etc/apt/keyrings
+                curl -fsSL https://download.docker.com/linux/$SYSTEM/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+                echo \
+                "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/$SYSTEM \
+                $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+                sudo apt update -y
+                sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+            elif [ "$SYSTEM" == "centos" ]; then
+                sudo yum install -y yum-utils
+                sudo yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+                sudo yum install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+            else
+                echo -e "${RED}不支持的系统类型，无法安装 Docker！${RESET}"
+                read -p "按回车键返回上一级..."
+                break
+            fi
 
-    # 启动 Docker 服务
-    sudo systemctl start docker
-    sudo systemctl enable docker
+            # 启动 Docker 服务
+            sudo systemctl start docker
+            sudo systemctl enable docker
 
-    # 检查 Docker 是否安装成功
-    if ! command -v docker &> /dev/null; then
-        echo -e "${RED}Docker 安装失败，请手动检查！${RESET}"
-        read -p "按回车键返回上一级..."
-        break
-    fi
+            # 检查 Docker 是否安装成功
+            if ! command -v docker &> /dev/null; then
+                echo -e "${RED}Docker 安装失败，请手动检查！${RESET}"
+                read -p "按回车键返回上一级..."
+                break
+            fi
 
-    # 安装 Docker Compose（二进制方式，兼容所有系统）
-    echo -e "${GREEN}正在安装 Docker Compose...${RESET}"
-    COMPOSE_VERSION=$(curl -s https://api.github.com/repos/docker/compose/releases/latest | grep tag_name | cut -d '"' -f4)
-    sudo curl -L "https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-    sudo chmod +x /usr/local/bin/docker-compose
+            # 安装 Docker Compose（二进制方式）
+            echo -e "${GREEN}正在安装 Docker Compose...${RESET}"
+            COMPOSE_VERSION=$(curl -s https://api.github.com/repos/docker/compose/releases/latest | grep tag_name | cut -d '"' -f4)
+            sudo curl -L "https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+            sudo chmod +x /usr/local/bin/docker-compose
+            sudo ln -sf /usr/local/bin/docker-compose /usr/bin/docker-compose
 
-    # 建立软链接，防止部分系统找不到 docker-compose
-    sudo ln -sf /usr/local/bin/docker-compose /usr/bin/docker-compose
-
-    # 检查 Docker Compose 安装情况
-    if ! command -v docker-compose &> /dev/null; then
-        echo -e "${RED}Docker Compose 安装失败，请手动检查！${RESET}"
-    else
-        echo -e "${GREEN}Docker 和 Docker Compose 安装成功！${RESET}"
-    fi
-    read -p "按回车键返回上一级..."
-    ;;
+            # 检查 Docker Compose 安装情况
+            if ! command -v docker-compose &> /dev/null; then
+                echo -e "${RED}Docker Compose 安装失败，请手动检查！${RESET}"
+            else
+                echo -e "${GREEN}Docker 和 Docker Compose 安装成功！${RESET}"
+            fi
+            read -p "按回车键返回上一级..."
+            ;;
 
     # 彻底卸载 Docker
     uninstall_docker() {
