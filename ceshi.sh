@@ -1,86 +1,79 @@
 #!/bin/bash
+
 set -e
 
 echo "✅ 开始安装 Docker 和 Docker Compose..."
 
-# 检测系统类型
-OS=$(grep '^ID=' /etc/os-release | cut -d= -f2 | tr -d '"')
-VERSION_ID=$(grep '^VERSION_ID=' /etc/os-release | cut -d= -f2 | tr -d '"')
-
-# 警告 EOL 系统
-if [[ "$OS" == "ubuntu" && "$VERSION_ID" == "20.04" ]]; then
-  echo "⚠️ Ubuntu 20.04 已经结束生命周期，建议升级系统"
-fi
+# 统一更新
+apt-get update -y || yum update -y
 
 # 安装依赖
-if [[ "$OS" == "ubuntu" || "$OS" == "debian" ]]; then
-  apt-get update -y
-  apt-get install -y ca-certificates curl gnupg lsb-release
-elif [[ "$OS" == "centos" || "$OS" == "rocky" || "$OS" == "almalinux" ]]; then
-  yum install -y yum-utils curl
-else
-  echo "❌ 不支持的系统: $OS"
-  exit 1
+if command -v apt-get &> /dev/null; then
+    apt-get install -y curl ca-certificates gnupg lsb-release sudo
+elif command -v yum &> /dev/null; then
+    yum install -y curl ca-certificates gnupg2 redhat-lsb-core sudo
 fi
 
-# 安装 Docker（官方方式）
-if ! command -v docker &>/dev/null; then
-  echo "🔧 安装 Docker..."
-  curl -fsSL https://get.docker.com | bash
+# 安装 Docker
+if ! command -v docker &> /dev/null; then
+    echo "🔧 正在安装 Docker..."
+    curl -fsSL https://get.docker.com | sh
 fi
 
-# 安装 Docker Compose（二进制方式）
-if ! command -v docker-compose &>/dev/null; then
-  echo "🔧 安装 Docker Compose..."
-  curl -L "https://github.com/docker/compose/releases/download/v2.20.2/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-  chmod +x /usr/local/bin/docker-compose
+# 安装 docker-compose（二进制方式）
+if ! command -v docker-compose &> /dev/null; then
+    echo "🔧 正在安装 Docker Compose..."
+    curl -L "https://github.com/docker/compose/releases/download/v2.20.2/docker-compose-$(uname -s)-$(uname -m)" \
+    -o /usr/local/bin/docker-compose
+    chmod +x /usr/local/bin/docker-compose
 fi
 
-docker --version
-docker-compose --version
 echo "✅ Docker 与 Compose 安装完成"
 
-# 准备部署目录
-mkdir -p /opt/dujiaoka && cd /opt/dujiaoka
+# 设置目录
+INSTALL_DIR="/opt/dujiaoka"
+mkdir -p $INSTALL_DIR
+cd $INSTALL_DIR
 
-# 交互式生成 .env
-read -rp "❓ 是否要修改默认域名或配置文件 (.env)？[y/N]: " change_env
-if [[ "$change_env" =~ ^[Yy]$ ]]; then
-  read -rp "请输入网站访问域名或服务器 IP（默认自动获取）: " DOMAIN
-  DOMAIN=${DOMAIN:-$(curl -s ipv4.ip.sb || curl -s ifconfig.me)}
-else
-  DOMAIN=$(curl -s ipv4.ip.sb || curl -s ifconfig.me)
+# 克隆项目
+if [ ! -d "${INSTALL_DIR}/docker-dujiaoka" ]; then
+    git clone https://github.com/assimon/dujiaoka-docker.git docker-dujiaoka
 fi
+cd docker-dujiaoka
 
-# 写入 .env 文件
-cat > .env <<EOF
-INSTALL=false
-APP_DEBUG=false
-APP_URL=http://$DOMAIN
-EOF
+# 获取用户交互输入
+read -p "❓ 请输入数据库名称 [默认: dujiaoka]: " DB_NAME
+DB_NAME=${DB_NAME:-dujiaoka}
 
-echo "✅ .env 文件已生成："
-cat .env
+read -p "❓ 请输入数据库用户名 [默认: root]: " DB_USER
+DB_USER=${DB_USER:-root}
 
-# 写入 docker-compose.yml
-cat > docker-compose.yml <<EOF
-services:
-  web:
-    image: stilleshan/dujiaoka
-    container_name: dujiaoka
-    ports:
-      - "80:80"
-    volumes:
-      - ./uploads:/dujiaoka/public/uploads
-      - ./storage:/dujiaoka/storage
-      - ./.env:/dujiaoka/.env
-    restart: always
-EOF
+read -p "❓ 请输入数据库密码 [必填]: " DB_PASS
+while [[ -z "$DB_PASS" ]]; do
+    read -p "⚠️  数据库密码不能为空，请重新输入: " DB_PASS
+done
 
-# 启动容器
+read -p "❓ 请输入站点名称 [默认: 独角数卡发卡系统]: " SITE_NAME
+SITE_NAME=${SITE_NAME:-独角数卡发卡系统}
+
+read -p "❓ 请输入绑定的域名或服务器IP（用于访问提示）: " DOMAIN
+
+# 复制 env 文件并替换配置
+cp .env.example .env
+
+sed -i "s/DB_DATABASE=.*/DB_DATABASE=$DB_NAME/" .env
+sed -i "s/DB_USERNAME=.*/DB_USERNAME=$DB_USER/" .env
+sed -i "s/DB_PASSWORD=.*/DB_PASSWORD=$DB_PASS/" .env
+sed -i "s/^APP_NAME=.*/APP_NAME=\"$SITE_NAME\"/" .env
+sed -i "s/^INSTALL=true/INSTALL=false/" .env
+sed -i "s/^APP_DEBUG=true/APP_DEBUG=false/" .env
+
+# 启动 Docker 容器
+echo "🚀 启动 Dujiaoka..."
 docker-compose up -d
 
-echo ""
-echo "🎉 Dujiaoka 发卡系统已成功部署！"
-echo "📬 访问地址：http://$DOMAIN"
-echo "🔧 后台地址：http://$DOMAIN/admin"
+# 输出访问信息
+IP=$(curl -s https://ipinfo.io/ip || hostname -I | awk '{print $1}')
+echo "✅ 安装完成！"
+
+echo "🔗 请访问独角数卡系统: http://${DOMAIN:-$IP}"
