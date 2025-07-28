@@ -1,24 +1,53 @@
 #!/bin/bash
 
-# 设置安装目录
-INSTALL_DIR="/root/dujiaoshuka"
-echo "正在创建安装目录 ${INSTALL_DIR}..."
-mkdir -p ${INSTALL_DIR}
-cd ${INSTALL_DIR}
+# 检查 Docker 是否安装
+if ! command -v docker &> /dev/null; then
+    echo "错误：未检测到 Docker，请先安装 Docker。"
+    exit 1
+fi
 
-# 创建必要目录并设置权限
-echo "创建 storage 和 uploads 目录并设置权限..."
+# 检查 Docker Compose 是否安装
+if ! command -v docker-compose &> /dev/null; then
+    echo "错误：未检测到 Docker Compose，请先安装 Docker Compose。"
+    exit 1
+fi
+
+# 检查 Docker 版本
+docker_version=$(docker --version | awk '{print $3}' | sed 's/,//')
+echo "检测到 Docker 版本：$docker_version"
+
+# 检查 Docker Compose 版本
+compose_version=$(docker-compose --version | awk '{print $3}' | sed 's/,//')
+echo "检测到 Docker Compose 版本：$compose_version"
+
+# 检查 Docker 服务是否运行
+if ! docker info &> /dev/null; then
+    echo "错误：Docker 服务未运行，请启动 Docker 服务。"
+    exit 1
+fi
+
+# 获取本机 IP 地址
+server_ip=$(hostname -I | awk '{print $1}')
+if [ -z "$server_ip" ]; then
+    echo "错误：无法获取服务器 IP 地址。"
+    exit 1
+fi
+
+# 创建目录并设置权限
+echo "创建目录 /share/Data/dujiaoka 及其子目录..."
+mkdir -p /share/Data/dujiaoka
+cd /share/Data/dujiaoka || { echo "错误：无法进入目录 /share/Data/dujiaoka"; exit 1; }
 mkdir -p storage uploads
 chmod -R 777 storage uploads
 
 # 下载配置文件
-echo "下载 env.conf 和 docker-compose.yml 文件..."
-wget -q https://raw.githubusercontent.com/stilleshan/dockerfiles/main/dujiaoka/env.conf
-wget -q https://raw.githubusercontent.com/stilleshan/dockerfiles/main/dujiaoka/docker-compose.yml
+echo "下载 env.conf 和 docker-compose.yml..."
+wget -q https://raw.githubusercontent.com/stilleshan/dockerfiles/main/dujiaoka/env.conf || { echo "错误：无法下载 env.conf"; exit 1; }
+wget -q https://raw.githubusercontent.com/stilleshan/dockerfiles/main/dujiaoka/docker-compose.yml || { echo "错误：无法下载 docker-compose.yml"; exit 1; }
 chmod -R 777 env.conf
 
-# 配置 docker-compose.yml
-echo "配置 docker-compose.yml 文件..."
+# 修改 docker-compose.yml 文件
+echo "修改 docker-compose.yml 文件..."
 cat > docker-compose.yml << 'EOF'
 version: "3"
 
@@ -26,9 +55,11 @@ services:
   web:
     image: stilleshan/dujiaoka
     environment:
+        # - INSTALL=false
         - INSTALL=true
+        # - MODIFY=true
     volumes:
-      - ./env.conf:/dujiaoka/.env
+      - ./env.conf:/dujiaoka/.env 
       - ./uploads:/dujiaoka/public/uploads
       - ./storage:/dujiaoka/storage
     ports:
@@ -39,10 +70,10 @@ services:
     image: mariadb:focal
     restart: always
     environment:
-      - MYSQL_ROOT_PASSWORD=37vps
+      - MYSQL_ROOT_PASSWORD=www.1373737.xyz
       - MYSQL_DATABASE=dujiaoka
       - MYSQL_USER=dujiaoka
-      - MYSQL_PASSWORD=37vps
+      - MYSQL_PASSWORD=www.1373737.xyz
     volumes:
       - ./mysql:/var/lib/mysql
 
@@ -53,14 +84,14 @@ services:
       - ./redis:/data
 EOF
 
-# 配置 env.conf
-echo "配置 env.conf 文件..."
-cat > env.conf << 'EOF'
-APP_NAME=37VPS主机评测的小店
+# 修改 env.conf 文件
+echo "修改 env.conf 文件..."
+cat > env.conf << EOF
+APP_NAME=37VPS主机评测（https://www.1373737.xyz/）
 APP_ENV=local
 APP_KEY=base64:hDVkYhfkUjaePiaI1tcBT7G8bh2A8RQxwWIGkq7BO18=
 APP_DEBUG=true
-APP_URL=https://dujiao.ydxian.xyz
+APP_URL=http://$server_ip:8800
 
 LOG_CHANNEL=stack
 
@@ -70,7 +101,7 @@ DB_HOST=db
 DB_PORT=3306
 DB_DATABASE=dujiaoka
 DB_USERNAME=dujiaoka
-DB_PASSWORD=37vps
+DB_PASSWORD=www.1373737.xyz
 
 # redis配置
 REDIS_HOST=redis
@@ -93,25 +124,16 @@ DUJIAO_ADMIN_LANGUAGE=zh_CN
 # 后台登录地址
 ADMIN_ROUTE_PREFIX=/admin
 
-# 是否开启 https
+# 是否开启 https 
 #ADMIN_HTTPS=true
 EOF
 
-# 部署 Docker 容器
-echo "正在部署 Docker 容器..."
-docker compose up -d
+# 启动服务
+echo "启动 Docker Compose 服务..."
+docker-compose up -d || { echo "错误：无法启动 Docker Compose 服务"; exit 1; }
 
-echo "安装完成！请按照以下步骤进行后续配置："
-echo "1. 访问你的域名（需提前配置反向代理并启用 HTTPS）进行初始化安装。"
-echo "2. 安装完成后，执行以下命令关闭安装模式并禁用调试："
-echo "   cd ${INSTALL_DIR}"
-echo "   docker compose down"
-echo "   sed -i 's/INSTALL=true/INSTALL=false/' docker-compose.yml"
-echo "   sed -i 's/APP_DEBUG=true/APP_DEBUG=false/' env.conf"
-echo "   docker compose up -d"
-echo "3. 访问 域名/admin 进入控制台进行配置。"
-echo "注意事项："
-echo "- 上传图片需通过 HTTPS 访问。"
-echo "- 所有数据位于 ${INSTALL_DIR} 目录，建议定期备份。"
-echo "- 服务迁移时，将 ${INSTALL_DIR} 打包到新服务器，重新赋权（chmod -R 777 storage uploads env.conf）并执行 docker compose up -d。"
-echo "- 反向代理配置参考：https://blog.ydxian.xyz/archives/nom（VPS）或 https://blog.ydxian.xyz/archives/lucky（NAS）。"
+# 输出登录地址、端口和提示信息
+echo "安装完成！"
+echo "登录地址：http://$server_ip:8800/admin"
+echo "端口：8800"
+echo "提示：登录网址后，请将 MySQL 数据库地址改为：mysql，Redis 连接地址改为：redis"
