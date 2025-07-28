@@ -1,101 +1,63 @@
 #!/bin/bash
 set -e
 
-echo "开始安装 Docker 和 Docker Compose..."
-if ! command -v docker >/dev/null 2>&1; then
-  echo "检测到未安装 Docker，开始安装..."
-  if [ -f /etc/redhat-release ]; then
-    yum install -y yum-utils device-mapper-persistent-data lvm2
-    yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
-    yum install -y docker-ce docker-ce-cli containerd.io
-    systemctl enable --now docker
-  elif [ -f /etc/debian_version ]; then
-    apt-get update
-    apt-get install -y ca-certificates curl gnupg lsb-release
-    mkdir -p /etc/apt/keyrings
-    curl -fsSL https://download.docker.com/linux/$(. /etc/os-release; echo "$ID")/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-    echo \
-      "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/$(. /etc/os-release; echo "$ID") \
-      $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
-    apt-get update
-    apt-get install -y docker-ce docker-ce-cli containerd.io
-    systemctl enable --now docker
-  else
-    echo "暂不支持该操作系统，请手动安装 Docker"
-    exit 1
-  fi
-else
-  echo "检测到已安装 Docker，跳过安装"
-fi
+BASE_DIR="/home/web/html"
+APP_DIR="$BASE_DIR/web5"
 
-if ! command -v docker-compose >/dev/null 2>&1; then
-  echo "检测到未安装 Docker Compose，开始安装..."
-  DOCKER_COMPOSE_VER="v2.39.1"
-  curl -L "https://github.com/docker/compose/releases/download/${DOCKER_COMPOSE_VER}/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-  chmod +x /usr/local/bin/docker-compose
-  ln -sf /usr/local/bin/docker-compose /usr/bin/docker-compose
-  echo "Docker Compose 安装完成"
-else
-  echo "检测到已安装 Docker Compose，跳过安装"
-fi
+echo "开始安装独角数卡到 $APP_DIR"
 
-WORKDIR="/opt/dujiaoka"
-mkdir -p "$WORKDIR"
-cd "$WORKDIR"
+# 创建目录并下载解压
+mkdir -p "$APP_DIR"
+cd "$APP_DIR"
 
-echo "拉取独角数卡镜像 jiangjuhong/dujiaoka:latest"
-docker pull jiangjuhong/dujiaoka:latest
+echo "下载独角数卡 2.0.6-antibody 版本"
+wget -q https://github.com/assimon/dujiaoka/releases/download/2.0.6/2.0.6-antibody.tar.gz
 
-cat > docker-compose.yml <<EOF
-version: "3.8"
-services:
-  dujiaoka:
-    image: jiangjuhong/dujiaoka:latest
-    container_name: dujiaoka
-    restart: always
-    ports:
-      - "80:80"
-    volumes:
-      - ./uploads:/var/www/html/public/uploads
-      - ./storage:/var/www/html/storage
-      - ./env:/var/www/html/.env
-    environment:
-      APP_ENV: production
-      APP_DEBUG: "false"
-    depends_on:
-      - mysql
+echo "解压安装包..."
+tar -zxvf 2.0.6-antibody.tar.gz
+rm 2.0.6-antibody.tar.gz
 
-  mysql:
-    image: mysql:5.7
-    container_name: dujiaoka-mysql
-    restart: always
-    environment:
-      MYSQL_ROOT_PASSWORD: rootpassword
-      MYSQL_DATABASE: dujiaoka
-      MYSQL_USER: dujiaoka
-      MYSQL_PASSWORD: dujiaoka_pass
-    volumes:
-      - mysql-data:/var/lib/mysql
+echo "设置目录权限"
+chown -R www-data:www-data "$APP_DIR"
+chmod -R 755 "$APP_DIR"
 
-volumes:
-  mysql-data:
-EOF
+# 创建.env文件交互配置
+ENV_FILE="$APP_DIR/.env"
+if [ ! -f "$ENV_FILE" ]; then
+  echo "生成配置文件 .env"
+  read -rp "请输入站点名称（默认 Dujiaoka）: " APP_NAME
+  APP_NAME=${APP_NAME:-Dujiaoka}
 
-cat > .env.template <<'EOF'
-APP_NAME=Dujiaoka
+  read -rp "请输入站点URL（默认 http://localhost）: " APP_URL
+  APP_URL=${APP_URL:-http://localhost}
+
+  read -rp "请输入数据库名称（默认 dujiaoka）: " DB_DATABASE
+  DB_DATABASE=${DB_DATABASE:-dujiaoka}
+
+  read -rp "请输入数据库用户名（默认 dujiaoka）: " DB_USERNAME
+  DB_USERNAME=${DB_USERNAME:-dujiaoka}
+
+  read -rp "请输入数据库密码（默认 dujiaoka_pass）: " DB_PASSWORD
+  DB_PASSWORD=${DB_PASSWORD:-dujiaoka_pass}
+
+  read -rp "是否开启调试模式？(true/false，默认 false): " APP_DEBUG
+  APP_DEBUG=${APP_DEBUG:-false}
+
+  cat > "$ENV_FILE" <<EOF
+APP_NAME=$APP_NAME
 APP_ENV=production
 APP_KEY=
-APP_DEBUG=false
-APP_URL=http://your-domain.com
+APP_DEBUG=$APP_DEBUG
+APP_URL=$APP_URL
 
 LOG_CHANNEL=stack
 
 DB_CONNECTION=mysql
 DB_HOST=mysql
 DB_PORT=3306
-DB_DATABASE=dujiaoka
-DB_USERNAME=dujiaoka
-DB_PASSWORD=dujiaoka_pass
+DB_DATABASE=$DB_DATABASE
+DB_USERNAME=$DB_USERNAME
+DB_PASSWORD=$DB_PASSWORD
 
 BROADCAST_DRIVER=log
 CACHE_DRIVER=file
@@ -103,50 +65,85 @@ QUEUE_CONNECTION=sync
 SESSION_DRIVER=file
 SESSION_LIFETIME=120
 EOF
+else
+  echo ".env 文件已存在，跳过生成。"
+fi
 
-echo "请按提示输入站点相关配置，回车使用默认值"
+# Docker Compose 文件自动生成
+COMPOSE_FILE="$APP_DIR/docker-compose.yml"
 
-read -rp "站点名称 (默认 Dujiaoka): " APP_NAME
-APP_NAME=${APP_NAME:-Dujiaoka}
+cat > "$COMPOSE_FILE" <<EOF
+version: "3.8"
+services:
+  dujiaoka:
+    image: php:8.0-fpm
+    container_name: dujiaoka-php
+    working_dir: /var/www/html
+    volumes:
+      - ./:/var/www/html
+    depends_on:
+      - mysql
 
-read -rp "站点域名 (例：http://example.com，默认 http://localhost): " APP_URL
-APP_URL=${APP_URL:-http://localhost}
+  nginx:
+    image: nginx:stable-alpine
+    container_name: dujiaoka-nginx
+    ports:
+      - "80:80"
+    volumes:
+      - ./:/var/www/html
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - dujiaoka
 
-read -rp "数据库名称 (默认 dujiaoka): " DB_DATABASE
-DB_DATABASE=${DB_DATABASE:-dujiaoka}
+  mysql:
+    image: mysql:5.7
+    container_name: dujiaoka-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpassword
+      MYSQL_DATABASE: $DB_DATABASE
+      MYSQL_USER: $DB_USERNAME
+      MYSQL_PASSWORD: $DB_PASSWORD
+    volumes:
+      - mysql-data:/var/lib/mysql
 
-read -rp "数据库用户名 (默认 dujiaoka): " DB_USERNAME
-DB_USERNAME=${DB_USERNAME:-dujiaoka}
+volumes:
+  mysql-data:
+EOF
 
-read -rp "数据库密码 (默认 dujiaoka_pass): " DB_PASSWORD
-DB_PASSWORD=${DB_PASSWORD:-dujiaoka_pass}
+# 生成 nginx.conf
+NGINX_CONF="$APP_DIR/nginx.conf"
+cat > "$NGINX_CONF" <<'EOF'
+server {
+    listen 80;
+    server_name localhost;
 
-read -rp "MySQL root密码 (默认 rootpassword): " MYSQL_ROOT_PASSWORD
-MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD:-rootpassword}
+    root /var/www/html/public;
+    index index.php index.html index.htm;
 
-read -rp "是否开启调试模式？(true/false，默认 false): " APP_DEBUG
-APP_DEBUG=${APP_DEBUG:-false}
+    location / {
+        try_files $uri $uri/ /index.php?$query_string;
+    }
 
-sed "s|APP_NAME=.*|APP_NAME=$APP_NAME|" .env.template | \
-sed "s|APP_URL=.*|APP_URL=$APP_URL|" | \
-sed "s|DB_DATABASE=.*|DB_DATABASE=$DB_DATABASE|" | \
-sed "s|DB_USERNAME=.*|DB_USERNAME=$DB_USERNAME|" | \
-sed "s|DB_PASSWORD=.*|DB_PASSWORD=$DB_PASSWORD|" | \
-sed "s|APP_DEBUG=.*|APP_DEBUG=$APP_DEBUG|" > .env
+    location ~ \.php$ {
+        fastcgi_pass dujiaoka-php:9000;
+        fastcgi_index index.php;
+        fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+        include fastcgi_params;
+    }
+}
+EOF
 
-sed -i "s/rootpassword/$MYSQL_ROOT_PASSWORD/" docker-compose.yml
-sed -i "s/dujiaoka/$DB_DATABASE/" docker-compose.yml
-sed -i "s/dujiaoka/$DB_USERNAME/" docker-compose.yml
-sed -i "s/dujiaoka_pass/$DB_PASSWORD/" docker-compose.yml
-
-echo "启动独角数卡服务..."
+echo "启动容器..."
+cd "$APP_DIR"
 docker-compose up -d
 
-echo "安装完成！请确保服务器端口 80 已开放"
-echo "访问地址：$APP_URL"
-echo ""
-echo "首次访问可能需要进入容器执行以下命令进行初始化："
-echo "  docker exec -it dujiaoka php artisan key:generate"
-echo "  docker exec -it dujiaoka php artisan migrate --seed"
-echo ""
-echo "查看日志：docker logs dujiaoka"
+echo
+echo "独角数卡已启动！"
+echo "访问地址请打开 http://服务器IP 或 域名"
+echo
+echo "首次运行需要进入PHP容器初始化数据库，执行以下命令："
+echo "docker exec -it dujiaoka-php bash"
+echo "php artisan key:generate"
+echo "php artisan migrate --seed"
+echo
+echo "如果是首次运行，请务必执行上述初始化命令！"
