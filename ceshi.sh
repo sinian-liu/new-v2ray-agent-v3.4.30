@@ -1683,95 +1683,88 @@ install_docker() {
     read -p "按回车键返回上一级..."
 }
 
-    # 彻底卸载 Docker
-    uninstall_docker() {
-        if ! check_docker_status; then return; fi
+# 彻底卸载 Docker
+uninstall_docker() {
+    echo -e "${RED}你确定要彻底卸载 Docker 和 Docker Compose 吗？此操作不可恢复！${RESET}"
+    read -p "请输入 y 确认，其他任意键取消: " confirm
+    if [[ "$confirm" != "y" ]]; then
+        echo -e "${YELLOW}已取消卸载操作，返回上一级菜单。${RESET}"
+        return
+    fi
 
-        # 检查运行中的容器
-        running_containers=$(docker ps -q)
-        if [ -n "$running_containers" ]; then
-            echo -e "${YELLOW}发现运行中的容器：${RESET}"
-            docker ps --format "table {{.ID}}\t{{.Image}}\t{{.Command}}\t{{.CreatedAt}}\t{{.Status}}\t{{.RunningFor}}\t{{.Ports}}\t{{.Names}}" | sed 's/CONTAINER ID/容器ID/; s/IMAGE/镜像名称/; s/COMMAND/命令/; s/CREATED AT/创建时间/; s/STATUS/状态/; s/RUNNINGFOR/运行时间/; s/PORTS/端口映射/; s/NAMES/容器名称/; s/Up \([0-9]\+\) minutes\?/运行中/; s/Up \([0-9]\+\) seconds\?/运行中/'
-            read -p "是否停止并删除所有容器？(y/n，默认 n): " stop_choice
-            stop_choice=${stop_choice:-n}  # 默认值为 n
-            if [[ $stop_choice =~ [Yy] ]]; then
-                echo -e "${YELLOW}正在停止并移除运行中的 Docker 容器...${RESET}"
-                docker stop $(docker ps -aq) 2>/dev/null
-                docker rm $(docker ps -aq) 2>/dev/null
-            else
-                echo -e "${YELLOW}已跳过停止并删除容器。${RESET}"
-            fi
-        fi
+    if ! check_docker_status; then return; fi
 
-        # 删除镜像确认
-        read -p "是否删除所有 Docker 镜像？(y/n，默认 n): " delete_images
-        delete_images=${delete_images:-n}  # 默认值为 n
-        if [[ $delete_images =~ [Yy] ]]; then
-            echo -e "${YELLOW}正在删除所有 Docker 镜像...${RESET}"
-            docker rmi $(docker images -q) 2>/dev/null
+    # 检查运行中的容器
+    running_containers=$(docker ps -q)
+    if [ -n "$running_containers" ]; then
+        echo -e "${YELLOW}发现运行中的容器：${RESET}"
+        docker ps --format "table {{.ID}}\t{{.Image}}\t{{.Command}}\t{{.CreatedAt}}\t{{.Status}}\t{{.RunningFor}}\t{{.Ports}}\t{{.Names}}" | sed 's/CONTAINER ID/容器ID/; s/IMAGE/镜像名称/; s/COMMAND/命令/; s/CREATED AT/创建时间/; s/STATUS/状态/; s/RUNNINGFOR/运行时间/; s/PORTS/端口映射/; s/NAMES/容器名称/; s/Up \([0-9]\+\) minutes\?/运行中/; s/Up \([0-9]\+\) seconds\?/运行中/'
+        read -p "是否停止并删除所有容器？(y/n，默认 n): " stop_choice
+        stop_choice=${stop_choice:-n}
+        if [[ $stop_choice =~ [Yy] ]]; then
+            echo -e "${YELLOW}正在停止并移除运行中的 Docker 容器...${RESET}"
+            docker stop $(docker ps -aq) 2>/dev/null
+            docker rm $(docker ps -aq) 2>/dev/null
         else
-            echo -e "${YELLOW}已跳过删除所有镜像。${RESET}"
+            echo -e "${YELLOW}已跳过停止并删除容器。${RESET}"
         fi
+    fi
 
-        # 停止并禁用 Docker 服务
-        echo -e "${YELLOW}正在停止并禁用 Docker 服务...${RESET}"
-        sudo systemctl stop docker 2>/dev/null
-        sudo systemctl disable docker 2>/dev/null
+    # 删除镜像确认
+    read -p "是否删除所有 Docker 镜像？(y/n，默认 n): " delete_images
+    delete_images=${delete_images:-n}
+    if [[ $delete_images =~ [Yy] ]]; then
+        echo -e "${YELLOW}正在删除所有 Docker 镜像...${RESET}"
+        docker rmi $(docker images -q) 2>/dev/null
+    else
+        echo -e "${YELLOW}已跳过删除所有镜像。${RESET}"
+    fi
 
-        # 删除 Docker 二进制文件
-        echo -e "${YELLOW}正在删除 Docker 二进制文件...${RESET}"
-        sudo rm -f /usr/bin/docker
-        sudo rm -f /usr/bin/dockerd
-        sudo rm -f /usr/bin/docker-init
-        sudo rm -f /usr/bin/docker-proxy
-        sudo rm -f /usr/local/bin/docker-compose
+    # 停止并禁用 Docker 服务
+    echo -e "${YELLOW}正在停止并禁用 Docker 服务...${RESET}"
+    sudo systemctl stop docker 2>/dev/null
+    sudo systemctl disable docker 2>/dev/null
 
-        # 删除 Docker 相关目录和文件
-        echo -e "${YELLOW}正在删除 Docker 相关目录和文件...${RESET}"
-        sudo rm -rf /var/lib/docker
-        sudo rm -rf /etc/docker
-        sudo rm -rf /var/run/docker.sock
-        sudo rm -rf ~/.docker
+    # 删除 Docker 和 Compose 二进制文件
+    echo -e "${YELLOW}正在删除 Docker 和 Compose 二进制文件...${RESET}"
+    sudo rm -f /usr/bin/docker /usr/bin/dockerd /usr/bin/docker-init /usr/bin/docker-proxy
+    sudo rm -f /usr/local/bin/docker-compose /usr/bin/docker-compose
 
-        # 删除 Docker 服务文件
-        echo -e "${YELLOW}正在删除 Docker 服务文件...${RESET}"
-        sudo rm -f /etc/systemd/system/docker.service
-        sudo rm -f /etc/systemd/system/docker.socket
-        sudo systemctl daemon-reload
+    # 删除 Docker 相关目录和文件
+    echo -e "${YELLOW}正在删除 Docker 相关目录和文件...${RESET}"
+    sudo rm -rf /var/lib/docker /etc/docker /var/run/docker.sock ~/.docker
 
-        # 删除 Docker 用户组
-        echo -e "${YELLOW}正在删除 Docker 用户组...${RESET}"
-        if grep -q docker /etc/group; then
-            sudo groupdel docker
-        else
-            echo -e "${YELLOW}Docker 用户组不存在，无需删除。${RESET}"
-        fi
+    # 删除 Docker 服务文件
+    echo -e "${YELLOW}正在删除 Docker 服务文件...${RESET}"
+    sudo rm -f /etc/systemd/system/docker.service
+    sudo rm -f /etc/systemd/system/docker.socket
+    sudo systemctl daemon-reload
 
-        # 卸载 Docker 包（如果通过包管理器安装）
-        echo -e "${YELLOW}正在卸载 Docker 包...${RESET}"
-        sudo apt purge -y docker.io docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-ce-rootless-extras docker-compose-plugin
-        sudo apt autoremove -y
+    # 删除 Docker 用户组
+    echo -e "${YELLOW}正在删除 Docker 用户组...${RESET}"
+    if grep -q docker /etc/group; then
+        sudo groupdel docker
+    else
+        echo -e "${YELLOW}Docker 用户组不存在，无需删除。${RESET}"
+    fi
 
-        # 检查是否通过 Snap 安装
-        if snap list | grep -q docker; then
-            echo -e "${YELLOW}正在卸载 Snap 安装的 Docker...${RESET}"
-            sudo snap remove docker
-        else
-            echo -e "${YELLOW}Docker 不是通过 Snap 安装的，跳过 Snap 卸载。${RESET}"
-        fi
+    # 卸载 Docker 包（如果通过 apt/yum 安装）
+    echo -e "${YELLOW}正在卸载 Docker 包...${RESET}"
+    sudo apt purge -y docker.io docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-ce-rootless-extras docker-compose-plugin
+    sudo apt autoremove -y
+    sudo yum remove -y docker docker-ce docker-ce-cli containerd.io docker-compose-plugin
 
-        # 检查是否通过官方脚本安装
-        if [ -f /usr/bin/docker ] && ! dpkg -S /usr/bin/docker &>/dev/null && ! snap list | grep -q docker; then
-            echo -e "${YELLOW}检测到 Docker 是通过官方脚本安装的，尝试卸载...${RESET}"
-            if sudo /usr/bin/docker uninstall &>/dev/null; then
-                echo -e "${GREEN}Docker 已通过官方脚本卸载！${RESET}"
-            else
-                echo -e "${RED}无法通过官方脚本卸载 Docker，请手动检查。${RESET}"
-            fi
-        fi
+    # 检查是否通过 Snap 安装
+    if command -v snap &>/dev/null && snap list | grep -q docker; then
+        echo -e "${YELLOW}正在卸载 Snap 安装的 Docker...${RESET}"
+        sudo snap remove docker
+    else
+        echo -e "${YELLOW}未检测到 Snap 安装的 Docker，跳过。${RESET}"
+    fi
 
-        echo -e "${GREEN}Docker 已彻底卸载！${RESET}"
-    }
+    echo -e "${GREEN}Docker 和 Docker Compose 已彻底卸载完成！${RESET}"
+}
+
 
     # 配置 Docker 镜像加速
     configure_mirror() {
