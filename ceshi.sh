@@ -1,142 +1,117 @@
 #!/bin/bash
-set -e
 
-# 环境变量
-DOMAIN="sparkedhost.565645.xyz"
-EMAIL="admin@example.com"
-DEPLOY_DIR="/home/web/html/dujiaoka"
-DB_PASSWORD="sinian"
+# 设置安装目录
+INSTALL_DIR="/root/dujiaoshuka"
+echo "正在创建安装目录 ${INSTALL_DIR}..."
+mkdir -p ${INSTALL_DIR}
+cd ${INSTALL_DIR}
 
-echo "=== 1. 安装 Docker ==="
-if ! command -v docker &> /dev/null; then
-  curl -fsSL https://get.docker.com | bash
-  systemctl enable docker --now
-fi
+# 创建必要目录并设置权限
+echo "创建 storage 和 uploads 目录并设置权限..."
+mkdir -p storage uploads
+chmod -R 777 storage uploads
 
-echo "=== 2. 准备源码目录 ==="
-mkdir -p "$DEPLOY_DIR"
-cd /home/web/html
-if [ ! -d "$DEPLOY_DIR" ] || [ -z "$(ls -A $DEPLOY_DIR)" ]; then
-  echo "下载并解压源码..."
-  wget -q https://github.com/assimon/dujiaoka/releases/download/2.0.6/2.0.6-antibody.tar.gz
-  tar -zxf 2.0.6-antibody.tar.gz -C "$DEPLOY_DIR" --strip-components=1
-  rm 2.0.6-antibody.tar.gz
-else
-  echo "源码目录已存在且不为空，跳过下载。"
-fi
+# 下载配置文件
+echo "下载 env.conf 和 docker-compose.yml 文件..."
+wget -q https://raw.githubusercontent.com/stilleshan/dockerfiles/main/dujiaoka/env.conf
+wget -q https://raw.githubusercontent.com/stilleshan/dockerfiles/main/dujiaoka/docker-compose.yml
+chmod -R 777 env.conf
 
-echo "=== 3. 写 Dockerfile ==="
-cat > "$DEPLOY_DIR/Dockerfile" <<'EOF'
-FROM php:8.1-fpm-alpine
-
-RUN apk add --no-cache libzip-dev libpng-dev libjpeg-turbo-dev libfreetype-dev unzip git && \
-    docker-php-ext-configure zip && docker-php-ext-install zip pdo_mysql gd && \
-    apk del libzip-dev
-
-WORKDIR /var/www/html
-
-COPY . .
-
-RUN curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
-
-CMD ["php-fpm"]
-EOF
-
-echo "=== 4. 写 docker-compose.yml ==="
-cat > "$DEPLOY_DIR/docker-compose.yml" <<EOF
-version: "3.8"
+# 配置 docker-compose.yml
+echo "配置 docker-compose.yml 文件..."
+cat > docker-compose.yml << 'EOF'
+version: "3"
 
 services:
+  web:
+    image: stilleshan/dujiaoka
+    environment:
+        - INSTALL=true
+    volumes:
+      - ./env.conf:/dujiaoka/.env
+      - ./uploads:/dujiaoka/public/uploads
+      - ./storage:/dujiaoka/storage
+    ports:
+      - 8800:80
+    restart: always
+
   db:
-    image: mysql:5.7
-    container_name: dujiaoka-db
+    image: mariadb:focal
     restart: always
     environment:
-      MYSQL_ROOT_PASSWORD: $DB_PASSWORD
-      MYSQL_DATABASE: dujiaoka
-      MYSQL_USER: dujiaoka
-      MYSQL_PASSWORD: $DB_PASSWORD
+      - MYSQL_ROOT_PASSWORD=37vps
+      - MYSQL_DATABASE=dujiaoka
+      - MYSQL_USER=dujiaoka
+      - MYSQL_PASSWORD=37vps
     volumes:
-      - dbdata:/var/lib/mysql
-    networks:
-      - dujiaoka-net
+      - ./mysql:/var/lib/mysql
 
   redis:
     image: redis:alpine
-    container_name: dujiaoka-redis
-    restart: always
-    networks:
-      - dujiaoka-net
-
-  php:
-    build: .
-    container_name: dujiaoka-php
     restart: always
     volumes:
-      - ./:/var/www/html
-    networks:
-      - dujiaoka-net
-
-  nginx:
-    image: nginx:alpine
-    container_name: dujiaoka-nginx
-    restart: always
-    ports:
-      - "80:80"
-    volumes:
-      - ./:/var/www/html
-      - ./nginx.conf:/etc/nginx/conf.d/default.conf
-    networks:
-      - dujiaoka-net
-
-volumes:
-  dbdata:
-
-networks:
-  dujiaoka-net:
+      - ./redis:/data
 EOF
 
-echo "=== 5. 写 nginx 配置文件 ==="
-cat > "$DEPLOY_DIR/nginx.conf" <<EOF
-server {
-    listen 80;
-    server_name $DOMAIN;
+# 配置 env.conf
+echo "配置 env.conf 文件..."
+cat > env.conf << 'EOF'
+APP_NAME=37VPS主机评测的小店
+APP_ENV=local
+APP_KEY=base64:hDVkYhfkUjaePiaI1tcBT7G8bh2A8RQxwWIGkq7BO18=
+APP_DEBUG=true
+APP_URL=https://dujiao.ydxian.xyz
 
-    root /var/www/html/public;
-    index index.php index.html;
+LOG_CHANNEL=stack
 
-    location / {
-        try_files \$uri \$uri/ /index.php?\$query_string;
-    }
+# 数据库配置
+DB_CONNECTION=mysql
+DB_HOST=db
+DB_PORT=3306
+DB_DATABASE=dujiaoka
+DB_USERNAME=dujiaoka
+DB_PASSWORD=37vps
 
-    location ~ \.php$ {
-        fastcgi_pass php:9000;
-        fastcgi_index index.php;
-        include fastcgi_params;
-        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
-    }
+# redis配置
+REDIS_HOST=redis
+REDIS_PASSWORD=
+REDIS_PORT=6379
 
-    location ~ /\.ht {
-        deny all;
-    }
-}
+BROADCAST_DRIVER=log
+SESSION_DRIVER=file
+SESSION_LIFETIME=120
+
+# 缓存配置
+CACHE_DRIVER=redis
+
+# 异步消息队列
+QUEUE_CONNECTION=redis
+
+# 后台语言
+DUJIAO_ADMIN_LANGUAGE=zh_CN
+
+# 后台登录地址
+ADMIN_ROUTE_PREFIX=/admin
+
+# 是否开启 https
+#ADMIN_HTTPS=true
 EOF
 
-echo "=== 6. 启动容器 ==="
-cd "$DEPLOY_DIR"
-docker compose down || true
-docker compose build
+# 部署 Docker 容器
+echo "正在部署 Docker 容器..."
 docker compose up -d
 
-echo "=== 7. 等待数据库启动，睡眠15秒 ==="
-sleep 15
-
-echo "=== 8. 进入PHP容器安装 composer 依赖 ==="
-CONTAINER_ID=$(docker ps --filter "name=dujiaoka-php" --format "{{.ID}}" | head -n 1)
-if [ -z "$CONTAINER_ID" ]; then
-  echo "找不到PHP容器，退出。"
-  exit 1
-fi
-docker exec -it "$CONTAINER_ID" sh -c "cd /var/www/html && composer install --no-dev --optimize-autoloader"
-
-echo "部署完成！访问 http://$DOMAIN 进行安装界面。"
+echo "安装完成！请按照以下步骤进行后续配置："
+echo "1. 访问你的域名（需提前配置反向代理并启用 HTTPS）进行初始化安装。"
+echo "2. 安装完成后，执行以下命令关闭安装模式并禁用调试："
+echo "   cd ${INSTALL_DIR}"
+echo "   docker compose down"
+echo "   sed -i 's/INSTALL=true/INSTALL=false/' docker-compose.yml"
+echo "   sed -i 's/APP_DEBUG=true/APP_DEBUG=false/' env.conf"
+echo "   docker compose up -d"
+echo "3. 访问 域名/admin 进入控制台进行配置。"
+echo "注意事项："
+echo "- 上传图片需通过 HTTPS 访问。"
+echo "- 所有数据位于 ${INSTALL_DIR} 目录，建议定期备份。"
+echo "- 服务迁移时，将 ${INSTALL_DIR} 打包到新服务器，重新赋权（chmod -R 777 storage uploads env.conf）并执行 docker compose up -d。"
+echo "- 反向代理配置参考：https://blog.ydxian.xyz/archives/nom（VPS）或 https://blog.ydxian.xyz/archives/lucky（NAS）。"
