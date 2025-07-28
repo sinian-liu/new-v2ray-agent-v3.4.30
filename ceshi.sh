@@ -4,150 +4,143 @@ set -e
 
 echo "===== 独角数卡 Docker 安装器（基于 2.0.6-antibody）====="
 
-# ---------------------
-# 交互式参数输入
-# ---------------------
-read -p "站点名称 (APP_NAME): " APP_NAME
-read -p "域名 (不含 http，例如 dujiaoka.com): " DOMAIN
-read -p "数据库名: " DB_NAME
-read -p "数据库用户名: " DB_USER
-read -s -p "数据库密码: " DB_PASS
-echo ""
-read -p "Redis 密码 (可留空): " REDIS_PASS
-read -p "安装路径 (默认 /home/web/html/web5): " INSTALL_PATH
-INSTALL_PATH=${INSTALL_PATH:-/home/web/html/web5}
+read -rp "站点名称 (APP_NAME) [Dujiaoka]: " APP_NAME
+APP_NAME=${APP_NAME:-Dujiaoka}
 
-# ---------------------
-# 安装依赖
-# ---------------------
+read -rp "域名 (不含 http，例如 dujiaoka.com) [localhost]: " DOMAIN
+DOMAIN=${DOMAIN:-localhost}
+
+read -rp "数据库名 [dujiaoka]: " DB_NAME
+DB_NAME=${DB_NAME:-dujiaoka}
+
+read -rp "数据库用户名 [dujiaoka]: " DB_USER
+DB_USER=${DB_USER:-dujiaoka}
+
+read -rsp "数据库密码: " DB_PASS
+echo
+
+read -rp "Redis 密码 (可留空): " REDIS_PASS
+
+read -rp "安装路径 (默认 /home/web/html/web5): " INSTALL_DIR
+INSTALL_DIR=${INSTALL_DIR:-/home/web/html/web5}
+
 echo ">>> 检查并安装必要依赖..."
-apt update -y && apt install -y curl git sudo unzip docker.io docker-compose
 
-# ---------------------
-# 创建目录
-# ---------------------
-mkdir -p $INSTALL_PATH && cd $INSTALL_PATH
+if ! command -v docker >/dev/null 2>&1; then
+  echo "检测到未安装 Docker，开始安装 Docker..."
+  curl -fsSL https://get.docker.com | bash
+  systemctl enable docker
+  systemctl start docker
+else
+  echo "检测到已安装 Docker，跳过安装。"
+fi
 
-# ---------------------
-# 下载源码
-# ---------------------
-echo ">>> 下载独角数卡源码 v2.0.6..."
-curl -L https://github.com/assimon/dujiaoka/releases/download/2.0.6/2.0.6-antibody.tar.gz -o dujiaoka.tar.gz
-tar -zxf dujiaoka.tar.gz
-rm -f dujiaoka.tar.gz
-mv dujiaoka* dujiaoka
+if ! command -v docker-compose >/dev/null 2>&1; then
+  echo "检测到未安装 Docker Compose，开始安装 Docker Compose..."
+  curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+  chmod +x /usr/local/bin/docker-compose
+else
+  echo "检测到已安装 Docker Compose，跳过安装。"
+fi
 
-# ---------------------
-# 创建 .env 文件
-# ---------------------
-cat > .env <<EOF
-APP_NAME="${APP_NAME}"
-APP_URL=http://${DOMAIN}
-APP_ENV=production
-APP_DEBUG=false
-LOG_CHANNEL=stack
+echo ">>> 准备安装目录 $INSTALL_DIR"
+mkdir -p "$INSTALL_DIR"
+cd "$INSTALL_DIR"
 
-DB_CONNECTION=mysql
-DB_HOST=mysql
-DB_PORT=3306
-DB_DATABASE=${DB_NAME}
-DB_USERNAME=${DB_USER}
-DB_PASSWORD=${DB_PASS}
+if [ -d "dujiaoka" ]; then
+  echo "检测到已有 dujiaoka 目录，删除旧目录..."
+  rm -rf dujiaoka
+fi
 
-REDIS_HOST=redis
-REDIS_PASSWORD=${REDIS_PASS}
-REDIS_PORT=6379
+echo ">>> 下载独角数卡源码 v2.0.6-antibody..."
+wget -q --show-progress -O dujiaoka.tar.gz https://github.com/assimon/dujiaoka/releases/download/2.0.6/2.0.6-antibody.tar.gz
+
+echo ">>> 解压源码包..."
+tar -zxvf dujiaoka.tar.gz
+rm dujiaoka.tar.gz
+
+# 生成 .env 文件
+cat > dujiaoka/.env <<EOF
+APP_NAME=$APP_NAME
+APP_URL=http://$DOMAIN
+DB_DATABASE=$DB_NAME
+DB_USERNAME=$DB_USER
+DB_PASSWORD=$DB_PASS
+REDIS_PASSWORD=$REDIS_PASS
+DEBUG=true
 EOF
 
-# ---------------------
-# 创建 docker-compose.yml
-# ---------------------
-cat > docker-compose.yml <<EOF
+echo ".env 文件生成完成。"
+
+# 生成简单 docker-compose.yml 文件
+cat > dujiaoka/docker-compose.yml <<EOF
+version: "3"
+
 services:
-  nginx:
-    image: nginx:stable-alpine
-    container_name: dujiaoka-nginx
-    ports:
-      - "80:80"
-    volumes:
-      - ./dujiaoka:/var/www/html
-      - ./nginx.conf:/etc/nginx/conf.d/default.conf
-    depends_on:
-      - php
-
-  php:
-    image: php:8.0-fpm
-    container_name: dujiaoka-php
-    volumes:
-      - ./dujiaoka:/var/www/html
-    working_dir: /var/www/html
-    depends_on:
-      - mysql
-      - redis
-
   mysql:
     image: mysql:5.7
     container_name: dujiaoka-mysql
+    restart: always
     environment:
-      MYSQL_ROOT_PASSWORD: ${DB_PASS}
-      MYSQL_DATABASE: ${DB_NAME}
-      MYSQL_USER: ${DB_USER}
-      MYSQL_PASSWORD: ${DB_PASS}
+      MYSQL_ROOT_PASSWORD: $DB_PASS
+      MYSQL_DATABASE: $DB_NAME
+      MYSQL_USER: $DB_USER
+      MYSQL_PASSWORD: $DB_PASS
     volumes:
-      - mysql_data:/var/lib/mysql
+      - mysql-data:/var/lib/mysql
+    networks:
+      - dujiaoka-net
 
   redis:
     image: redis:alpine
     container_name: dujiaoka-redis
-    command: redis-server --requirepass ${REDIS_PASS}
+    restart: always
+    command: redis-server --requirepass "$REDIS_PASS"
+    networks:
+      - dujiaoka-net
+
+  php:
+    image: php:8.0-fpm
+    container_name: dujiaoka-php
+    restart: always
+    working_dir: /var/www/html
     volumes:
-      - redis_data:/data
+      - ./dujiaoka:/var/www/html
+    networks:
+      - dujiaoka-net
+
+  nginx:
+    image: nginx:stable-alpine
+    container_name: dujiaoka-nginx
+    restart: always
+    ports:
+      - "80:80"
+    volumes:
+      - ./dujiaoka:/var/www/html:ro
+      - ./dujiaoka/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - php
+    networks:
+      - dujiaoka-net
 
 volumes:
-  mysql_data:
-  redis_data:
+  mysql-data:
+
+networks:
+  dujiaoka-net:
 EOF
 
-# ---------------------
-# 创建 nginx.conf
-# ---------------------
-cat > nginx.conf <<EOF
-server {
-    listen 80;
-    server_name ${DOMAIN};
-    root /var/www/html/public;
+echo "docker-compose.yml 文件生成完成。"
 
-    index index.php index.html index.htm;
+echo ">>> 启动 Docker 容器..."
+docker-compose -f dujiaoka/docker-compose.yml up -d
 
-    location / {
-        try_files \$uri \$uri/ /index.php?\$query_string;
-    }
+echo "独角数卡 Docker 容器已启动！"
+echo "访问地址请打开 http://$DOMAIN 或服务器 IP"
 
-    location ~ \.php\$ {
-        include fastcgi_params;
-        fastcgi_pass php:9000;
-        fastcgi_index index.php;
-        fastcgi_param SCRIPT_FILENAME /var/www/html\$fastcgi_script_name;
-    }
+echo "首次运行需要进入 PHP 容器初始化数据库，执行以下命令："
+echo "  docker exec -it dujiaoka-php bash"
+echo "  php artisan key:generate"
+echo "  php artisan migrate --seed"
 
-    location ~ /\.ht {
-        deny all;
-    }
-}
-EOF
-
-# ---------------------
-# 权限与初始化
-# ---------------------
-echo ">>> 设置文件权限..."
-chmod -R 755 $INSTALL_PATH/dujiaoka
-mkdir -p dujiaoka/public/uploads
-chmod -R 777 dujiaoka/public/uploads
-
-# ---------------------
-# 启动容器
-# ---------------------
-echo ">>> 启动 Docker 服务..."
-docker-compose up -d
-
-echo "✅ 安装完成！请访问：http://${DOMAIN} 完成后台初始化"
+echo "如果是首次运行，请务必执行上述初始化命令！"
