@@ -97,12 +97,21 @@ fi
 # 创建 Nginx 配置文件目录（如果不存在）
 mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled
 
-# 配置 Nginx 反向代理（包括前台和后台）
+# 配置 Nginx 反向代理（统一处理前台和后台）
 echo "正在配置 Nginx 反向代理..."
 cat > /etc/nginx/sites-available/dujiaoka <<EOF
 server {
     listen 80;
     server_name $DOMAIN;
+    return 301 https://$DOMAIN$request_uri; # 强制重定向到 HTTPS
+}
+
+server {
+    listen 443 ssl;
+    server_name $DOMAIN;
+
+    ssl_certificate /etc/letsencrypt/live/$DOMAIN/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/$DOMAIN/privkey.pem;
 
     location / {
         proxy_pass http://127.0.0.1:3080;
@@ -135,7 +144,7 @@ else
 fi
 
 # 步骤 6: 配置 HTTPS（包括前台和后台）
-echo "是否启用 HTTPS？（默认选择 N）"
+echo "是否启用 HTTPS？（默认选择 N，推荐选择 Y 以确保安全）"
 read -p "请输入 Y/N: " ENABLE_HTTPS
 
 if [ "$ENABLE_HTTPS" = "Y" ] || [ "$ENABLE_HTTPS" = "y" ]; then
