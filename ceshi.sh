@@ -40,15 +40,23 @@ echo "开始一键搭建独角数卡..."
 
 # 1. 更新系统并安装必要工具
 echo "更新系统并安装依赖..."
-apt update -y && apt upgrade -y && apt install -y curl wget sudo socat tar
+apt update -y && apt upgrade -y && apt install -y curl wget sudo socat tar unzip
 if [ $? -ne 0 ]; then
     echo "系统更新或依赖安装失败，请检查网络或包管理器！"
     exit 1
 fi
 
-# 2. 安装Node.js 16.x
+# 2. 清理旧的Node.js和相关包
+echo "清理旧的Node.js和相关包..."
+apt remove -y nodejs libnode-dev
+apt purge -y nodejs libnode-dev
+apt autoremove -y
+apt clean
+
+# 3. 安装Node.js 16.x
 echo "安装Node.js 16.x..."
 curl -fsSL https://deb.nodesource.com/setup_16.x | bash -
+apt update
 apt install -y nodejs
 if [ $? -ne 0 ]; then
     echo "Node.js安装失败，请检查包管理器！"
@@ -57,7 +65,7 @@ fi
 node -v
 npm -v
 
-# 3. 安装Docker
+# 4. 安装Docker
 echo "安装Docker..."
 curl -fsSL https://get.docker.com | sh
 if [ $? -ne 0 ]; then
@@ -73,7 +81,7 @@ if ! docker info >/dev/null 2>&1; then
     exit 1
 fi
 
-# 4. 安装Docker Compose
+# 5. 安装Docker Compose
 echo "安装Docker Compose..."
 curl -L "https://github.com/docker/compose/releases/download/v2.18.1/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
 if [ $? -ne 0 ]; then
@@ -88,7 +96,7 @@ if ! docker-compose --version >/dev/null 2>&1; then
     exit 1
 fi
 
-# 5. 创建目录结构
+# 6. 创建目录结构
 echo "创建目录..."
 cd /home
 mkdir -p web/html web/mysql web/certs web/redis
@@ -98,7 +106,7 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-# 6. 配置docker-compose.yml
+# 7. 配置docker-compose.yml
 echo "配置docker-compose.yml..."
 cat > /home/web/docker-compose.yml <<EOF
 version: '3'
@@ -152,7 +160,7 @@ networks:
     driver: bridge
 EOF
 
-# 7. 配置Nginx
+# 8. 配置Nginx
 echo "配置Nginx..."
 if [ "$USE_HTTPS" = true ]; then
     wget -O /home/web/nginx.conf https://raw.githubusercontent.com/kejilion/nginx/main/nginx7.conf
@@ -212,7 +220,7 @@ http {
 EOF
 fi
 
-# 8. 申请和下载SSL证书（仅当使用域名时）
+# 9. 申请和下载SSL证书（仅当使用域名时）
 if [ "$USE_HTTPS" = true ]; then
     echo "申请SSL证书..."
     curl https://get.acme.sh | sh
@@ -231,30 +239,30 @@ else
     echo "使用IP地址，跳过SSL证书申请..."
 fi
 
-# 9. 下载并解压独角数卡源码
+# 10. 下载并解压独角数卡源码
 echo "下载独角数卡源码..."
 cd /home/web/html
+rm -rf dujiaoka
 wget https://github.com/assimon/dujiaoka/releases/download/2.0.6/2.0.6-antibody.tar.gz
 if [ $? -ne 0 ]; then
     echo "源码下载失败，请检查网络！"
     exit 1
 fi
 tar -zxvf 2.0.6-antibody.tar.gz
+mv dujiaoka-2.0.6 dujiaoka || mv dujiaoka dujiaoka
 rm 2.0.6-antibody.tar.gz
 
-# 检查解压后的目录结构
-if [ -d "/home/web/html/dujiaoka-2.0.6" ]; then
-    mv /home/web/html/dujiaoka-2.0.6/* /home/web/html/dujiaoka
-    rm -rf /home/web/html/dujiaoka-2.0.6
-fi
-if [ ! -f "/home/web/html/dujiaoka/artisan" ]; then
-    echo "artisan文件缺失，请检查源码是否正确解压！"
+# 检查迁移文件
+echo "检查迁移文件..."
+if [ ! -f "/home/web/html/dujiaoka/database/migrations/2014_10_12_000000_create_users_table.php" ]; then
+    echo "迁移文件缺失，请检查源码完整性！"
     exit 1
 fi
 
-# 10. 安装Node.js依赖并编译前端资源
+# 11. 安装Node.js依赖并编译前端资源
 echo "安装Node.js依赖并编译前端资源..."
 cd /home/web/html/dujiaoka
+rm -rf node_modules package-lock.json
 npm install
 if [ $? -ne 0 ]; then
     echo "npm依赖安装失败，请检查网络或npm配置！"
@@ -271,7 +279,7 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-# 11. 配置.env文件
+# 12. 配置.env文件
 echo "配置独角数卡环境变量..."
 cd /home/web/html/dujiaoka
 cp .env.example .env
@@ -288,7 +296,7 @@ sed -i "s/CACHE_DRIVER=.*/CACHE_DRIVER=redis/" .env
 sed -i "s/QUEUE_CONNECTION=.*/QUEUE_CONNECTION=redis/" .env
 sed -i "s/ADMIN_HTTPS=.*/ADMIN_HTTPS=${USE_HTTPS}/" .env
 
-# 12. 启动Docker容器
+# 13. 启动Docker容器
 echo "启动Docker容器..."
 cd /home/web
 docker-compose up -d
@@ -297,7 +305,7 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-# 13. 安装PHP扩展
+# 14. 安装PHP扩展
 echo "安装PHP扩展..."
 docker exec php apt update
 docker exec php apt install -y libmariadb-dev-compat libmariadb-dev libzip-dev libmagickwand-dev imagemagick
@@ -313,7 +321,15 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-# 14. 生成APP_KEY
+# 15. 验证PHP扩展
+echo "验证PHP扩展..."
+docker exec -it php php -m | grep pdo_mysql
+if [ $? -ne 0 ]; then
+    echo "pdo_mysql扩展未正确安装！"
+    exit 1
+fi
+
+# 16. 生成APP_KEY
 echo "生成APP_KEY..."
 docker exec -it -w /var/www/html/dujiaoka php php artisan key:generate
 if [ $? -ne 0 ]; then
@@ -321,23 +337,40 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-# 15. 初始化数据库表
+# 17. 清理Laravel缓存
+echo "清理Laravel缓存..."
+docker exec -it -w /var/www/html/dujiaoka php php artisan config:clear
+docker exec -it -w /var/www/html/dujiaoka php php artisan cache:clear
+
+# 18. 初始化数据库表
 echo "初始化数据库表..."
+docker exec -it mysql mysql -udujiaoka -p${DB_PASSWORD} -e "DROP DATABASE IF EXISTS dujiaoka; CREATE DATABASE dujiaoka;"
 docker exec -it -w /var/www/html/dujiaoka php php artisan migrate --force
 if [ $? -ne 0 ]; then
-    echo "数据库表初始化失败，请检查数据库连接或权限！"
+    echo "数据库表初始化失败，请检查数据库连接或迁移文件！"
+    cat /home/web/html/dujiaoka/storage/logs/laravel.log
     exit 1
 fi
 
-# 16. 设置默认管理员账号
+# 19. 验证数据库表
+echo "验证数据库表..."
+docker exec -it mysql mysql -udujiaoka -p${DB_PASSWORD} -e "USE dujiaoka; SHOW TABLES;" | grep users
+if [ $? -ne 0 ]; then
+    echo "users表未创建，请检查迁移文件或数据库连接！"
+    cat /home/web/html/dujiaoka/storage/logs/laravel.log
+    exit 1
+fi
+
+# 20. 设置默认管理员账号
 echo "设置默认管理员账号..."
 docker exec -it mysql mysql -udujiaoka -p${DB_PASSWORD} -e "USE dujiaoka; INSERT INTO users (name, email, password, created_at, updated_at) VALUES ('admin', '${ADMIN_EMAIL}', '\$2y\$10\$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi', NOW(), NOW());"
 if [ $? -ne 0 ]; then
     echo "管理员账号设置失败，请检查数据库连接！"
+    cat /home/web/html/dujiaoka/storage/logs/laravel.log
     exit 1
 fi
 
-# 17. 赋予文件权限
+# 21. 赋予文件权限
 echo "设置文件权限..."
 docker exec nginx chmod -R 777 /var/www/html
 docker exec php chmod -R 777 /var/www/html
@@ -348,19 +381,20 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-# 18. 重启PHP容器
-echo "重启PHP容器..."
+# 22. 重启PHP和Nginx容器
+echo "重启PHP和Nginx容器..."
 docker restart php
+docker restart nginx
 if [ $? -ne 0 ]; then
-    echo "PHP容器重启失败，请检查Docker服务！"
+    echo "容器重启失败，请检查Docker服务！"
     exit 1
 fi
 
-# 19. 检查PHP扩展
+# 23. 检查PHP扩展
 echo "检查PHP扩展..."
 docker exec -it php php -m
 
-# 20. 完成提示
+# 24. 完成提示
 echo "独角数卡搭建完成！"
 echo "访问地址: ${PROTOCOL}://${DOMAIN}"
 echo "后台登录: ${PROTOCOL}://${DOMAIN}/admin"
@@ -372,3 +406,4 @@ echo "  用户名: dujiaoka"
 echo "  密码: ${DB_PASSWORD}"
 echo "  主机: mysql"
 echo "请妥善保存管理员账号和数据库信息！"
+echo "如遇问题，请检查日志：/home/web/html/dujiaoka/storage/logs/laravel.log"
