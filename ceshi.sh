@@ -38,7 +38,6 @@ install_package() {
     "ubuntu"|"debian")
       apt-get update -qq >/dev/null 2>&1
       DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "$1" >/dev/null 2>&1
-      # 为 Debian 9 或 EOL Ubuntu 添加回退仓库
       if [ "$OS" = "debian" ] && [ "$(echo "$VER < 10" | bc -l)" -eq 1 ]; then
         echo "deb http://deb.debian.org/debian stretch-backports main" > /etc/apt/sources.list.d/backports.list
         apt-get update -qq >/dev/null 2>&1
@@ -66,7 +65,6 @@ if ! command -v docker &> /dev/null; then
   echo "正在安装 Docker..."
   case $OS in
     "ubuntu"|"debian")
-      # 手动安装 Docker，绕过 EOL 限制
       install_package ca-certificates curl gnupg
       curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
       echo "deb [arch=amd64 signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu focal stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
@@ -166,21 +164,12 @@ fi
 # 创建 Nginx 配置文件目录（如果不存在）
 mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled
 
-# 配置 Nginx 反向代理（统一处理前台和后台）
+# 配置 Nginx 反向代理（先创建 HTTP 配置）
 echo "正在配置 Nginx 反向代理..."
 cat > /etc/nginx/sites-available/dujiaoka <<EOF
 server {
     listen 80;
     server_name $DOMAIN;
-    return 301 https://$DOMAIN$request_uri; # 强制重定向到 HTTPS
-}
-
-server {
-    listen 443 ssl;
-    server_name $DOMAIN;
-
-    ssl_certificate /etc/letsencrypt/live/$DOMAIN/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/$DOMAIN/privkey.pem;
 
     location / {
         proxy_pass http://127.0.0.1:3080;
@@ -213,6 +202,7 @@ if nginx -t 2>/dev/null; then
   echo "Nginx 配置成功"
 else
   echo "Nginx 配置失败，请检查 /etc/nginx/sites-available/dujiaoka"
+  cat /etc/nginx/sites-available/dujiaoka
   exit 1
 fi
 
@@ -223,7 +213,6 @@ read -p "请输入 Y/N: " ENABLE_HTTPS
 if [ "$ENABLE_HTTPS" = "Y" ] || [ "$ENABLE_HTTPS" = "y" ]; then
   echo "正在安装 Certbot 并申请 HTTPS 证书..."
   install_package certbot python3-certbot-nginx
-  # 确保 Debian 9 或 EOL Ubuntu 兼容
   if [ "$OS" = "debian" ] && [ "$VER" = "9" ]; then
     apt-get install -y python3-certbot-nginx -t stretch-backports >/dev/null 2>&1
   elif [ "$OS" = "ubuntu" ] && [ "$VER" = "20.04" ]; then
@@ -231,9 +220,52 @@ if [ "$ENABLE_HTTPS" = "Y" ] || [ "$ENABLE_HTTPS" = "y" ]; then
   fi
   certbot --nginx -d $DOMAIN --non-interactive --agree-tos -m user@$DOMAIN -n
   if [ $? -eq 0 ]; then
-    echo "HTTPS 配置成功，请访问 https://$DOMAIN 和 https://$DOMAIN/admin"
-    sed -i 's/ADMIN_HTTPS=false/ADMIN_HTTPS=true/' /root/dujiao/env.conf
-    sed -i "s|APP_URL=http://.*|APP_URL=https://$DOMAIN|" /root/dujiao/env.conf
+    # 更新 Nginx 配置以启用 HTTPS
+    cat > /etc/nginx/sites-available/dujiaoka <<EOF
+server {
+    listen 80;
+    server_name $DOMAIN;
+    return 301 https://$DOMAIN\$request_uri; # 强制重定向到 HTTPS
+}
+
+server {
+    listen 443 ssl;
+    server_name $DOMAIN;
+
+    ssl_certificate /etc/letsencrypt/live/$DOMAIN/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/$DOMAIN/privkey.pem;
+
+    location / {
+        proxy_pass http://127.0.0.1:3080;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+
+    location /admin {
+        proxy_pass http://127.0.0.1:3080/admin;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+}
+EOF
+    if nginx -t 2>/dev/null; then
+      if command -v systemctl &> /dev/null; then
+        systemctl reload nginx
+      else
+        service nginx reload
+      fi
+      echo "HTTPS 配置成功，请访问 https://$DOMAIN 和 https://$DOMAIN/admin"
+      sed -i 's/ADMIN_HTTPS=false/ADMIN_HTTPS=true/' /root/dujiao/env.conf
+      sed -i "s|APP_URL=http://.*|APP_URL=https://$DOMAIN|" /root/dujiao/env.conf
+    else
+      echo "HTTPS Nginx 配置失败，请检查 /etc/nginx/sites-available/dujiaoka"
+      cat /etc/nginx/sites-available/dujiaoka
+      exit 1
+    fi
   else
     echo "HTTPS 配置失败，请手动配置 SSL 证书或检查域名解析"
   fi
