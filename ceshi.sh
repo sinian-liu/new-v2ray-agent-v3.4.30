@@ -6,23 +6,81 @@ if [ "$EUID" -ne 0 ]; then
   exit 1
 fi
 
-# 清理可能的 apt 锁文件
-echo "正在检查并清理 apt 锁文件..."
+# 检测操作系统类型
+if [ -f /etc/os-release ]; then
+  . /etc/os-release
+  OS=$ID
+  VER=$VERSION_ID
+else
+  echo "无法检测操作系统类型"
+  exit 1
+fi
+
+# 清理可能的包管理锁文件
+echo "正在检查并清理包管理锁文件..."
 if [ -f /var/lib/dpkg/lock-frontend ]; then
-  sudo rm /var/lib/dpkg/lock-frontend
-  sudo dpkg --configure -a
+  rm /var/lib/dpkg/lock-frontend
+  dpkg --configure -a
 fi
 if [ -f /var/lib/apt/lists/lock ]; then
-  sudo rm /var/lib/apt/lists/lock
+  rm /var/lib/apt/lists/lock
 fi
 if [ -f /var/cache/apt/archives/lock ]; then
-  sudo rm /var/cache/apt/archives/lock
+  rm /var/cache/apt/archives/lock
 fi
+if [ -f /var/run/yum.pid ]; then
+  rm /var/run/yum.pid
+fi
+
+# 安装工具函数
+install_package() {
+  case $OS in
+    "ubuntu"|"debian")
+      apt-get update -qq >/dev/null 2>&1
+      DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "$1" >/dev/null 2>&1
+      # 为 Debian 9 添加 Let's Encrypt 仓库
+      if [ "$OS" = "debian" ] && [ "$(echo "$VER < 10" | bc -l)" -eq 1 ]; then
+        echo "deb http://deb.debian.org/debian stretch-backports main" > /etc/apt/sources.list.d/backports.list
+        apt-get update -qq >/dev/null 2>&1
+      fi
+      ;;
+    "centos")
+      if [ "$(echo "$VER >= 8" | bc -l)" -eq 1 ]; then
+        dnf install -y "$1" -q >/dev/null 2>&1
+      else
+        yum install -y "$1" -q >/dev/null 2>&1
+      fi
+      ;;
+    *)
+      echo "不支持的操作系统: $OS"
+      exit 1
+      ;;
+  esac
+}
 
 # 步骤 1: 检查并安装 Docker
 if ! command -v docker &> /dev/null; then
   echo "正在安装 Docker..."
-  curl -fsSL https://get.docker.com | sh -s -- --check-existing
+  case $OS in
+    "ubuntu"|"debian")
+      curl -fsSL https://get.docker.com | sh -s -- --check-existing
+      # 确保 Ubuntu 20.04 和 Debian 9+ 兼容
+      if [ "$OS" = "ubuntu" ] && [ "$VER" = "20.04" ]; then
+        install_package linux-image-generic
+      elif [ "$OS" = "debian" ] && [ "$VER" = "9" ]; then
+        install_package linux-image-amd64
+      fi
+      ;;
+    "centos")
+      install_package yum-utils
+      yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+      if [ "$(echo "$VER >= 8" | bc -l)" -eq 1 ]; then
+        dnf install -y docker-ce docker-ce-cli containerd.io -q >/dev/null 2>&1
+      else
+        yum install -y docker-ce docker-ce-cli containerd.io -q >/dev/null 2>&1
+      fi
+      ;;
+  esac
   if [ $? -ne 0 ]; then
     echo "Docker 安装失败，请手动检查系统状态"
     exit 1
@@ -32,11 +90,16 @@ else
 fi
 
 # 确保 Docker 服务启动
-systemctl daemon-reload
-systemctl enable docker
-systemctl start docker
+if command -v systemctl &> /dev/null; then
+  systemctl daemon-reload
+  systemctl enable docker
+  systemctl start docker
+else
+  service docker start
+  chkconfig docker on
+fi
 if [ $? -ne 0 ]; then
-  echo "Docker 服务启动失败，请检查日志：journalctl -u docker"
+  echo "Docker 服务启动失败，请检查日志：journalctl -u docker 或 service docker status"
   exit 1
 fi
 
@@ -84,12 +147,16 @@ echo -e "\033[33m请通过 \033[31mhttp://$DOMAIN:3080\033[0m\033[33m 访问网�
 read -p ""
 
 # 步骤 5: 安装和配置 Nginx
-echo "正在安装 Nginx..."
 if ! command -v nginx &> /dev/null; then
-  apt-get update
-  apt-get install -y nginx
-  systemctl enable nginx
-  systemctl start nginx
+  echo "正在安装 Nginx..."
+  install_package nginx
+  if command -v systemctl &> /dev/null; then
+    systemctl enable nginx
+    systemctl start nginx
+  else
+    service nginx start
+    chkconfig nginx on
+  fi
 else
   echo "Nginx 已安装，跳过安装"
 fi
@@ -134,7 +201,11 @@ EOF
 # 启用 Nginx 配置
 ln -sf /etc/nginx/sites-available/dujiaoka /etc/nginx/sites-enabled/dujiaoka
 if nginx -t 2>/dev/null; then
-  systemctl reload nginx
+  if command -v systemctl &> /dev/null; then
+    systemctl reload nginx
+  else
+    service nginx reload
+  fi
   echo "nginx: the configuration file /etc/nginx/nginx.conf syntax is ok"
   echo "nginx: configuration file /etc/nginx/nginx.conf test is successful"
   echo "Nginx 配置成功"
@@ -149,7 +220,11 @@ read -p "请输入 Y/N: " ENABLE_HTTPS
 
 if [ "$ENABLE_HTTPS" = "Y" ] || [ "$ENABLE_HTTPS" = "y" ]; then
   echo "正在安装 Certbot 并申请 HTTPS 证书..."
-  apt-get install -y certbot python3-certbot-nginx
+  install_package certbot python3-certbot-nginx
+  # 确保 Debian 9 兼容
+  if [ "$OS" = "debian" ] && [ "$VER" = "9" ]; then
+    apt-get install -y python3-certbot-nginx -t stretch-backports >/dev/null 2>&1
+  fi
   certbot --nginx -d $DOMAIN --non-interactive --agree-tos -m user@$DOMAIN -n
   if [ $? -eq 0 ]; then
     echo "HTTPS 配置成功，请访问 https://$DOMAIN 和 https://$DOMAIN/admin"
