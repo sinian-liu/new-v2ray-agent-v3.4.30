@@ -140,7 +140,7 @@ echo -e "\033[33m  密码\033[0m\033[32m：fbcbc3fc9f2c2454535618c2e88a12b9\033[
 echo -e "\033[33mRedis 连接地址\033[0m\033[32m：redis\033[0m"
 echo -e "\033[33m网站名称\033[0m\033[32m：$SHOP_NAME\033[0m"
 echo -e "\033[33m网站 URL\033[0m\033[32m：http://$DOMAIN\033[0m"
-echo -e "\033[33m后台登录\033[0m\033[32m：http://$DOMAIN:3080/admin033[0m"
+echo -e "\033[33m后台登录\033[0m\033[32m：http://$DOMAIN:3080/admin\033[0m"
 echo -e "\033[33m默认账户\033[0m\033[32m：admin\033[0m"
 echo -e "\033[33m默认密码\033[0m\033[32m：admin\033[0m"
 echo -e "\033[33m请通过 \033[31mhttp://$DOMAIN:3080\033[0m\033[33m 访问网站完成配置安装，配置完成后按 Enter 继续...\033[0m"
