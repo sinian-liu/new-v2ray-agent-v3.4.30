@@ -1,12 +1,26 @@
 #!/bin/bash
-
 set -e
 
 echo "🧙 欢迎使用 Dujiaoka 一键部署脚本"
 
+# ✅ 环境检查
+command -v docker >/dev/null 2>&1 || { echo "❌ 请先安装 Docker" >&2; exit 1; }
+command -v docker-compose >/dev/null 2>&1 || { echo "❌ 请先安装 Docker Compose" >&2; exit 1; }
+
+# ✅ 检查 80 端口是否占用
+if lsof -i :80 >/dev/null 2>&1; then
+    echo "⚠️ 警告：80 端口已被占用，请释放后再运行本脚本"
+    exit 1
+fi
+
 # 用户输入
 read -p "请输入项目部署目录（默认 dujiaoka）: " PROJECT_DIR
 PROJECT_DIR=${PROJECT_DIR:-dujiaoka}
+
+if [[ "$PROJECT_DIR" == "/" || "$PROJECT_DIR" == "/root" ]]; then
+    echo "❌ 错误：不能将项目部署在根目录 / 或 /root 下，请选择非系统目录"
+    exit 1
+fi
 
 read -p "设置 MySQL 数据库密码（默认 123456）: " MYSQL_PASSWORD
 MYSQL_PASSWORD=${MYSQL_PASSWORD:-123456}
@@ -18,9 +32,9 @@ if [[ "$CONFIRM" != "yes" ]]; then
 fi
 
 echo "📁 正在创建项目目录..."
-mkdir -p "$PROJECT_DIR"/{public,storage}
-mkdir -p "$PROJECT_DIR/mysql"
+mkdir -p "$PROJECT_DIR"/{code,mysql}
 
+# ✅ 克隆项目
 echo "🌐 正在克隆 Dujiaoka 项目源码..."
 git clone https://github.com/assimon/dujiaoka "$PROJECT_DIR/code" || true
 
@@ -43,6 +57,7 @@ REDIS_HOST=redis
 REDIS_PASSWORD=null
 EOF
 
+# ✅ Nginx 配置
 echo "📝 生成 nginx.conf..."
 cat > "$PROJECT_DIR/nginx.conf" <<EOF
 server {
@@ -64,6 +79,7 @@ server {
 }
 EOF
 
+# ✅ Docker Compose 配置
 echo "🧱 生成 docker-compose.yml..."
 cat > "$PROJECT_DIR/docker-compose.yml" <<EOF
 version: '3'
@@ -111,10 +127,11 @@ echo "🚀 启动容器中..."
 cd "$PROJECT_DIR"
 docker-compose up -d
 
-echo "⌛ 等待 MySQL 初始化（约 20s）..."
+echo "⌛ 等待 MySQL 初始化（约 20 秒）..."
 sleep 20
 
-echo "🎯 正在执行 Laravel 初始化命令..."
+# ✅ Laravel 初始化
+echo "🎯 执行 Laravel 初始化命令..."
 docker exec -it dujiaoka-php bash -c "cd /var/www/html && php artisan key:generate && php artisan config:cache"
 
 read -p "是否需要执行 php artisan migrate 初始化数据库？(yes/no): " MIGRATE_CONFIRM
@@ -122,8 +139,10 @@ if [[ "$MIGRATE_CONFIRM" == "yes" ]]; then
   docker exec -it dujiaoka-php bash -c "cd /var/www/html && php artisan migrate --force"
 fi
 
+# ✅ 获取 IP 自动展示访问地址
 IP=$(curl -s ifconfig.me || hostname -I | awk '{print $1}')
-echo "✅ 安装完成！请访问：http://$IP"
+echo "✅ 安装完成！请访问： http://$IP"
 
-echo "📋 检查 Nginx 服务状态..."
-docker logs dujiaoka-nginx 2>&1 | grep -i 'error' || echo "✅ 无错误日志"
+# ✅ 检查 nginx 错误日志
+echo "📋 Nginx 日志预览（如包含 error 表示可能存在问题）："
+docker logs dujiaoka-nginx 2>&1 | grep -i error || echo "✅ 无错误"
