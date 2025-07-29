@@ -143,7 +143,7 @@ echo -e "\033[33m网站 URL\033[0m\033[32m：http://$DOMAIN\033[0m"
 echo -e "\033[33m后台登录\033[0m\033[32m：http://$DOMAIN:3080/admin\033[0m"
 echo -e "\033[33m默认账户\033[0m\033[32m：admin\033[0m"
 echo -e "\033[33m默认密码\033[0m\033[32m：admin\033[0m"
-echo -e "\033[33m请通过 \033[31mhttp://$DOMAIN:3080\033[0m\033[33m 访问网站完成配置安装，配置完成后按 Enter 继续...\033[0m"
+echo -e "\033[33m请通过 \033[31mhttp://$DOMAIN:3080\033[0m\033[33m 访问网站完成配置安装，配置完成后返回服务器按 Enter 继续申请https证书...\033[0m"
 read -p ""
 
 # 步骤 5: 安装和配置 Nginx
@@ -218,10 +218,21 @@ if [ "$ENABLE_HTTPS" = "Y" ] || [ "$ENABLE_HTTPS" = "y" ]; then
   elif [ "$OS" = "ubuntu" ] && [ "$VER" = "20.04" ]; then
     apt-get install -y python3-certbot-nginx >/dev/null 2>&1
   fi
-  certbot --nginx -d $DOMAIN --non-interactive --agree-tos -m user@$DOMAIN -n
-  if [ $? -eq 0 ]; then
-    # 更新 Nginx 配置以启用 HTTPS
-    cat > /etc/nginx/sites-available/dujiaoka <<EOF
+  # 检查现有证书
+  if [ -d "/etc/letsencrypt/live/$DOMAIN" ]; then
+    echo "检测到现有证书，跳过申请以避免速率限制"
+  else
+    certbot --nginx -d $DOMAIN --non-interactive --agree-tos -m user@$DOMAIN -n
+    if [ $? -ne 0 ]; then
+      # 动态计算等待时间
+      WAIT_TIME=$(date -u -d "168 hours" +%Y-%m-%d\ %H:%M:%S)
+      echo "HTTPS 配置失败，可能是 Let's Encrypt 速率限制（5 张证书/7 天），请等待至 $WAIT_TIME UTC 或手动配置 SSL 证书或者更换子域名再申请"
+      echo "详情见 https://letsencrypt.org/docs/rate-limits/"
+      exit 1
+    fi
+  fi
+  # 更新 Nginx 配置以启用 HTTPS
+  cat > /etc/nginx/sites-available/dujiaoka <<EOF
 server {
     listen 80;
     server_name $DOMAIN;
@@ -252,22 +263,19 @@ server {
     }
 }
 EOF
-    if nginx -t 2>/dev/null; then
-      if command -v systemctl &> /dev/null; then
-        systemctl reload nginx
-      else
-        service nginx reload
-      fi
-      echo "HTTPS 配置成功，请访问 https://$DOMAIN 和 https://$DOMAIN/admin"
-      sed -i 's/ADMIN_HTTPS=false/ADMIN_HTTPS=true/' /root/dujiao/env.conf
-      sed -i "s|APP_URL=http://.*|APP_URL=https://$DOMAIN|" /root/dujiao/env.conf
+  if nginx -t 2>/dev/null; then
+    if command -v systemctl &> /dev/null; then
+      systemctl reload nginx
     else
-      echo "HTTPS Nginx 配置失败，请检查 /etc/nginx/sites-available/dujiaoka"
-      cat /etc/nginx/sites-available/dujiaoka
-      exit 1
+      service nginx reload
     fi
+    echo "HTTPS 配置成功，请访问 https://$DOMAIN 和 https://$DOMAIN/admin"
+    sed -i 's/ADMIN_HTTPS=false/ADMIN_HTTPS=true/' /root/dujiao/env.conf
+    sed -i "s|APP_URL=http://.*|APP_URL=https://$DOMAIN|" /root/dujiao/env.conf
   else
-    echo "HTTPS 配置失败，请手动配置 SSL 证书或检查域名解析"
+    echo "HTTPS Nginx 配置失败，请检查 /etc/nginx/sites-available/dujiaoka"
+    cat /etc/nginx/sites-available/dujiaoka
+    exit 1
   fi
 else
   sed -i "s|APP_URL=http://.*|APP_URL=http://$DOMAIN|" /root/dujiao/env.conf
@@ -276,7 +284,7 @@ fi
 # 完成提示
 echo -e "\033[32m独角数卡安装和配置完成！\033[0m"
 echo -e "\033[33m前台访问: https://$DOMAIN\033[0m"
-echo -e "\033[33m后台登录: http://$DOMAIN:3080/admin\033[0m"
+echo -e "\033[33m后台登录: https://$DOMAIN/admin\033[0m"
 echo -e "\033[33m默认账户: admin\033[0m"
 echo -e "\033[33m默认密码: admin\033[0m"
 echo "⚠️ 请尽快修改默认账户和密码！"
