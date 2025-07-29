@@ -3,23 +3,70 @@ set -e
 
 echo "🧙 欢迎使用 Dujiaoka 一键部署脚本"
 
-# ✅ 环境检查
-command -v docker >/dev/null 2>&1 || { echo "❌ 请先安装 Docker" >&2; exit 1; }
-command -v docker-compose >/dev/null 2>&1 || { echo "❌ 请先安装 Docker Compose" >&2; exit 1; }
-
-# ✅ 检查 80 端口是否占用
-if lsof -i :80 >/dev/null 2>&1; then
-    echo "⚠️ 警告：80 端口已被占用，请释放后再运行本脚本"
-    exit 1
+# 1. 检查 root 权限
+if [[ $EUID -ne 0 ]]; then
+   echo "❌ 请使用 root 权限运行本脚本"
+   exit 1
 fi
 
-# 用户输入
+# 2. 安装docker函数
+install_docker() {
+  echo "🚀 正在安装 Docker..."
+  apt update
+  apt install -y ca-certificates curl gnupg lsb-release
+
+  mkdir -p /etc/apt/keyrings
+  curl -fsSL https://download.docker.com/linux/ubuntu/gpg | tee /etc/apt/keyrings/docker.gpg > /dev/null
+
+  echo \
+    "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
+    $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+  apt update
+  apt install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+
+  systemctl enable docker
+  systemctl start docker
+  echo "✅ Docker 安装完成"
+}
+
+# 3. 安装 docker-compose 函数 (独立版本，兼容性强)
+install_docker_compose() {
+  echo "🚀 正在安装 Docker Compose..."
+  DOCKER_COMPOSE_VERSION="v2.20.2"
+  curl -L "https://github.com/docker/compose/releases/download/${DOCKER_COMPOSE_VERSION}/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+  chmod +x /usr/local/bin/docker-compose
+  ln -sf /usr/local/bin/docker-compose /usr/bin/docker-compose
+  echo "✅ Docker Compose 安装完成"
+}
+
+# 4. 检查 docker
+if ! command -v docker &> /dev/null; then
+  install_docker
+else
+  echo "✅ Docker 已安装"
+fi
+
+# 5. 检查 docker-compose
+if ! command -v docker-compose &> /dev/null; then
+  install_docker_compose
+else
+  echo "✅ Docker Compose 已安装"
+fi
+
+# 6. 检查端口80是否占用
+if lsof -i :80 >/dev/null 2>&1; then
+  echo "❌ 端口 80 已被占用，请释放后再运行本脚本"
+  exit 1
+fi
+
+# 7. 读用户输入
 read -p "请输入项目部署目录（默认 dujiaoka）: " PROJECT_DIR
 PROJECT_DIR=${PROJECT_DIR:-dujiaoka}
 
 if [[ "$PROJECT_DIR" == "/" || "$PROJECT_DIR" == "/root" ]]; then
-    echo "❌ 错误：不能将项目部署在根目录 / 或 /root 下，请选择非系统目录"
-    exit 1
+  echo "❌ 错误：不能将项目部署在根目录 / 或 /root 下，请选择非系统目录"
+  exit 1
 fi
 
 read -p "设置 MySQL 数据库密码（默认 123456）: " MYSQL_PASSWORD
@@ -27,18 +74,24 @@ MYSQL_PASSWORD=${MYSQL_PASSWORD:-123456}
 
 read -p "请确认是否继续安装？(yes/no): " CONFIRM
 if [[ "$CONFIRM" != "yes" ]]; then
-  echo "❌ 已取消安装"
+  echo "❌ 安装已取消"
   exit 1
 fi
 
+# 8. 创建目录
 echo "📁 正在创建项目目录..."
 mkdir -p "$PROJECT_DIR"/{code,mysql}
 
-# ✅ 克隆项目
-echo "🌐 正在克隆 Dujiaoka 项目源码..."
-git clone https://github.com/assimon/dujiaoka "$PROJECT_DIR/code" || true
+# 9. 克隆项目代码（若已存在则跳过）
+if [ -d "$PROJECT_DIR/code/.git" ]; then
+  echo "⚠️ 目录已存在，跳过克隆"
+else
+  echo "🌐 正在克隆 Dujiaoka 项目源码..."
+  git clone https://github.com/assimon/dujiaoka "$PROJECT_DIR/code"
+fi
 
-echo "⚙️ 正在生成 .env 配置..."
+# 10. 生成 .env 文件
+echo "⚙️ 生成 .env 配置..."
 cat > "$PROJECT_DIR/code/.env" <<EOF
 APP_NAME=dujiaoka
 APP_ENV=production
@@ -57,7 +110,7 @@ REDIS_HOST=redis
 REDIS_PASSWORD=null
 EOF
 
-# ✅ Nginx 配置
+# 11. 生成 nginx 配置
 echo "📝 生成 nginx.conf..."
 cat > "$PROJECT_DIR/nginx.conf" <<EOF
 server {
@@ -79,7 +132,7 @@ server {
 }
 EOF
 
-# ✅ Docker Compose 配置
+# 12. 生成 docker-compose.yml
 echo "🧱 生成 docker-compose.yml..."
 cat > "$PROJECT_DIR/docker-compose.yml" <<EOF
 version: '3'
@@ -123,26 +176,27 @@ services:
     restart: always
 EOF
 
-echo "🚀 启动容器中..."
+# 13. 启动容器
+echo "🚀 启动容器..."
 cd "$PROJECT_DIR"
 docker-compose up -d
 
-echo "⌛ 等待 MySQL 初始化（约 20 秒）..."
+# 14. 等待 MySQL 启动
+echo "⌛ 等待 MySQL 初始化，约 20 秒..."
 sleep 20
 
-# ✅ Laravel 初始化
-echo "🎯 执行 Laravel 初始化命令..."
+# 15. Laravel 初始化
+echo "🎯 正在执行 Laravel key:generate 和 config 缓存..."
 docker exec -it dujiaoka-php bash -c "cd /var/www/html && php artisan key:generate && php artisan config:cache"
 
-read -p "是否需要执行 php artisan migrate 初始化数据库？(yes/no): " MIGRATE_CONFIRM
+# 16. 是否执行 migrate
+read -p "是否执行数据库迁移 php artisan migrate？(yes/no): " MIGRATE_CONFIRM
 if [[ "$MIGRATE_CONFIRM" == "yes" ]]; then
   docker exec -it dujiaoka-php bash -c "cd /var/www/html && php artisan migrate --force"
 fi
 
-# ✅ 获取 IP 自动展示访问地址
+# 17. 显示访问地址
 IP=$(curl -s ifconfig.me || hostname -I | awk '{print $1}')
-echo "✅ 安装完成！请访问： http://$IP"
+echo "✅ 部署完成！请访问：http://$IP"
 
-# ✅ 检查 nginx 错误日志
-echo "📋 Nginx 日志预览（如包含 error 表示可能存在问题）："
-docker logs dujiaoka-nginx 2>&1 | grep -i error || echo "✅ 无错误"
+exit 0
