@@ -229,6 +229,16 @@ fi
 tar -zxvf 2.0.6-antibody.tar.gz
 rm 2.0.6-antibody.tar.gz
 
+# 检查解压后的目录结构
+if [ -d "/home/web/html/dujiaoka-2.0.6" ]; then
+    mv /home/web/html/dujiaoka-2.0.6/* /home/web/html/dujiaoka
+    rm -rf /home/web/html/dujiaoka-2.0.6
+fi
+if [ ! -f "/home/web/html/dujiaoka/artisan" ]; then
+    echo "artisan文件缺失，请检查源码是否正确解压！"
+    exit 1
+fi
+
 # 9. 安装Node.js和编译前端资源
 echo "安装Node.js并编译前端资源..."
 apt install -y nodejs npm
@@ -263,20 +273,24 @@ sed -i "s/CACHE_DRIVER=.*/CACHE_DRIVER=redis/" .env
 sed -i "s/QUEUE_CONNECTION=.*/QUEUE_CONNECTION=redis/" .env
 sed -i "s/ADMIN_HTTPS=.*/ADMIN_HTTPS=${USE_HTTPS}/" .env
 
-# 11. 生成APP_KEY
-echo "生成APP_KEY..."
-docker-compose -f /home/web/docker-compose.yml up -d
+# 11. 启动Docker容器
+echo "启动Docker容器..."
+cd /home/web
+docker-compose up -d
 if [ $? -ne 0 ]; then
     echo "Docker容器启动失败，请检查docker-compose.yml或Docker服务状态！"
     exit 1
 fi
-docker exec -it php php artisan key:generate
+
+# 12. 生成APP_KEY
+echo "生成APP_KEY..."
+docker exec -it -w /var/www/html/dujiaoka php php artisan key:generate
 if [ $? -ne 0 ]; then
-    echo "APP_KEY生成失败，请检查PHP容器或.env文件！"
+    echo "APP_KEY生成失败，请检查PHP容器或artisan文件！"
     exit 1
 fi
 
-# 12. 赋予文件权限
+# 13. 赋予文件权限
 echo "设置文件权限..."
 docker exec nginx chmod -R 777 /var/www/html
 docker exec php chmod -R 777 /var/www/html
@@ -285,7 +299,7 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-# 13. 安装PHP扩展
+# 14. 安装PHP扩展
 echo "安装PHP扩展..."
 docker exec php apt update
 docker exec php apt install -y libmariadb-dev-compat libmariadb-dev libzip-dev libmagickwand-dev imagemagick
@@ -297,7 +311,7 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-# 14. 重启PHP容器
+# 15. 重启PHP容器
 echo "重启PHP容器..."
 docker restart php
 if [ $? -ne 0 ]; then
@@ -305,11 +319,11 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-# 15. 检查PHP扩展
+# 16. 检查PHP扩展
 echo "检查PHP扩展..."
 docker exec -it php php -m
 
-# 16. 完成提示
+# 17. 完成提示
 echo "独角数卡搭建完成！"
 echo "访问地址: ${PROTOCOL}://${DOMAIN}"
 echo "后台登录: ${PROTOCOL}://${DOMAIN}/admin"
