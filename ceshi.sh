@@ -33,6 +33,8 @@ fi
 EMAIL="xxxx@gmail.com"        # 替换为你的邮箱地址
 APP_NAME="我的小店"           # 网站名称
 DB_PASSWORD="changeyourpassword"  # 数据库密码
+ADMIN_EMAIL="admin@example.com"  # 管理员邮箱
+ADMIN_PASSWORD="password"      # 管理员密码
 
 echo "开始一键搭建独角数卡..."
 
@@ -290,16 +292,34 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-# 13. 赋予文件权限
+# 13. 初始化数据库表
+echo "初始化数据库表..."
+docker exec -it -w /var/www/html/dujiaoka php php artisan migrate --force
+if [ $? -ne 0 ]; then
+    echo "数据库表初始化失败，请检查数据库连接或权限！"
+    exit 1
+fi
+
+# 14. 设置默认管理员账号
+echo "设置默认管理员账号..."
+docker exec -it mysql mysql -udujiaoka -p${DB_PASSWORD} -e "USE dujiaoka; INSERT INTO users (name, email, password, created_at, updated_at) VALUES ('admin', '${ADMIN_EMAIL}', '\$2y\$10\$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi', NOW(), NOW());"
+if [ $? -ne 0 ]; then
+    echo "管理员账号设置失败，请检查数据库连接！"
+    exit 1
+fi
+
+# 15. 赋予文件权限
 echo "设置文件权限..."
 docker exec nginx chmod -R 777 /var/www/html
 docker exec php chmod -R 777 /var/www/html
+docker exec php chmod -R 777 /var/www/html/dujiaoka/storage
+docker exec php chmod -R 777 /var/www/html/dujiaoka/bootstrap/cache
 if [ $? -ne 0 ]; then
     echo "设置文件权限失败，请检查Docker容器是否运行！"
     exit 1
 fi
 
-# 14. 安装PHP扩展
+# 16. 安装PHP扩展
 echo "安装PHP扩展..."
 docker exec php apt update
 docker exec php apt install -y libmariadb-dev-compat libmariadb-dev libzip-dev libmagickwand-dev imagemagick
@@ -311,7 +331,7 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-# 15. 重启PHP容器
+# 17. 重启PHP容器
 echo "重启PHP容器..."
 docker restart php
 if [ $? -ne 0 ]; then
@@ -319,17 +339,19 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-# 16. 检查PHP扩展
+# 18. 检查PHP扩展
 echo "检查PHP扩展..."
 docker exec -it php php -m
 
-# 17. 完成提示
+# 19. 完成提示
 echo "独角数卡搭建完成！"
 echo "访问地址: ${PROTOCOL}://${DOMAIN}"
 echo "后台登录: ${PROTOCOL}://${DOMAIN}/admin"
+echo "管理员账号: ${ADMIN_EMAIL}"
+echo "管理员密码: ${ADMIN_PASSWORD}"
 echo "数据库信息:"
 echo "  数据库名: dujiaoka"
 echo "  用户名: dujiaoka"
 echo "  密码: ${DB_PASSWORD}"
 echo "  主机: mysql"
-echo "请妥善保存数据库信息！"
+echo "请妥善保存管理员账号和数据库信息！"
