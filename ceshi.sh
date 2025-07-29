@@ -12,6 +12,10 @@ read DOMAIN
 
 # 获取服务器公网IP
 PUBLIC_IP=$(curl -s ifconfig.me)
+if [ -z "$PUBLIC_IP" ]; then
+    echo "无法获取服务器公网IP，请检查网络连接！"
+    exit 1
+fi
 
 # 设置默认值
 if [ -z "$DOMAIN" ]; then
@@ -35,23 +39,51 @@ echo "开始一键搭建独角数卡..."
 # 1. 更新系统并安装必要工具
 echo "更新系统并安装依赖..."
 apt update -y && apt upgrade -y && apt install -y curl wget sudo socat tar
+if [ $? -ne 0 ]; then
+    echo "系统更新或依赖安装失败，请检查网络或包管理器！"
+    exit 1
+fi
 
 # 2. 安装Docker
 echo "安装Docker..."
 curl -fsSL https://get.docker.com | sh
+if [ $? -ne 0 ]; then
+    echo "Docker安装失败，请检查网络或脚本执行权限！"
+    exit 1
+fi
 systemctl enable docker
 systemctl start docker
+
+# 验证Docker是否运行
+if ! docker info >/dev/null 2>&1; then
+    echo "Docker守护进程未运行，请检查Docker服务状态！"
+    exit 1
+fi
 
 # 3. 安装Docker Compose
 echo "安装Docker Compose..."
 curl -L "https://github.com/docker/compose/releases/download/v2.18.1/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+if [ $? -ne 0 ]; then
+    echo "Docker Compose下载失败，请检查网络！"
+    exit 1
+fi
 chmod +x /usr/local/bin/docker-compose
+
+# 验证Docker Compose是否安装
+if ! docker-compose --version >/dev/null 2>&1; then
+    echo "Docker Compose安装失败，请检查！"
+    exit 1
+fi
 
 # 4. 创建目录结构
 echo "创建目录..."
 cd /home
 mkdir -p web/html web/mysql web/certs web/redis
 touch web/nginx.conf web/docker-compose.yml
+if [ $? -ne 0 ]; then
+    echo "创建目录失败，请检查磁盘空间或权限！"
+    exit 1
+fi
 
 # 5. 配置docker-compose.yml
 echo "配置docker-compose.yml..."
@@ -110,11 +142,13 @@ EOF
 # 6. 配置Nginx
 echo "配置Nginx..."
 if [ "$USE_HTTPS" = true ]; then
-    # 使用域名和HTTPS
     wget -O /home/web/nginx.conf https://raw.githubusercontent.com/kejilion/nginx/main/nginx7.conf
+    if [ $? -ne 0 ]; then
+        echo "Nginx配置文件下载失败，请检查网络！"
+        exit 1
+    fi
     sed -i "s/yuming.com/${DOMAIN}/g" /home/web/nginx.conf
 else
-    # 使用IP和HTTP，简化Nginx配置
     cat > /home/web/nginx.conf <<EOF
 user  nginx;
 worker_processes  auto;
@@ -169,8 +203,16 @@ fi
 if [ "$USE_HTTPS" = true ]; then
     echo "申请SSL证书..."
     curl https://get.acme.sh | sh
+    if [ $? -ne 0 ]; then
+        echo "acme.sh安装失败，请检查网络！"
+        exit 1
+    fi
     ~/.acme.sh/acme.sh --register-account -m ${EMAIL}
     ~/.acme.sh/acme.sh --issue -d ${DOMAIN} --standalone
+    if [ $? -ne 0 ]; then
+        echo "SSL证书申请失败，请检查域名解析或80端口是否开放！"
+        exit 1
+    fi
     ~/.acme.sh/acme.sh --installcert -d ${DOMAIN} --key-file /home/web/certs/key.pem --fullchain-file /home/web/certs/cert.pem
 else
     echo "使用IP地址，跳过SSL证书申请..."
@@ -180,10 +222,33 @@ fi
 echo "下载独角数卡源码..."
 cd /home/web/html
 wget https://github.com/assimon/dujiaoka/releases/download/2.0.6/2.0.6-antibody.tar.gz
+if [ $? -ne 0 ]; then
+    echo "源码下载失败，请检查网络！"
+    exit 1
+fi
 tar -zxvf 2.0.6-antibody.tar.gz
 rm 2.0.6-antibody.tar.gz
 
-# 9. 配置.env文件
+# 9. 安装Node.js和编译前端资源
+echo "安装Node.js并编译前端资源..."
+apt install -y nodejs npm
+if [ $? -ne 0 ]; then
+    echo "Node.js安装失败，请检查包管理器！"
+    exit 1
+fi
+cd /home/web/html/dujiaoka
+npm install
+if [ $? -ne 0 ]; then
+    echo "npm依赖安装失败，请检查网络或npm配置！"
+    exit 1
+fi
+npm run prod
+if [ $? -ne 0 ]; then
+    echo "前端资源编译失败，请检查webpack.mix.js配置！"
+    exit 1
+fi
+
+# 10. 配置.env文件
 echo "配置独角数卡环境变量..."
 cd /home/web/html/dujiaoka
 cp .env.example .env
@@ -198,33 +263,49 @@ sed -i "s/CACHE_DRIVER=.*/CACHE_DRIVER=redis/" .env
 sed -i "s/QUEUE_CONNECTION=.*/QUEUE_CONNECTION=redis/" .env
 sed -i "s/ADMIN_HTTPS=.*/ADMIN_HTTPS=${USE_HTTPS}/" .env
 
-# 10. 启动Docker容器
+# 11. 启动Docker容器
 echo "启动Docker容器..."
 cd /home/web
 docker-compose up -d
+if [ $? -ne 0 ]; then
+    echo "Docker容器启动失败，请检查docker-compose.yml或Docker服务状态！"
+    exit 1
+fi
 
-# 11. 赋予文件权限
+# 12. 赋予文件权限
 echo "设置文件权限..."
 docker exec nginx chmod -R 777 /var/www/html
 docker exec php chmod -R 777 /var/www/html
+if [ $? -ne 0 ]; then
+    echo "设置文件权限失败，请检查Docker容器是否运行！"
+    exit 1
+fi
 
-# 12. 安装PHP扩展
+# 13. 安装PHP扩展
 echo "安装PHP扩展..."
 docker exec php apt update
 docker exec php apt install -y libmariadb-dev-compat libmariadb-dev libzip-dev libmagickwand-dev imagemagick
 docker exec php docker-php-ext-install pdo_mysql zip bcmath gd intl opcache
 docker exec php pecl install redis
 docker exec php sh -c 'echo "extension=redis.so" > /usr/local/etc/php/conf.d/docker-php-ext-redis.ini'
+if [ $? -ne 0 ]; then
+    echo "PHP扩展安装失败，请检查Docker容器或网络！"
+    exit 1
+fi
 
-# 13. 重启PHP容器
+# 14. 重启PHP容器
 echo "重启PHP容器..."
 docker restart php
+if [ $? -ne 0 ]; then
+    echo "PHP容器重启失败，请检查Docker服务！"
+    exit 1
+fi
 
-# 14. 检查PHP扩展
+# 15. 检查PHP扩展
 echo "检查PHP扩展..."
 docker exec -it php php -m
 
-# 15. 完成提示
+# 16. 完成提示
 echo "独角数卡搭建完成！"
 echo "访问地址: ${PROTOCOL}://${DOMAIN}"
 echo "后台登录: ${PROTOCOL}://${DOMAIN}/admin"
