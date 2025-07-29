@@ -30,7 +30,7 @@ else
 fi
 
 # 定义其他变量
-EMAIL="xxxx@gmail.com"        # 替换为你的邮箱地址
+EMAIL="xxxx@gmail.com"        # 替换为你的邮箱地址，用于SSL证书
 APP_NAME="我的小店"           # 网站名称
 DB_PASSWORD="changeyourpassword"  # 数据库密码
 ADMIN_EMAIL="admin@example.com"  # 管理员邮箱
@@ -100,6 +100,7 @@ fi
 echo "创建目录..."
 cd /home
 mkdir -p web/html web/mysql web/certs web/redis
+chmod -R 777 /home/web
 touch web/nginx.conf web/docker-compose.yml
 if [ $? -ne 0 ]; then
     echo "创建目录失败，请检查磁盘空间或权限！"
@@ -242,20 +243,36 @@ fi
 # 10. 下载并解压独角数卡源码
 echo "下载独角数卡源码..."
 cd /home/web/html
-rm -rf dujiaoka
-wget https://github.com/assimon/dujiaoka/releases/download/2.0.6/2.0.6-antibody.tar.gz
+rm -rf dujiaoka 2.0.6-antibody.tar.gz
+wget -O 2.0.6-antibody.tar.gz https://github.com/assimon/dujiaoka/releases/download/2.0.6/2.0.6-antibody.tar.gz
 if [ $? -ne 0 ]; then
     echo "源码下载失败，请检查网络！"
     exit 1
 fi
+# 验证文件大小（约为53MB）
+FILE_SIZE=$(stat -c%s 2.0.6-antibody.tar.gz)
+if [ $FILE_SIZE -lt 50000000 ]; then
+    echo "源码文件大小异常（$FILE_SIZE bytes），请检查下载完整性！"
+    exit 1
+fi
 tar -zxvf 2.0.6-antibody.tar.gz
-mv dujiaoka-2.0.6 dujiaoka || mv dujiaoka dujiaoka
+# 检查解压后的目录
+if [ -d "dujiaoka-2.0.6" ]; then
+    mv dujiaoka-2.0.6 dujiaoka
+elif [ -d "dujiaoka" ]; then
+    echo "源码直接解压为dujiaoka目录，继续..."
+else
+    echo "解压后未找到预期目录（dujiaoka或dujiaoka-2.0.6），请检查源码包！"
+    ls -l
+    exit 1
+fi
 rm 2.0.6-antibody.tar.gz
 
 # 检查迁移文件
 echo "检查迁移文件..."
 if [ ! -f "/home/web/html/dujiaoka/database/migrations/2014_10_12_000000_create_users_table.php" ]; then
     echo "迁移文件缺失，请检查源码完整性！"
+    ls -l /home/web/html/dujiaoka/database/migrations
     exit 1
 fi
 
