@@ -18,18 +18,7 @@ chmod +x /usr/local/bin/docker-compose
 systemctl enable docker
 systemctl start docker
 
-# 步骤 2: 安装 Nginx 用于反向代理
-echo "正在安装 Nginx..."
-if ! command -v nginx &> /dev/null; then
-  apt-get update
-  apt-get install -y nginx
-  systemctl enable nginx
-  systemctl start nginx
-else
-  echo "Nginx 已安装，跳过"
-fi
-
-# 步骤 3: 部署独角数卡
+# 步骤 2: 部署独角数卡
 echo "正在部署独角数卡..."
 
 # 获取用户输入
@@ -43,7 +32,22 @@ $SHOP_NAME
 N
 EOF
 
-# 步骤 4: 配置 Nginx 反向代理并显示登录信息
+# 步骤 3: 显示配置信息并等待用户完成网页安装
+echo "先登录进行配置再继续安装，MySQL 配置："
+echo "  MySQL 数据库地址: db"
+echo "  MySQL 数据库名称: dujiaoka"
+echo "  MySQL 用户名: root"
+echo "  密码: fbcbc3fc9f2c2454535618c2e88a12b9"
+echo "Redis 连接地址: redis"
+echo "网站名称：$SHOP_NAME"
+echo "网站 URL: http://$DOMAIN:3080 (或 https://$DOMAIN:3080 如果启用了 HTTPS)"
+echo "后台登录: http://$DOMAIN/admin (或 https://$DOMAIN/admin)"
+echo "默认账户: admin"
+echo "默认密码: admin"
+echo "请通过 http://$DOMAIN:3080 访问网站完成配置安装，配置完成后按 Enter 继续..."
+read -p ""
+
+# 步骤 4: 配置 Nginx 反向代理
 echo "正在配置 Nginx 反向代理..."
 cat > /etc/nginx/sites-available/dujiaoka <<EOF
 server {
@@ -64,16 +68,13 @@ EOF
 ln -sf /etc/nginx/sites-available/dujiaoka /etc/nginx/sites-enabled/dujiaoka
 nginx -t && systemctl reload nginx
 if [ $? -eq 0 ]; then
+  echo "nginx: the configuration file /etc/nginx/nginx.conf syntax is ok"
+  echo "nginx: configuration file /etc/nginx/nginx.conf test is successful"
   echo "Nginx 配置成功"
 else
   echo "Nginx 配置失败，请检查 /etc/nginx/sites-available/dujiaoka"
   exit 1
 fi
-
-# 显示登录信息和获取 MySQL 密码
-echo "请通过 http://$DOMAIN:3080 访问进行登录"
-echo "请从终端输出中获取 MySQL 密码，并妥善保存"
-read -p "请输入终端显示的 MySQL 密码: " MYSQL_PASSWORD
 
 # 步骤 5: 配置 HTTPS（使用 Certbot 自动申请证书）
 echo "是否启用 HTTPS？（默认选择 N）"
@@ -94,36 +95,9 @@ else
   sed -i "s|APP_URL=http://.*|APP_URL=http://$DOMAIN|" /root/dujiao/env.conf
 fi
 
-# 步骤 6: 检查并设置 APP_DEBUG
-echo "检查 APP_DEBUG 配置..."
-if grep -q "APP_DEBUG=true" /root/dujiao/env.conf; then
-  echo "警告：APP_DEBUG 当前为 true，建议设置为 false，但可能影响后台访问"
-  read -p "是否尝试将 APP_DEBUG 设置为 false？（Y/N）: " SET_DEBUG_FALSE
-  if [ "$SET_DEBUG_FALSE" = "Y" ] || [ "$SET_DEBUG_FALSE" = "y" ]; then
-    sed -i 's/APP_DEBUG=true/APP_DEBUG=false/' /root/dujiao/env.conf
-    echo "已将 APP_DEBUG 设置为 false，正在重启 Docker..."
-    systemctl restart docker
-    echo "重启后若后台无法登录，请检查 /root/dujiao/env.conf 和 Docker 日志"
-    echo "日志查看命令：docker logs $(docker ps -q --filter name=dujiaoka)"
-  else
-    echo "保留 APP_DEBUG=true，请手动检查后台问题"
-  fi
-else
-  echo "APP_DEBUG 已为 false，检查后台访问问题..."
-  systemctl restart docker
-  echo "重启后若后台无法登录，请检查 /root/dujiao/env.conf 和 Docker 日志"
-  echo "日志查看命令：docker logs $(docker ps -q --filter name=dujiaoka)"
-fi
-
 # 完成提示
 echo "独角数卡安装和配置完成！"
-echo "请访问 http://$DOMAIN（或 https://$DOMAIN 如果启用了 HTTPS）进行网页安装"
-echo "MySQL 配置："
-echo "  地址: db"
-echo "  用户名: dujiaoka"
-echo "  密码: $MYSQL_PASSWORD"
-echo "Redis 地址: redis"
-echo "网站 URL: http://$DOMAIN (或 https://$DOMAIN 如果启用了 HTTPS)"
+echo "请访问 http://$DOMAIN（或 https://$DOMAIN 如果启用了 HTTPS）进行访问"
 echo "后台登录: http://$DOMAIN/admin (或 https://$DOMAIN/admin)"
 echo "默认账户: admin"
 echo "默认密码: admin"
