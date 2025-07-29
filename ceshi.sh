@@ -1,120 +1,83 @@
 #!/bin/bash
+
 set -e
 
-echo "===== 修复挂载路径的一键安装：独角数卡 Docker 部署 v2.0.6 ====="
+echo "🧙 欢迎使用 Dujiaoka 一键部署脚本"
 
-# --- 用户交互输入 ---
-read -rp "域名 (不含 http，默认为 localhost): " DOMAIN
-DOMAIN=${DOMAIN:-localhost}
-read -rp "数据库名 (默认 db): " DB_NAME
-DB_NAME=${DB_NAME:-db}
-read -rp "数据库用户名 (默认 root): " DB_USER
-DB_USER=${DB_USER:-root}
-read -rsp "数据库密码: " DB_PASS; echo
-read -rp "Redis 密码 (可留空): " REDIS_PASS
-read -rp "安装路径 (默认 /home/web/html/web5): " INSTALL_PATH
-INSTALL_PATH=${INSTALL_PATH:-/home/web/html/web5}
+# 用户输入
+read -p "请输入项目部署目录（默认 dujiaoka）: " PROJECT_DIR
+PROJECT_DIR=${PROJECT_DIR:-dujiaoka}
 
-# --- 安装 Docker Compose 和 Docker（如未安装） ---
-apt-get update -y
-apt-get install -y curl git sudo docker.io docker-compose
+read -p "设置 MySQL 数据库密码（默认 123456）: " MYSQL_PASSWORD
+MYSQL_PASSWORD=${MYSQL_PASSWORD:-123456}
 
-# --- 准备安装目录 ---
-mkdir -p "$INSTALL_PATH"
-cd "$INSTALL_PATH"
-rm -rf dujiaoka tmp_dujiaoka
-
-# --- 下载源码 ---
-curl -L -o dujiaoka.tar.gz https://github.com/assimon/dujiaoka/releases/download/2.0.6/2.0.6-antibody.tar.gz
-mkdir tmp_dujiaoka
-tar -zxvf dujiaoka.tar.gz -C tmp_dujiaoka
-rm dujiaoka.tar.gz
-
-# --- 修复路径错误 ---
-if [ -d tmp_dujiaoka/dujiaoka/dujiaoka ]; then
-  mv tmp_dujiaoka/dujiaoka/dujiaoka ./dujiaoka
-elif [ -d tmp_dujiaoka/dujiaoka ]; then
-  mv tmp_dujiaoka/dujiaoka ./dujiaoka
-else
-  echo "❌ 源码结构异常，退出"
+read -p "请确认是否继续安装？(yes/no): " CONFIRM
+if [[ "$CONFIRM" != "yes" ]]; then
+  echo "❌ 已取消安装"
   exit 1
 fi
-rm -rf tmp_dujiaoka
 
-# --- 设置权限与目录 ---
-cd dujiaoka
-mkdir -p public/uploads storage bootstrap/cache
-chmod -R 755 storage bootstrap/cache
-chmod -R 777 public/uploads
+echo "📁 正在创建项目目录..."
+mkdir -p "$PROJECT_DIR"/{public,storage}
+mkdir -p "$PROJECT_DIR/mysql"
 
-# --- 创建 .env 文件 ---
-cat > .env <<EOF
-APP_URL=http://${DOMAIN}
-DB_HOST=mysql
-DB_DATABASE=${DB_NAME}
-DB_USERNAME=${DB_USER}
-DB_PASSWORD=${DB_PASS}
-REDIS_HOST=redis
-REDIS_PASSWORD=${REDIS_PASS}
+echo "🌐 正在克隆 Dujiaoka 项目源码..."
+git clone https://github.com/assimon/dujiaoka "$PROJECT_DIR/code" || true
+
+echo "⚙️ 正在生成 .env 配置..."
+cat > "$PROJECT_DIR/code/.env" <<EOF
+APP_NAME=dujiaoka
+APP_ENV=production
+APP_KEY=
 APP_DEBUG=false
+APP_URL=http://localhost
+
+DB_CONNECTION=mysql
+DB_HOST=mysql
+DB_PORT=3306
+DB_DATABASE=dujiaoka
+DB_USERNAME=root
+DB_PASSWORD=$MYSQL_PASSWORD
+
+REDIS_HOST=redis
+REDIS_PASSWORD=null
 EOF
 
-# --- 创建 nginx.conf 文件（文件不是目录） ---
-cat > nginx.conf <<EOF
-user  nginx;
-worker_processes  auto;
-events { worker_connections 1024; }
-http {
-  include mime.types;
-  sendfile on;
-  server {
+echo "📝 生成 nginx.conf..."
+cat > "$PROJECT_DIR/nginx.conf" <<EOF
+server {
     listen 80;
-    server_name ${DOMAIN};
+    server_name localhost;
+
     root /var/www/html/public;
     index index.php;
+
     location / {
-      try_files \$uri \$uri/ /index.php?\$query_string;
+        try_files \$uri \$uri/ /index.php?\$query_string;
     }
+
     location ~ \.php\$ {
-      fastcgi_pass php:9000;
-      fastcgi_index index.php;
-      include fastcgi_params;
-      fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
+        include fastcgi_params;
+        fastcgi_pass php:9000;
+        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
     }
-  }
 }
 EOF
 
-# --- 创建 docker-compose.yml 文件 ---
-cat > docker-compose.yml <<EOF
-version: "3.8"
+echo "🧱 生成 docker-compose.yml..."
+cat > "$PROJECT_DIR/docker-compose.yml" <<EOF
+version: '3'
+
 services:
-  mysql:
-    image: mysql:5.7
-    container_name: dujiaoka-mysql
-    restart: always
-    environment:
-      MYSQL_ROOT_PASSWORD: ${DB_PASS}
-      MYSQL_DATABASE: ${DB_NAME}
-      MYSQL_USER: ${DB_USER}
-      MYSQL_PASSWORD: ${DB_PASS}
-    volumes:
-      - mysql_data:/var/lib/mysql
-
-  redis:
-    image: redis:alpine
-    container_name: dujiaoka-redis
-    restart: always
-    command: redis-server --requirepass "${REDIS_PASS}"
-    volumes:
-      - redis_data:/data
-
   php:
     image: php:8.0-fpm
     container_name: dujiaoka-php
     restart: always
+    working_dir: /var/www/html
     volumes:
-      - ./:/var/www/html
+      - ./code:/var/www/html
+    depends_on:
+      - mysql
 
   nginx:
     image: nginx:stable-alpine
@@ -123,19 +86,44 @@ services:
     ports:
       - "80:80"
     volumes:
-      - ./:/var/www/html:ro
-      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./code:/var/www/html
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf
     depends_on:
       - php
 
-volumes:
-  mysql_data:
-  redis_data:
+  mysql:
+    image: mysql:5.7
+    container_name: dujiaoka-mysql
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: $MYSQL_PASSWORD
+      MYSQL_DATABASE: dujiaoka
+    volumes:
+      - ./mysql:/var/lib/mysql
+
+  redis:
+    image: redis:alpine
+    container_name: dujiaoka-redis
+    restart: always
 EOF
 
-# --- 启动容器 ---
-docker-compose down --remove-orphans || true
+echo "🚀 启动容器中..."
+cd "$PROJECT_DIR"
 docker-compose up -d
 
-echo
-echo "✅ 安装完成！请访问：http://${DOMAIN}"
+echo "⌛ 等待 MySQL 初始化（约 20s）..."
+sleep 20
+
+echo "🎯 正在执行 Laravel 初始化命令..."
+docker exec -it dujiaoka-php bash -c "cd /var/www/html && php artisan key:generate && php artisan config:cache"
+
+read -p "是否需要执行 php artisan migrate 初始化数据库？(yes/no): " MIGRATE_CONFIRM
+if [[ "$MIGRATE_CONFIRM" == "yes" ]]; then
+  docker exec -it dujiaoka-php bash -c "cd /var/www/html && php artisan migrate --force"
+fi
+
+IP=$(curl -s ifconfig.me || hostname -I | awk '{print $1}')
+echo "✅ 安装完成！请访问：http://$IP"
+
+echo "📋 检查 Nginx 服务状态..."
+docker logs dujiaoka-nginx 2>&1 | grep -i 'error' || echo "✅ 无错误日志"
