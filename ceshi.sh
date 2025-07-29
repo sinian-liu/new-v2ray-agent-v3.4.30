@@ -1,16 +1,34 @@
 #!/bin/bash
 
-# 定义变量（请根据实际情况修改）
-DOMAIN="shop.kejilion.eu.org"  # 替换为你的域名
-EMAIL="xxxx@gmail.com"        # 替换为你的邮箱
-APP_NAME="我的小店"           # 网站名称
-DB_PASSWORD="changeyourpassword"  # 数据库密码
-
 # 检查是否以root用户运行
 if [ "$(id -u)" != "0" ]; then
     echo "此脚本需要以root权限运行！"
     exit 1
 fi
+
+# 交互式输入域名或使用IP
+echo "请输入你的域名（例如 shop.example.com，直接回车将使用服务器IP）："
+read DOMAIN
+
+# 获取服务器公网IP
+PUBLIC_IP=$(curl -s ifconfig.me)
+
+# 设置默认值
+if [ -z "$DOMAIN" ]; then
+    DOMAIN=$PUBLIC_IP
+    USE_HTTPS=false
+    PROTOCOL="http"
+    echo "未输入域名，将使用IP地址：${PUBLIC_IP}"
+else
+    USE_HTTPS=true
+    PROTOCOL="https"
+    echo "使用域名：${DOMAIN}"
+fi
+
+# 定义其他变量
+EMAIL="xxxx@gmail.com"        # 替换为你的邮箱地址
+APP_NAME="我的小店"           # 网站名称
+DB_PASSWORD="changeyourpassword"  # 数据库密码
 
 echo "开始一键搭建独角数卡..."
 
@@ -91,15 +109,72 @@ EOF
 
 # 6. 配置Nginx
 echo "配置Nginx..."
-wget -O /home/web/nginx.conf https://raw.githubusercontent.com/kejilion/nginx/main/nginx7.conf
-sed -i "s/yuming.com/${DOMAIN}/g" /home/web/nginx.conf
+if [ "$USE_HTTPS" = true ]; then
+    # 使用域名和HTTPS
+    wget -O /home/web/nginx.conf https://raw.githubusercontent.com/kejilion/nginx/main/nginx7.conf
+    sed -i "s/yuming.com/${DOMAIN}/g" /home/web/nginx.conf
+else
+    # 使用IP和HTTP，简化Nginx配置
+    cat > /home/web/nginx.conf <<EOF
+user  nginx;
+worker_processes  auto;
 
-# 7. 申请和下载SSL证书
-echo "申请SSL证书..."
-curl https://get.acme.sh | sh
-~/.acme.sh/acme.sh --register-account -m ${EMAIL}
-~/.acme.sh/acme.sh --issue -d ${DOMAIN} --standalone
-~/.acme.sh/acme.sh --installcert -d ${DOMAIN} --key-file /home/web/certs/key.pem --fullchain-file /home/web/certs/cert.pem
+error_log  /var/log/nginx/error.log warn;
+pid        /var/run/nginx.pid;
+
+events {
+    worker_connections  1024;
+}
+
+http {
+    include       /etc/nginx/mime.types;
+    default_type  application/octet-stream;
+
+    log_format  main  '\$remote_addr - \$remote_user [\$time_local] "\$request" '
+                      '\$status \$body_bytes_sent "\$http_referer" '
+                      '"\$http_user_agent" "\$http_x_forwarded_for"';
+
+    access_log  /var/log/nginx/access.log  main;
+
+    sendfile        on;
+    keepalive_timeout  65;
+
+    server {
+        listen       80;
+        server_name  ${DOMAIN};
+
+        root   /var/www/html/dujiaoka/public;
+        index  index.php index.html index.htm;
+
+        location / {
+            try_files \$uri \$uri/ /index.php?\$query_string;
+        }
+
+        location ~ \.php\$ {
+            fastcgi_pass   php:9000;
+            fastcgi_index  index.php;
+            fastcgi_param  SCRIPT_FILENAME  \$document_root\$fastcgi_script_name;
+            include        fastcgi_params;
+        }
+
+        location ~ /\.ht {
+            deny  all;
+        }
+    }
+}
+EOF
+fi
+
+# 7. 申请和下载SSL证书（仅当使用域名时）
+if [ "$USE_HTTPS" = true ]; then
+    echo "申请SSL证书..."
+    curl https://get.acme.sh | sh
+    ~/.acme.sh/acme.sh --register-account -m ${EMAIL}
+    ~/.acme.sh/acme.sh --issue -d ${DOMAIN} --standalone
+    ~/.acme.sh/acme.sh --installcert -d ${DOMAIN} --key-file /home/web/certs/key.pem --fullchain-file /home/web/certs/cert.pem
+else
+    echo "使用IP地址，跳过SSL证书申请..."
+fi
 
 # 8. 下载并解压独角数卡源码
 echo "下载独角数卡源码..."
@@ -113,7 +188,7 @@ echo "配置独角数卡环境变量..."
 cd /home/web/html/dujiaoka
 cp .env.example .env
 sed -i "s/APP_NAME=.*/APP_NAME=${APP_NAME}/" .env
-sed -i "s/APP_URL=.*/APP_URL=https:\/\/${DOMAIN}/" .env
+sed -i "s/APP_URL=.*/APP_URL=${PROTOCOL}:\/\/${DOMAIN}/" .env
 sed -i "s/DB_HOST=.*/DB_HOST=mysql/" .env
 sed -i "s/DB_DATABASE=.*/DB_DATABASE=dujiaoka/" .env
 sed -i "s/DB_USERNAME=.*/DB_USERNAME=dujiaoka/" .env
@@ -121,7 +196,7 @@ sed -i "s/DB_PASSWORD=.*/DB_PASSWORD=${DB_PASSWORD}/" .env
 sed -i "s/REDIS_HOST=.*/REDIS_HOST=redis/" .env
 sed -i "s/CACHE_DRIVER=.*/CACHE_DRIVER=redis/" .env
 sed -i "s/QUEUE_CONNECTION=.*/QUEUE_CONNECTION=redis/" .env
-sed -i "s/ADMIN_HTTPS=.*/ADMIN_HTTPS=true/" .env
+sed -i "s/ADMIN_HTTPS=.*/ADMIN_HTTPS=${USE_HTTPS}/" .env
 
 # 10. 启动Docker容器
 echo "启动Docker容器..."
@@ -151,8 +226,8 @@ docker exec -it php php -m
 
 # 15. 完成提示
 echo "独角数卡搭建完成！"
-echo "访问地址: https://${DOMAIN}"
-echo "后台登录: https://${DOMAIN}/admin"
+echo "访问地址: ${PROTOCOL}://${DOMAIN}"
+echo "后台登录: ${PROTOCOL}://${DOMAIN}/admin"
 echo "数据库信息:"
 echo "  数据库名: dujiaoka"
 echo "  用户名: dujiaoka"
