@@ -33,21 +33,32 @@ N
 EOF
 
 # 步骤 3: 显示配置信息并等待用户完成网页安装
-echo "先登录进行配置再继续安装，MySQL 配置："
+echo "先登录进行配置再继续安装，没有提到的不需要更改"
+echo "  MySQL 配置："
 echo "  MySQL 数据库地址: db"
 echo "  MySQL 数据库名称: dujiaoka"
 echo "  MySQL 用户名: root"
 echo "  密码: fbcbc3fc9f2c2454535618c2e88a12b9"
 echo "Redis 连接地址: redis"
 echo "网站名称：$SHOP_NAME"
-echo "网站 URL: http://$DOMAIN:3080 (或 https://$DOMAIN:3080 如果启用了 HTTPS)"
+echo "网站 URL: http://$DOMAIN (或 https://$DOMAIN 如果启用了 HTTPS)"
 echo "后台登录: http://$DOMAIN/admin (或 https://$DOMAIN/admin)"
 echo "默认账户: admin"
 echo "默认密码: admin"
 echo "请通过 http://$DOMAIN:3080 访问网站完成配置安装，配置完成后按 Enter 继续..."
 read -p ""
 
-# 步骤 4: 配置 Nginx 反向代理
+# 步骤 4: 安装和配置 Nginx
+echo "正在安装 Nginx..."
+apt-get update
+apt-get install -y nginx
+systemctl enable nginx
+systemctl start nginx
+
+# 创建 Nginx 配置文件目录（如果不存在）
+mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled
+
+# 配置 Nginx 反向代理
 echo "正在配置 Nginx 反向代理..."
 cat > /etc/nginx/sites-available/dujiaoka <<EOF
 server {
@@ -66,8 +77,8 @@ EOF
 
 # 启用 Nginx 配置
 ln -sf /etc/nginx/sites-available/dujiaoka /etc/nginx/sites-enabled/dujiaoka
-nginx -t && systemctl reload nginx
-if [ $? -eq 0 ]; then
+if nginx -t 2>/dev/null; then
+  systemctl reload nginx
   echo "nginx: the configuration file /etc/nginx/nginx.conf syntax is ok"
   echo "nginx: configuration file /etc/nginx/nginx.conf test is successful"
   echo "Nginx 配置成功"
