@@ -38,9 +38,12 @@ install_package() {
     "ubuntu"|"debian")
       apt-get update -qq >/dev/null 2>&1
       DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "$1" >/dev/null 2>&1
-      # 为 Debian 9 添加 Let's Encrypt 仓库
+      # 为 Debian 9 或 EOL Ubuntu 添加回退仓库
       if [ "$OS" = "debian" ] && [ "$(echo "$VER < 10" | bc -l)" -eq 1 ]; then
         echo "deb http://deb.debian.org/debian stretch-backports main" > /etc/apt/sources.list.d/backports.list
+        apt-get update -qq >/dev/null 2>&1
+      elif [ "$OS" = "ubuntu" ] && [ "$VER" = "20.04" ]; then
+        echo "deb [arch=amd64] http://old-releases.ubuntu.com/ubuntu focal main restricted universe multiverse" > /etc/apt/sources.list.d/focal-backports.list
         apt-get update -qq >/dev/null 2>&1
       fi
       ;;
@@ -63,13 +66,12 @@ if ! command -v docker &> /dev/null; then
   echo "正在安装 Docker..."
   case $OS in
     "ubuntu"|"debian")
-      curl -fsSL https://get.docker.com | sh -s -- --check-existing
-      # 确保 Ubuntu 20.04 和 Debian 9+ 兼容
-      if [ "$OS" = "ubuntu" ] && [ "$VER" = "20.04" ]; then
-        install_package linux-image-generic
-      elif [ "$OS" = "debian" ] && [ "$VER" = "9" ]; then
-        install_package linux-image-amd64
-      fi
+      # 手动安装 Docker，绕过 EOL 限制
+      install_package ca-certificates curl gnupg
+      curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+      echo "deb [arch=amd64 signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu focal stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
+      apt-get update -qq >/dev/null 2>&1
+      DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin >/dev/null 2>&1
       ;;
     "centos")
       install_package yum-utils
@@ -221,9 +223,11 @@ read -p "请输入 Y/N: " ENABLE_HTTPS
 if [ "$ENABLE_HTTPS" = "Y" ] || [ "$ENABLE_HTTPS" = "y" ]; then
   echo "正在安装 Certbot 并申请 HTTPS 证书..."
   install_package certbot python3-certbot-nginx
-  # 确保 Debian 9 兼容
+  # 确保 Debian 9 或 EOL Ubuntu 兼容
   if [ "$OS" = "debian" ] && [ "$VER" = "9" ]; then
     apt-get install -y python3-certbot-nginx -t stretch-backports >/dev/null 2>&1
+  elif [ "$OS" = "ubuntu" ] && [ "$VER" = "20.04" ]; then
+    apt-get install -y python3-certbot-nginx >/dev/null 2>&1
   fi
   certbot --nginx -d $DOMAIN --non-interactive --agree-tos -m user@$DOMAIN -n
   if [ $? -eq 0 ]; then
