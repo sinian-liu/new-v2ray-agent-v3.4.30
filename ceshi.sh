@@ -263,12 +263,16 @@ sed -i "s/CACHE_DRIVER=.*/CACHE_DRIVER=redis/" .env
 sed -i "s/QUEUE_CONNECTION=.*/QUEUE_CONNECTION=redis/" .env
 sed -i "s/ADMIN_HTTPS=.*/ADMIN_HTTPS=${USE_HTTPS}/" .env
 
-# 11. 启动Docker容器
-echo "启动Docker容器..."
-cd /home/web
-docker-compose up -d
+# 11. 生成APP_KEY
+echo "生成APP_KEY..."
+docker-compose -f /home/web/docker-compose.yml up -d
 if [ $? -ne 0 ]; then
     echo "Docker容器启动失败，请检查docker-compose.yml或Docker服务状态！"
+    exit 1
+fi
+docker exec -it php php artisan key:generate
+if [ $? -ne 0 ]; then
+    echo "APP_KEY生成失败，请检查PHP容器或.env文件！"
     exit 1
 fi
 
