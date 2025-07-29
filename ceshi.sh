@@ -33,19 +33,19 @@ N
 EOF
 
 # 步骤 3: 显示配置信息并等待用户完成网页安装
-echo "先登录进行配置再继续安装，没有提到的不需要更改"
-echo "  MySQL 配置："
-echo "  MySQL 数据库地址: db"
-echo "  MySQL 数据库名称: dujiaoka"
-echo "  MySQL 用户名: root"
-echo "  密码: fbcbc3fc9f2c2454535618c2e88a12b9"
-echo "Redis 连接地址: redis"
-echo "网站名称：$SHOP_NAME"
-echo "网站 URL: http://$DOMAIN (或 https://$DOMAIN 如果启用了 HTTPS)"
-echo "后台登录: http://$DOMAIN/admin (或 https://$DOMAIN/admin)"
-echo "默认账户: admin"
-echo "默认密码: admin"
-echo "请通过 http://$DOMAIN:3080 访问网站完成配置安装，配置完成后按 Enter 继续..."
+echo -e "\033[31m先登录进行配置再继续安装，没有提到的不需要更改\033[0m"
+echo -e "\033[33mMySQL 配置\033[0m："
+echo -e "\033[33mMySQL 数据库地址\033[0m: \033[32mdb\033[0m"
+echo -e "\033[33mMySQL 数据库名称\033[0m: \033[32mdujiaoka\033[0m"
+echo -e "\033[33mMySQL 用户名\033[0m: \033[32mroot\033[0m"
+echo -e "\033[33m密码\033[0m: \033[32mfbcbc3fc9f2c2454535618c2e88a12b9\033[0m"
+echo -e "\033[33mRedis 连接地址\033[0m: \033[32mredis\033[0m"
+echo -e "\033[33m网站名称\033[0m：\033[32m$SHOP_NAME\033[0m"
+echo -e "\033[33m网站 URL\033[0m: \033[32mhttp://$DOMAIN\033[0m"
+echo -e "\033[33m后台登录\033[0m: \033[32mhttp://$DOMAIN/admin\033[0m"
+echo -e "\033[33m默认账户\033[0m: \033[32madmin\033[0m"
+echo -e "\033[33m默认密码\033[0m: \033[32madmin\033[0m"
+echo -e "\033[33m请通过 http://sparkedhost.565645.xyz:3080 访问网站完成配置安装，配置完成后按 Enter 继续...\033[0m"
 read -p ""
 
 # 步骤 4: 安装和配置 Nginx
@@ -107,10 +107,10 @@ else
 fi
 
 # 完成提示
-echo "独角数卡安装和配置完成！"
-echo "请访问 http://$DOMAIN（或 https://$DOMAIN 如果启用了 HTTPS）进行访问"
-echo "后台登录: http://$DOMAIN/admin (或 https://$DOMAIN/admin)"
-echo "默认账户: admin"
-echo "默认密码: admin"
+echo -e "\033[32m独角数卡安装和配置完成！\033[0m"
+echo -e "\033[33m前台访问: https://$DOMAIN\033[0m"
+echo -e "\033[33m后台登录: https://$DOMAIN/admin\033[0m"
+echo -e "\033[33m默认账户: admin\033[0m"
+echo -e "\033[33m默认密码: admin\033[0m"
 echo "⚠️ 请尽快修改默认账户和密码！"
 echo "若有问题，请检查 Docker 日志：docker logs $(docker ps -q --filter name=dujiaoka)"
