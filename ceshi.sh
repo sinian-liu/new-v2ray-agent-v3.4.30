@@ -266,7 +266,9 @@ cd /home/web/html/dujiaoka
 cp .env.example .env
 sed -i "s/APP_NAME=.*/APP_NAME=${APP_NAME}/" .env
 sed -i "s/APP_URL=.*/APP_URL=${PROTOCOL}:\/\/${DOMAIN}/" .env
+sed -i "s/DB_CONNECTION=.*/DB_CONNECTION=mysql/" .env
 sed -i "s/DB_HOST=.*/DB_HOST=mysql/" .env
+sed -i "s/DB_PORT=.*/DB_PORT=3306/" .env
 sed -i "s/DB_DATABASE=.*/DB_DATABASE=dujiaoka/" .env
 sed -i "s/DB_USERNAME=.*/DB_USERNAME=dujiaoka/" .env
 sed -i "s/DB_PASSWORD=.*/DB_PASSWORD=${DB_PASSWORD}/" .env
@@ -284,7 +286,23 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-# 12. 生成APP_KEY
+# 12. 安装PHP扩展
+echo "安装PHP扩展..."
+docker exec php apt update
+docker exec php apt install -y libmariadb-dev-compat libmariadb-dev libzip-dev libmagickwand-dev imagemagick
+docker exec php docker-php-ext-install pdo_mysql zip bcmath gd intl opcache
+if [ $? -ne 0 ]; then
+    echo "PHP扩展安装失败，请检查Docker容器或网络！"
+    exit 1
+fi
+docker exec php pecl install redis
+docker exec php sh -c 'echo "extension=redis.so" > /usr/local/etc/php/conf.d/docker-php-ext-redis.ini'
+if [ $? -ne 0 ]; then
+    echo "Redis扩展安装失败，请检查Docker容器或网络！"
+    exit 1
+fi
+
+# 13. 生成APP_KEY
 echo "生成APP_KEY..."
 docker exec -it -w /var/www/html/dujiaoka php php artisan key:generate
 if [ $? -ne 0 ]; then
@@ -292,7 +310,7 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-# 13. 初始化数据库表
+# 14. 初始化数据库表
 echo "初始化数据库表..."
 docker exec -it -w /var/www/html/dujiaoka php php artisan migrate --force
 if [ $? -ne 0 ]; then
@@ -300,7 +318,7 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-# 14. 设置默认管理员账号
+# 15. 设置默认管理员账号
 echo "设置默认管理员账号..."
 docker exec -it mysql mysql -udujiaoka -p${DB_PASSWORD} -e "USE dujiaoka; INSERT INTO users (name, email, password, created_at, updated_at) VALUES ('admin', '${ADMIN_EMAIL}', '\$2y\$10\$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi', NOW(), NOW());"
 if [ $? -ne 0 ]; then
@@ -308,7 +326,7 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-# 15. 赋予文件权限
+# 16. 赋予文件权限
 echo "设置文件权限..."
 docker exec nginx chmod -R 777 /var/www/html
 docker exec php chmod -R 777 /var/www/html
@@ -316,18 +334,6 @@ docker exec php chmod -R 777 /var/www/html/dujiaoka/storage
 docker exec php chmod -R 777 /var/www/html/dujiaoka/bootstrap/cache
 if [ $? -ne 0 ]; then
     echo "设置文件权限失败，请检查Docker容器是否运行！"
-    exit 1
-fi
-
-# 16. 安装PHP扩展
-echo "安装PHP扩展..."
-docker exec php apt update
-docker exec php apt install -y libmariadb-dev-compat libmariadb-dev libzip-dev libmagickwand-dev imagemagick
-docker exec php docker-php-ext-install pdo_mysql zip bcmath gd intl opcache
-docker exec php pecl install redis
-docker exec php sh -c 'echo "extension=redis.so" > /usr/local/etc/php/conf.d/docker-php-ext-redis.ini'
-if [ $? -ne 0 ]; then
-    echo "PHP扩展安装失败，请检查Docker容器或网络！"
     exit 1
 fi
 
