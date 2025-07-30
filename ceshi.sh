@@ -123,41 +123,20 @@ echo "正在部署独角数卡..."
 read -p "请输入解析好的域名（例如 shop.ioiox.com）: " DOMAIN
 read -p "请输入店铺名称: " SHOP_NAME
 
-# 执行独角数卡安装脚本，强制包含 MySQL
+# 执行独角数卡安装脚本
 bash <(curl -L -s https://raw.githubusercontent.com/woniu336/open_shell/main/dujiao.sh) <<EOF
 $DOMAIN
 $SHOP_NAME
-Y
+N
 EOF
 
-# 步骤 4: 初始化和检查数据库
-echo "正在检查并初始化 MySQL..."
-MYSQL_CONTAINER=$(docker ps -q --filter name=faka_db_1 2>/dev/null || docker ps -q --filter name=faka_db)
-if [ -n "$MYSQL_CONTAINER" ]; then
-  # 等待 MySQL 启动
-  sleep 10
-  # 使用新密码检查 MySQL 并创建数据库
-  docker exec $MYSQL_CONTAINER mysql -u root -p225646d94ea1d0ee1d8d506b65ba7f1e -e "CREATE DATABASE IF NOT EXISTS dujiaoka;" 2>/dev/null
-  if [ $? -ne 0 ]; then
-    echo "MySQL 密码验证失败，请检查密码或手动配置数据库"
-    echo "建议命令：docker exec $MYSQL_CONTAINER mysql -u root -p 进入 MySQL，验证密码并创建数据库 dujiaoka"
-    exit 1
-  fi
-  # 确保 root 用户允许远程连接
-  docker exec $MYSQL_CONTAINER mysql -u root -p225646d94ea1d0ee1d8d506b65ba7f1e -e "GRANT ALL PRIVILEGES ON *.* TO 'root'@'%' IDENTIFIED BY '225646d94ea1d0ee1d8d506b65ba7f1e' WITH GRANT OPTION; FLUSH PRIVILEGES;" 2>/dev/null
-else
-  echo "未检测到 MySQL 容器，请检查 Docker Compose 文件是否包含 MySQL 服务"
-  echo "建议手动运行：docker-compose up -d --build 以包含 MySQL"
-  exit 1
-fi
-
-# 步骤 5: 显示配置信息并等待用户完成网页安装
+# 步骤 4: 显示配置信息并等待用户完成网页安装
 echo -e "\033[31m先登录进行配置再继续安装，没有提到的不需要更改\033[0m"
 echo -e "\033[33m  MySQL 配置\033[0m\033[32m：\033[0m"
 echo -e "\033[33m  MySQL 数据库地址\033[0m\033[32m：db\033[0m"
 echo -e "\033[33m  MySQL 数据库名称\033[0m\033[32m：dujiaoka\033[0m"
 echo -e "\033[33m  MySQL 用户名\033[0m\033[32m：root\033[0m"
-echo -e "\033[33m  密码\033[0m\033[32m：225646d94ea1d0ee1d8d506b65ba7f1e\033[0m"
+echo -e "\033[33m  密码\033[0m\033[32m：fbcbc3fc9f2c2454535618c2e88a12b9\033[0m"
 echo -e "\033[33mRedis 连接地址\033[0m\033[32m：redis\033[0m"
 echo -e "\033[33m网站名称\033[0m\033[32m：$SHOP_NAME\033[0m"
 echo -e "\033[33m网站 URL\033[0m\033[32m：http://$DOMAIN\033[0m"
@@ -167,7 +146,7 @@ echo -e "\033[33m默认密码\033[0m\033[32m：admin\033[0m"
 echo -e "\033[33m请通过 \033[31mhttp://$DOMAIN:3080\033[0m\033[33m 访问网站完成配置安装，配置完成后按 Enter 继续...\033[0m"
 read -p ""
 
-# 步骤 6: 安装和配置 Nginx
+# 步骤 5: 安装和配置 Nginx
 if ! command -v nginx &> /dev/null; then
   echo "正在安装 Nginx..."
   install_package nginx
@@ -227,7 +206,7 @@ else
   exit 1
 fi
 
-# 步骤 7: 配置 HTTPS（包括前台和后台）
+# 步骤 6: 配置 HTTPS（包括前台和后台）
 echo "是否启用 HTTPS？（默认选择 N，推荐选择 Y 以确保安全）"
 read -p "请输入 Y/N: " ENABLE_HTTPS
 
@@ -245,9 +224,7 @@ if [ "$ENABLE_HTTPS" = "Y" ] || [ "$ENABLE_HTTPS" = "y" ]; then
   else
     certbot --nginx -d $DOMAIN --non-interactive --agree-tos -m user@$DOMAIN -n
     if [ $? -ne 0 ]; then
-      # 动态计算等待时间
-      WAIT_TIME=$(date -u -d "168 hours" +%Y-%m-%d\ %H:%M:%S)
-      echo "HTTPS 配置失败，可能是 Let's Encrypt 速率限制（5 张证书/7 天），请等待至 $WAIT_TIME UTC 或手动配置 SSL 证书"
+      echo "HTTPS 配置失败，可能是 Let's Encrypt 速率限制（5 张证书/7 天），请等待至 2025-07-30 22:52:27 UTC 或手动配置 SSL 证书"
       echo "详情见 https://letsencrypt.org/docs/rate-limits/"
       exit 1
     fi
