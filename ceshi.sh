@@ -4959,14 +4959,11 @@ EOF"
                 24)
                 # 安装 s-ui
                 echo -e "${GREEN}正在安装 s-ui ...${RESET}"
-                # 执行 s-ui 安装脚本，自动填入默认配置
-                printf "2095\n/app/\n2096\n/sub/\nadmin\nadmin\ny\n" | bash <(curl -Ls https://raw.githubusercontent.com/alireza0/s-ui/master/install.sh)
+                # 执行 s-ui 安装脚本，自动填入默认配置和用户名密码
+                printf "y\n2095\n/app/\n2096\n/sub/\ny\nsinian\nsinian\n" | bash <(curl -Ls https://raw.githubusercontent.com/alireza0/s-ui/master/install.sh)
                 if [ $? -eq 0 ]; then
-                    echo -e "${GREEN}s-ui 安装成功！正在配置用户名和密码...${RESET}"
-                    # 修改默认用户名为 sinian，密码为 sinian
-                    sed -i 's/"username": "admin"/"username": "sinian"/' /usr/local/s-ui/config.json
-                    sed -i 's/"password": "admin"/"password": "sinian"/' /usr/local/s-ui/config.json
-                    # 重启 s-ui 服务以应用配置
+                    echo -e "${GREEN}s-ui 安装成功！正在验证配置...${RESET}"
+                    # 重启 s-ui 服务以确保配置生效
                     systemctl restart s-ui
                     if [ $? -eq 0 ]; then
                         server_ip=$(curl -s4 ifconfig.me || echo "你的服务器IP")
@@ -4976,11 +4973,17 @@ EOF"
                         echo -e "${YELLOW}订阅地址：http://$server_ip:2096/sub/${RESET}"
                         echo -e "${YELLOW}用户名：sinian${RESET}"
                         echo -e "${YELLOW}密码：sinian${RESET}"
+                        # 验证服务状态
+                        if s-ui status | grep -q "running"; then
+                            echo -e "${GREEN}验证成功：s-ui 服务正在运行！请使用以上凭据登录。${RESET}"
+                        else
+                            echo -e "${RED}警告：s-ui 服务未运行，请检查日志（s-ui log）或手动验证用户名和密码！${RESET}"
+                        fi
                     else
-                        echo -e "${RED}s-ui 服务重启失败，请手动检查！${RESET}"
+                        echo -e "${RED}s-ui 服务重启失败，请检查日志（s-ui log）或手动运行 's-ui' 检查配置！${RESET}"
                     fi
                 else
-                    echo -e "${RED}s-ui 安装失败，请检查网络或脚本输出！${RESET}"
+                    echo -e "${RED}s-ui 安装失败，请检查网络或运行 's-ui log' 查看错误详情！${RESET}"
                 fi
                 read -p "按回车键返回主菜单..."
                 ;;
