@@ -1,5 +1,5 @@
 #!/bin/bash
-# 异次元发卡网（acg-faka）一键搭建脚本（兼容Debian/Ubuntu/CentOS，优化版）
+# 异次元发卡网（acg-faka）一键搭建脚本（兼容Ubuntu 24.04/Debian/CentOS，优化版）
 
 # 检查是否为root用户
 if [ "$EUID" -ne 0 ]; then
@@ -8,18 +8,29 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 # 检测操作系统
-if [ -f /etc/debian_version ]; then
-  OS="debian"
-  PKG_MANAGER="apt"
-  PHP_FPM="php8.1-fpm"
-  PHP_LOG="/var/log/php8.1-fpm.log"
-elif [ -f /etc/redhat-release ]; then
-  OS="centos"
-  PKG_MANAGER="yum"
-  PHP_FPM="php-fpm"
-  PHP_LOG="/var/log/php-fpm.log"
+if [ -f /etc/os-release ]; then
+  . /etc/os-release
+  if [[ "$ID" == "ubuntu" ]]; then
+    OS="ubuntu"
+    PKG_MANAGER="apt"
+    PHP_FPM="php8.1-fpm"
+    PHP_LOG="/var/log/php8.1-fpm.log"
+  elif [[ "$ID" == "debian" ]]; then
+    OS="debian"
+    PKG_MANAGER="apt"
+    PHP_FPM="php8.1-fpm"
+    PHP_LOG="/var/log/php8.1-fpm.log"
+  elif [[ "$ID" == "centos" ]]; then
+    OS="centos"
+    PKG_MANAGER="yum"
+    PHP_FPM="php-fpm"
+    PHP_LOG="/var/log/php-fpm.log"
+  else
+    echo "不支持的操作系统！仅支持Ubuntu、Debian或CentOS"
+    exit 1
+  fi
 else
-  echo "不支持的操作系统！仅支持Debian/Ubuntu或CentOS"
+  echo "无法检测操作系统！请确保 /etc/os-release 存在"
   exit 1
 fi
 
@@ -57,19 +68,29 @@ echo
 
 # 检查和安装依赖
 echo "检查并安装必要依赖..."
-if [ "$OS" = "debian" ]; then
-  # 更新Debian/Ubuntu源并添加PHP 8.1
+if [ "$OS" = "ubuntu" ] || [ "$OS" = "debian" ]; then
+  # 更新源并添加PHP 8.1
   $PKG_MANAGER update -y
-  $PKG_MANAGER install -y software-properties-common apt-transport-https lsb-release ca-certificates wget
-  wget -O /etc/apt/trusted.gpg.d/php.gpg https://packages.sury.org/php/apt.gpg
-  echo "deb https://packages.sury.org/php/ $(lsb_release -sc) main" | tee /etc/apt/sources.list.d/php.list
-  $PKG_MANAGER update -y
+  $PKG_MANAGER install -y software-properties-common apt-transport-https lsb-release ca-certificates wget curl
+  # 添加 sury.org 源并验证
+  wget -O /etc/apt/trusted.gpg.d/php.gpg https://packages.sury.org/php/apt.gpg || {
+    echo "错误：无法下载 PHP 源 GPG 密钥！请检查网络或稍后重试"
+    exit 1
+  }
+  echo "deb https://packages.sury.org/php/ $VERSION_CODENAME main" | tee /etc/apt/sources.list.d/php.list
+  $PKG_MANAGER update -y || {
+    echo "错误：无法更新包索引，可能是源不可用！请检查网络或更换源"
+    exit 1
+  }
   # 安装依赖
   $PKG_MANAGER install -y nginx php8.1 php8.1-fpm php8.1-mysql php8.1-gd php8.1-mbstring php8.1-xml php8.1-curl php8.1-zip mariadb-server unzip wget curl
 elif [ "$OS" = "centos" ]; then
   # 安装EPEL和Remi仓库
   $PKG_MANAGER install -y epel-release
-  $PKG_MANAGER install -y https://rpms.remirepo.net/enterprise/remi-release-8.rpm || $PKG_MANAGER install -y https://rpms.remirepo.net/enterprise/remi-release-7.rpm
+  $PKG_MANAGER install -y https://rpms.remirepo.net/enterprise/remi-release-$VERSION_ID.rpm || {
+    echo "错误：无法安装 Remi 仓库！请检查网络或CentOS版本"
+    exit 1
+  }
   $PKG_MANAGER module enable php:remi-8.1 -y
   # 安装依赖
   $PKG_MANAGER install -y nginx php php-fpm php-mysqlnd php-gd php-mbstring php-xml php-curl php-zip mariadb-server unzip wget curl
@@ -86,7 +107,7 @@ done
 # 创建Web目录并设置权限
 echo "创建Web目录并设置权限..."
 mkdir -p /var/www/html
-if [ "$OS" = "debian" ]; then
+if [ "$OS" = "ubuntu" ] || [ "$OS" = "debian" ]; then
   chown www-data:www-data /var/www/html
 elif [ "$OS" = "centos" ]; then
   chown nginx:nginx /var/www/html
@@ -99,7 +120,7 @@ fi
 
 # 启动服务并设置开机自启
 echo "启动Nginx、PHP-FPM和MariaDB服务..."
-if [ "$OS" = "debian" ]; then
+if [ "$OS" = "ubuntu" ] || [ "$OS" = "debian" ]; then
   systemctl enable nginx php8.1-fpm mariadb
   systemctl start nginx php8.1-fpm mariadb
 elif [ "$OS" = "centos" ]; then
@@ -139,10 +160,13 @@ mysql -u root -p"$DB_PASSWORD" -e "CREATE DATABASE acg_faka; CREATE USER 'acg_us
 # 下载并解压源码
 echo "下载并解压异次元发卡源码..."
 cd /var/www/html
-wget -O acg-faka.zip https://github.com/lizhipay/acg-faka/archive/refs/heads/main.zip
+wget -O acg-faka.zip https://github.com/lizhipay/acg-faka/archive/refs/heads/main.zip || {
+  echo "错误：无法下载源码！请检查网络或GitHub链接"
+  exit 1
+}
 unzip acg-faka.zip
 mv acg-faka-main acg-faka
-if [ "$OS" = "debian" ]; then
+if [ "$OS" = "ubuntu" ] || [ "$OS" = "debian" ]; then
   chown -R www-data:www-data acg-faka
 elif [ "$OS" = "centos" ]; then
   chown -R nginx:nginx acg-faka
@@ -184,7 +208,9 @@ systemctl reload nginx
 # 安装Composer并配置依赖
 echo "安装Composer并配置依赖..."
 cd /var/www/html/acg-faka
-curl -sS https://getcomposer.org/installer | php
+curl -sS https://getcomposer.org/installer | php || {
+  echo "错误：无法安装Composer！请检查网络"
+}
 php composer.phar install || {
   echo "警告：Composer依赖安装失败，可能影响功能，请手动运行：cd /var/www/html/acg-faka && php composer.phar install"
 }
@@ -196,7 +222,7 @@ echo "www-data ALL=(ALL) NOPASSWD: /var/www/html/acg-faka/bin" | tee /etc/sudoer
 if [ "$OS" = "centos" ]; then
   echo "nginx ALL=(ALL) NOPASSWD: /var/www/html/acg-faka/bin" | tee -a /etc/sudoers.d/acg-faka
 fi
-chmod 644 /etc/sudoers.d/acg-faka
+ chmod 644 /etc/sudoers.d/acg-faka
 
 # 检查防火墙
 echo "检查防火墙并开放80端口..."
@@ -211,7 +237,7 @@ fi
 # 输出登录信息
 echo "============================================================="
 echo "搭建完成！请访问以下地址完成最终设置或登录："
-echo "网站地址：http://$ACCESS_HOST"
+echo "网站地址：http://$$ACCESS_HOST"
 echo "后台登录地址：http://$ACCESS_HOST/admin"
 echo "管理员用户名：$ADMIN_USER"
 echo "管理员密码：$ADMIN_PASSWORD"
