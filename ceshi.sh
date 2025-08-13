@@ -1,5 +1,5 @@
 #!/bin/bash
-# 异次元发卡网（acg-faka）一键搭建脚本（兼容Debian/Ubuntu/CentOS）
+# 异次元发卡网（acg-faka）一键搭建脚本（兼容Debian/Ubuntu/CentOS，优化版）
 
 # 检查是否为root用户
 if [ "$EUID" -ne 0 ]; then
@@ -11,9 +11,13 @@ fi
 if [ -f /etc/debian_version ]; then
   OS="debian"
   PKG_MANAGER="apt"
+  PHP_FPM="php8.1-fpm"
+  PHP_LOG="/var/log/php8.1-fpm.log"
 elif [ -f /etc/redhat-release ]; then
   OS="centos"
   PKG_MANAGER="yum"
+  PHP_FPM="php-fpm"
+  PHP_LOG="/var/log/php-fpm.log"
 else
   echo "不支持的操作系统！仅支持Debian/Ubuntu或CentOS"
   exit 1
@@ -82,7 +86,11 @@ done
 # 创建Web目录并设置权限
 echo "创建Web目录并设置权限..."
 mkdir -p /var/www/html
-chown www-data:www-data /var/www/html || chown nginx:nginx /var/www/html
+if [ "$OS" = "debian" ]; then
+  chown www-data:www-data /var/www/html
+elif [ "$OS" = "centos" ]; then
+  chown nginx:nginx /var/www/html
+fi
 chmod 755 /var/www/html
 if [ ! -d /var/www/html ]; then
   echo "错误：无法创建 /var/www/html 目录！"
@@ -100,9 +108,10 @@ elif [ "$OS" = "centos" ]; then
 fi
 
 # 验证服务状态
-for service in nginx php-fpm mariadb; do
+for service in nginx $PHP_FPM mariadb; do
   if ! systemctl is-active --quiet $service; then
-    echo "错误：$service 服务未启动！请检查日志：/var/log/$service"
+    echo "错误：$service 服务未启动！请检查日志：$PHP_LOG 或 /var/log/nginx/error.log"
+    systemctl status $service
     exit 1
   fi
 done
@@ -133,7 +142,11 @@ cd /var/www/html
 wget -O acg-faka.zip https://github.com/lizhipay/acg-faka/archive/refs/heads/main.zip
 unzip acg-faka.zip
 mv acg-faka-main acg-faka
-chown -R www-data:www-data acg-faka || chown -R nginx:nginx acg-faka
+if [ "$OS" = "debian" ]; then
+  chown -R www-data:www-data acg-faka
+elif [ "$OS" = "centos" ]; then
+  chown -R nginx:nginx acg-faka
+fi
 chmod -R 755 acg-faka
 if [ ! -d /var/www/html/acg-faka ]; then
   echo "错误：源码解压或移动失败！"
@@ -163,6 +176,7 @@ EOF
 ln -sf /etc/nginx/sites-available/acg-faka /etc/nginx/sites-enabled/acg-faka
 nginx -t || {
   echo "错误：Nginx配置测试失败！请检查 /etc/nginx/sites-available/acg-faka"
+  cat /var/log/nginx/error.log
   exit 1
 }
 systemctl reload nginx
@@ -179,15 +193,16 @@ php composer.phar install || {
 echo "设置文件权限..."
 mkdir -p /etc/sudoers.d
 echo "www-data ALL=(ALL) NOPASSWD: /var/www/html/acg-faka/bin" | tee /etc/sudoers.d/acg-faka
-chmod 644 /etc/sudoers.d/acg-faka
 if [ "$OS" = "centos" ]; then
   echo "nginx ALL=(ALL) NOPASSWD: /var/www/html/acg-faka/bin" | tee -a /etc/sudoers.d/acg-faka
 fi
+chmod 644 /etc/sudoers.d/acg-faka
 
 # 检查防火墙
 echo "检查防火墙并开放80端口..."
 if command -v ufw &>/dev/null; then
   ufw allow 80
+  ufw status
 elif command -v firewall-cmd &>/dev/null; then
   firewall-cmd --permanent --add-port=80/tcp
   firewall-cmd --reload
@@ -207,5 +222,5 @@ echo "============================================================="
 echo "注意：请访问网站完成安装向导（如有）。若无法访问，请检查："
 echo "1. 防火墙状态：ufw status 或 firewall-cmd --list-all"
 echo "2. Nginx日志：/var/log/nginx/error.log"
-echo "3. PHP-FPM日志：/var/log/php8.1-fpm.log 或 /var/log/php-fpm.log"
+echo "3. PHP-FPM日志：$PHP_LOG"
 echo "如需启用SSL，运行：$PKG_MANAGER install -y python3-certbot-nginx && certbot --nginx -d $ACCESS_HOST"
