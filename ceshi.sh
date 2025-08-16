@@ -1,60 +1,48 @@
 #!/bin/bash
+# 🚀 独角数卡增强版一键安装脚本 (免交互+自动迁移+初始化管理员+等待服务启动)
+# 适用 Ubuntu 20.04 ~ 24.04
+
 set -e
 
-echo "🚀 独角数卡增强版开箱即用安装开始..."
+BASE_DIR=/opt/dujiaoka
+ENV_DIR=$BASE_DIR/env
 
-# =============================
-# 1. 固定密码与密钥
-# =============================
-MYSQL_ROOT_PASSWORD="root123456"
-MYSQL_USER="dujiaoka"
-MYSQL_PASSWORD="dujiaoka123456"
-MYSQL_DATABASE="dujiaoka"
-REDIS_PORT=6379
-ADMIN_USER="admin"
-ADMIN_PASS="admin123456"
-APP_KEY=$(docker run --rm jiangjuhong/dujiaoka:latest php artisan key:generate --show)
+ADMIN_USER=admin
+ADMIN_PASS=IKctUskuhV6tJgmd
 
-echo "使用固定密码:"
-echo "MySQL root 密码: $MYSQL_ROOT_PASSWORD"
-echo "MySQL 用户密码: $MYSQL_PASSWORD"
-echo "后台账号密码: $ADMIN_USER / $ADMIN_PASS"
-echo "Laravel APP_KEY: $APP_KEY"
+echo "🚀 独角数卡增强版一键安装开始..."
 
-# =============================
-# 2. 安装 Docker & Docker Compose
-# =============================
-if ! command -v docker &> /dev/null; then
-    echo "⚙️ 未检测到 Docker，正在安装..."
-    curl -fsSL https://get.docker.com | bash
-    systemctl enable docker
-    systemctl start docker
+# 安装必要依赖
+echo "⚙️ 安装必要依赖..."
+apt-get update -qq
+DEBIAN_FRONTEND=noninteractive apt-get install -y -qq curl wget git sudo lsb-release apt-transport-https ca-certificates software-properties-common openssl
+
+# 安装 Docker
+if ! command -v docker >/dev/null 2>&1; then
+  echo "⚙️ 未检测到 Docker，正在安装..."
+  curl -fsSL https://get.docker.com | CHANNEL=stable sh
 fi
 
-if ! command -v docker-compose &> /dev/null; then
-    echo "⚙️ 未检测到 Docker Compose，正在安装..."
-    DOCKER_COMPOSE_VERSION="v2.39.2"
-    curl -L "https://github.com/docker/compose/releases/download/${DOCKER_COMPOSE_VERSION}/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-    chmod +x /usr/local/bin/docker-compose
+# 安装 Docker Compose
+if ! command -v docker-compose >/dev/null 2>&1; then
+  echo "⚙️ 安装 Docker Compose..."
+  DOCKER_COMPOSE_VERSION=$(curl -s https://api.github.com/repos/docker/compose/releases/latest | grep -Po '"tag_name": "\K.*?(?=")')
+  curl -L "https://github.com/docker/compose/releases/download/$DOCKER_COMPOSE_VERSION/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+  chmod +x /usr/local/bin/docker-compose
 fi
 
-docker --version
-docker-compose --version
+echo "✅ Docker 和 Docker Compose 安装完成"
 
-# =============================
-# 3. 创建独角数卡目录
-# =============================
-BASE_DIR="/opt/dujiaoka"
+# 创建项目目录
 mkdir -p $BASE_DIR
+mkdir -p $ENV_DIR
 cd $BASE_DIR
 
-# =============================
-# 4. 自动生成 .env 文件
-# =============================
-cat > $BASE_DIR/.env <<EOF
+# 创建 .env 文件
+cat > $ENV_DIR/.env <<EOF
 APP_NAME=独角数卡
 APP_ENV=local
-APP_KEY=$APP_KEY
+APP_KEY=base64:$(openssl rand -base64 32)
 APP_DEBUG=true
 APP_URL=http://localhost
 
@@ -63,108 +51,113 @@ LOG_CHANNEL=stack
 DB_CONNECTION=mysql
 DB_HOST=db
 DB_PORT=3306
-DB_DATABASE=$MYSQL_DATABASE
-DB_USERNAME=$MYSQL_USER
-DB_PASSWORD=$MYSQL_PASSWORD
+DB_DATABASE=dujiaoka
+DB_USERNAME=dujiaoka
+DB_PASSWORD=dujiaoka123
 
 REDIS_HOST=redis
-REDIS_PORT=$REDIS_PORT
 REDIS_PASSWORD=
+REDIS_PORT=6379
 
 BROADCAST_DRIVER=log
 SESSION_DRIVER=file
 SESSION_LIFETIME=120
-
 CACHE_DRIVER=file
 QUEUE_CONNECTION=redis
-
 DUJIAO_ADMIN_LANGUAGE=zh_CN
 ADMIN_ROUTE_PREFIX=/admin
-ADMIN_USER=$ADMIN_USER
-ADMIN_PASS=$ADMIN_PASS
 EOF
 
-# =============================
-# 5. Docker Compose 文件
-# =============================
-cat > docker-compose.yml <<EOF
-version: "3.8"
+# 创建 Docker Compose 文件
+cat > $BASE_DIR/docker-compose.yml <<EOF
+version: "3.9"
 services:
   db:
     image: mysql:8.0
     container_name: dujiaoka-db
+    restart: always
     environment:
-      MYSQL_ROOT_PASSWORD: $MYSQL_ROOT_PASSWORD
-      MYSQL_DATABASE: $MYSQL_DATABASE
-      MYSQL_USER: $MYSQL_USER
-      MYSQL_PASSWORD: $MYSQL_PASSWORD
+      MYSQL_ROOT_PASSWORD: root123
+      MYSQL_DATABASE: dujiaoka
+      MYSQL_USER: dujiaoka
+      MYSQL_PASSWORD: dujiaoka123
     volumes:
       - db_data:/var/lib/mysql
     ports:
       - "3306:3306"
-    restart: always
 
   redis:
-    image: redis:7
+    image: redis:7-alpine
     container_name: dujiaoka-redis
-    ports:
-      - "${REDIS_PORT}:${REDIS_PORT}"
     restart: always
+    ports:
+      - "6379:6379"
 
   dujiaoka:
     image: jiangjuhong/dujiaoka:latest
     container_name: dujiaoka
+    depends_on:
+      - db
+      - redis
     environment:
       WEB_DOCUMENT_ROOT: /app/public
       TZ: Asia/Shanghai
     volumes:
       - ./storage:/app/storage
       - ./bootstrap/cache:/app/bootstrap/cache
-      - ./ .env:/app/.env
+      - ./env/.env:/app/.env
     ports:
       - "80:80"
       - "9000:9000"
-    depends_on:
-      - db
-      - redis
     restart: always
 
 volumes:
   db_data:
 EOF
 
-# =============================
-# 6. 创建 storage 与 cache 目录并修复权限
-# =============================
-mkdir -p $BASE_DIR/storage $BASE_DIR/bootstrap/cache
-chmod -R 775 $BASE_DIR/storage $BASE_DIR/bootstrap/cache
+# 修复权限
+mkdir -p storage bootstrap/cache
+chown -R 1000:1000 storage bootstrap/cache
+chmod -R 775 storage bootstrap/cache
 
-# =============================
-# 7. 启动容器
-# =============================
-docker-compose up -d
+# 启动数据库和 Redis 容器
+echo "🚀 启动 MySQL 和 Redis..."
+docker-compose up -d db redis
 
-# =============================
-# 8. 修复容器内权限
-# =============================
-docker exec -it dujiaoka chown -R www-data:www-data /app/storage /app/bootstrap/cache
-docker exec -it dujiaoka chmod -R 775 /app/storage /app/bootstrap/cache
+# 等待 MySQL 完全启动
+echo "⏳ 等待 MySQL 启动..."
+until docker exec dujiaoka-db mysqladmin ping -h "localhost" --silent; do
+  sleep 2
+done
+echo "✅ MySQL 启动完成"
 
-# =============================
-# 9. 数据库迁移
-# =============================
-echo "⚙️ 运行 Laravel 数据库迁移..."
-docker exec -it dujiaoka php artisan migrate --force || true
+# 等待 Redis 完全启动
+echo "⏳ 等待 Redis 启动..."
+until docker exec dujiaoka-redis redis-cli ping | grep -q PONG; do
+  sleep 1
+done
+echo "✅ Redis 启动完成"
 
-# =============================
-# 10. 安装完成提示
-# =============================
-IP=$(curl -s ifconfig.me)
-echo "✅ 独角数卡增强版开箱即用安装完成！"
-echo "🌐 前台访问：http://$IP/"
-echo "🔑 后台访问：http://$IP/admin"
-echo "后台账号: $ADMIN_USER"
-echo "后台密码: $ADMIN_PASS"
-echo "MySQL 用户: $MYSQL_USER"
-echo "MySQL 密码: $MYSQL_PASSWORD"
-echo "MySQL root 密码: $MYSQL_ROOT_PASSWORD"
+# 启动 dujiaoka 容器
+echo "🚀 启动独角数卡容器..."
+docker-compose up -d dujiaoka
+
+# 等待容器准备就绪
+echo "⏳ 等待独角数卡容器准备..."
+sleep 10
+
+# 自动运行 migrations
+echo "⚡ 运行数据库迁移..."
+docker exec -i dujiaoka php artisan migrate --force
+
+# 创建管理员账号
+echo "⚡ 初始化后台管理员账号..."
+docker exec -i dujiaoka php artisan dujiaoka:admin $ADMIN_USER $ADMIN_PASS
+
+echo "🎉 安装完成！"
+IP_ADDR=$(hostname -I | awk '{print $1}')
+echo "前台地址: http://$IP_ADDR"
+echo "后台地址: http://$IP_ADDR/admin"
+echo "管理员账户: $ADMIN_USER / $ADMIN_PASS"
+echo "数据库用户: dujiaoka / dujiaoka123"
+echo "MySQL root 用户: root / root123"
