@@ -1,117 +1,150 @@
 #!/bin/bash
-# 独角数卡一键安装脚本 - 使用 jiangjuhong/dujiaoka 镜像
-
 set -e
 
 echo "🚀 独角数卡一键安装开始..."
 
-# 检查 Docker
-if ! command -v docker &> /dev/null; then
-    echo "⚙️ 未检测到 Docker，正在安装..."
-    curl -fsSL https://get.docker.com | sh
-    systemctl enable docker
-    systemctl start docker
+############################################
+# 检测 Ubuntu 版本并安装 Docker
+############################################
+echo "⚙️ 检测 Ubuntu 版本..."
+UBUNTU_VERSION=$(lsb_release -rs | cut -d. -f1)
+echo "👉 当前版本: Ubuntu $UBUNTU_VERSION"
+
+# 移除旧 docker
+apt-get remove -y docker docker-engine docker.io containerd runc || true
+
+# 安装依赖
+apt-get update
+apt-get install -y apt-transport-https ca-certificates curl software-properties-common lsb-release gnupg
+
+# Docker GPG key
+install -m 0755 -d /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+chmod a+r /etc/apt/keyrings/docker.asc
+
+# 添加源
+echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" \
+  > /etc/apt/sources.list.d/docker.list
+
+apt-get update
+
+# 根据版本选择包
+DOCKER_PACKAGES="docker-ce docker-ce-cli containerd.io docker-compose-plugin docker-ce-rootless-extras docker-buildx-plugin"
+if [ "$UBUNTU_VERSION" -ge 22 ]; then
+  DOCKER_PACKAGES="$DOCKER_PACKAGES docker-model-plugin"
 fi
 
-# 检查 docker-compose
-if ! command -v docker-compose &> /dev/null; then
-    echo "⚙️ 未检测到 docker-compose，正在安装..."
-    curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" \
-      -o /usr/local/bin/docker-compose
-    chmod +x /usr/local/bin/docker-compose
-    ln -sf /usr/local/bin/docker-compose /usr/bin/docker-compose
+echo "📦 安装 Docker: $DOCKER_PACKAGES"
+apt-get install -y $DOCKER_PACKAGES
+
+# docker-compose 备用
+if ! command -v docker-compose &>/dev/null; then
+  echo "⚠️ 手动安装 docker-compose..."
+  curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+  chmod +x /usr/local/bin/docker-compose
+  ln -sf /usr/local/bin/docker-compose /usr/bin/docker-compose
 fi
 
-# 随机数据库信息
-DB_PASS=$(< /dev/urandom tr -dc A-Za-z0-9 | head -c12)
-DB_USER=dujiaouser
-DB_NAME=dujiaodb
-APP_PORT=80
+systemctl enable docker
+systemctl start docker
 
-# 检查端口占用 (用 ss 而不是 netstat)
-if ss -tuln | grep -q ":80 "; then
-    echo "⚠️ 端口 80 已被占用，请输入新端口 (默认 8080):"
-    read -r newport
-    APP_PORT=${newport:-8080}
-fi
+echo "✅ Docker 安装完成"
+docker --version
+docker-compose --version
 
-# 创建目录
-mkdir -p ~/dujiaoka/{mysql,app}
+############################################
+# 配置 Dujiaoka
+############################################
+WORKDIR="/opt/dujiaoka"
+mkdir -p $WORKDIR
+cd $WORKDIR
 
-# 写 docker-compose.yml
-cat > docker-compose.yml <<EOF
-version: '3'
-services:
-  app:
-    image: jiangjuhong/dujiaoka:latest
-    container_name: dujiaoka_app
-    restart: always
-    ports:
-      - "$APP_PORT:80"
-    volumes:
-      - ./app/.env:/app/.env
-      - ./app/install.lock:/app/install.lock
-    environment:
-      WEB_DOCUMENT_ROOT: /app/public
-      TZ: Asia/Shanghai
-    depends_on:
-      - db
-
-  db:
-    image: mysql:5.7
-    container_name: dujiaoka_db
-    restart: always
-    command: --default-authentication-plugin=mysql_native_password
-    environment:
-      - MYSQL_ROOT_PASSWORD=$DB_PASS
-      - MYSQL_DATABASE=$DB_NAME
-      - MYSQL_USER=$DB_USER
-      - MYSQL_PASSWORD=$DB_PASS
-    volumes:
-      - ./mysql:/var/lib/mysql
-EOF
-
-# 生成 .env 文件
-cat > ./app/.env <<EOF
+# 生成 .env
+cat > .env <<EOF
 APP_NAME=独角数卡
 APP_ENV=local
-APP_KEY=
+APP_KEY=base64:$(openssl rand -base64 32)
 APP_DEBUG=true
-APP_URL=http://localhost:$APP_PORT
+APP_URL=http://$(curl -s ifconfig.me)
 
 LOG_CHANNEL=stack
 
+# 数据库配置
 DB_CONNECTION=mysql
 DB_HOST=db
 DB_PORT=3306
-DB_DATABASE=$DB_NAME
-DB_USERNAME=$DB_USER
-DB_PASSWORD=$DB_PASS
+DB_DATABASE=dujiaoka
+DB_USERNAME=dujiaoka
+DB_PASSWORD=dujiaoka_pass
 
-REDIS_HOST=127.0.0.1
-REDIS_PASSWORD=null
+# redis配置
+REDIS_HOST=redis
+REDIS_PASSWORD=
 REDIS_PORT=6379
 
+BROADCAST_DRIVER=log
+SESSION_DRIVER=file
+SESSION_LIFETIME=120
+
 CACHE_DRIVER=file
-QUEUE_CONNECTION=sync
+QUEUE_CONNECTION=redis
 
 DUJIAO_ADMIN_LANGUAGE=zh_CN
-ADMIN_ROUTE_PREFIX=admin
+ADMIN_ROUTE_PREFIX=/admin
 EOF
 
-# 创建 install.lock 文件，避免重复初始化
-touch ./app/install.lock
+# 创建 install.lock 避免重复初始化
+touch install.lock
 
-# 启动容器
-docker-compose up -d
+# docker-compose.yml
+cat > docker-compose.yml <<EOF
+version: "3"
 
-SERVER_IP=$(curl -s ifconfig.me || echo "你的服务器IP")
+services:
+  app:
+    image: jiangjuhong/dujiaoka:latest
+    container_name: dujiaoka
+    restart: always
+    ports:
+      - "80:80"
+    environment:
+      TZ: Asia/Shanghai
+      WEB_DOCUMENT_ROOT: /app/public
+    volumes:
+      - ./install.lock:/app/install.lock
+      - ./.env:/app/.env
+    depends_on:
+      - db
+      - redis
 
-echo "-------------------------------------------"
-echo "🎉 独角数卡安装完成！"
-echo "🌐 访问地址: http://$SERVER_IP:$APP_PORT"
-echo "📂 数据库名: $DB_NAME"
-echo "👤 用户名: $DB_USER"
-echo "🔑 密码: $DB_PASS"
-echo "后台地址: http://$SERVER_IP:$APP_PORT/admin"
-echo "-------------------------------------------"
+  db:
+    image: mysql:5.7
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: root_pass
+      MYSQL_DATABASE: dujiaoka
+      MYSQL_USER: dujiaoka
+      MYSQL_PASSWORD: dujiaoka_pass
+    volumes:
+      - db_data:/var/lib/mysql
+
+  redis:
+    image: redis:alpine
+    restart: always
+    volumes:
+      - redis_data:/data
+
+volumes:
+  db_data:
+  redis_data:
+EOF
+
+############################################
+# 启动
+############################################
+echo "🚀 启动 Docker 容器..."
+docker compose up -d
+
+echo "✅ 独角数卡部署完成!"
+echo "👉 访问地址: http://$(curl -s ifconfig.me)"
+echo "👉 后台地址: http://$(curl -s ifconfig.me)/admin"
