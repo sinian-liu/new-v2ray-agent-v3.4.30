@@ -1,159 +1,149 @@
 #!/bin/bash
-# ==============================================
-# 独角数卡 Dujiaoka 一键交互式安装脚本
-# 基于 Docker + Docker Compose 部署
-# ==============================================
 set -e
 
 echo "=============================="
 echo " 🚀 独角数卡 (Dujiaoka) 一键安装 "
+echo "  适配: Ubuntu / Debian / CentOS (含旧版) "
 echo "=============================="
-sleep 1
 
-# 1. 安装 Docker & Docker Compose
-read -p "是否需要安装 Docker 和 Docker Compose? (y/n, 默认 y): " INSTALL_DOCKER
-INSTALL_DOCKER=${INSTALL_DOCKER:-y}
-
-if [[ "$INSTALL_DOCKER" =~ ^[Yy]$ ]]; then
-  echo "👉 开始安装 Docker..."
-  curl -fsSL https://get.docker.com | sh
-
-  echo "👉 开始安装 Docker Compose..."
-  curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" \
-    -o /usr/local/bin/docker-compose
-  chmod +x /usr/local/bin/docker-compose
-
-  echo "✅ Docker & Docker Compose 安装完成"
-else
-  echo "⚠️ 跳过 Docker 安装"
+# 检测 root 权限
+if [ "$(id -u)" != "0" ]; then
+   echo "❌ 请使用 root 用户运行"
+   exit 1
 fi
 
-# 2. 设置安装目录
-read -p "请输入安装目录 (默认 /root/data/docker_data/shop): " INSTALL_DIR
-INSTALL_DIR=${INSTALL_DIR:-/root/data/docker_data/shop}
-echo "👉 安装目录设定为: $INSTALL_DIR"
-mkdir -p "$INSTALL_DIR"
-cd "$INSTALL_DIR"
+# 自动检测系统
+if [ -f /etc/redhat-release ]; then
+    OS="centos"
+elif [ -f /etc/debian_version ]; then
+    OS="debian"
+elif [ -f /etc/lsb-release ]; then
+    OS="ubuntu"
+else
+    echo "❌ 不支持的系统"
+    exit 1
+fi
 
-# 3. 创建目录和文件
-mkdir -p storage uploads mysql redis
-chmod -R 777 storage uploads
+echo "👉 检测到系统: $OS"
 
-touch env.conf
-chmod 777 env.conf
+# 安装必要依赖
+install_base() {
+    if [[ $OS == "centos" ]]; then
+        yum install -y curl wget gnupg2 ca-certificates lsb-release
+    else
+        apt update -y
+        apt install -y curl wget gnupg ca-certificates lsb-release
+    fi
+}
 
-# 4. 设置端口
-read -p "请输入访问端口 (默认 8090): " PORT
-PORT=${PORT:-8090}
+# 安装 Docker
+install_docker() {
+    if ! command -v docker &> /dev/null; then
+        echo "👉 安装 Docker..."
+        curl -fsSL https://get.docker.com | sh
+        systemctl enable docker
+        systemctl start docker
+    else
+        echo "✅ Docker 已安装"
+    fi
+}
 
-# 5. MySQL 配置
-read -p "设置 MySQL root 密码 (默认 rootpass): " MYSQL_ROOT_PASS
-MYSQL_ROOT_PASS=${MYSQL_ROOT_PASS:-rootpass}
+# 安装 docker-compose (独立二进制)
+install_docker_compose() {
+    if ! command -v docker-compose &> /dev/null; then
+        echo "👉 安装 Docker Compose..."
+        curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" \
+          -o /usr/local/bin/docker-compose
+        chmod +x /usr/local/bin/docker-compose
+    else
+        echo "✅ Docker Compose 已安装"
+    fi
+}
 
-read -p "设置数据库名称 (默认 dujiaoka): " DB_NAME
-DB_NAME=${DB_NAME:-dujiaoka}
+# 运行独角数卡
+run_dujiaoka() {
+    echo -n "请输入安装目录 (默认 /root/data/docker_data/shop): "
+    read install_dir
+    install_dir=${install_dir:-/root/data/docker_data/shop}
+    echo "👉 安装目录设定为: $install_dir"
 
-read -p "设置数据库用户名 (默认 dujiaoka): " DB_USER
-DB_USER=${DB_USER:-dujiaoka}
+    echo -n "请输入访问端口 (默认 8090): "
+    read web_port
+    web_port=${web_port:-8090}
 
-read -p "设置数据库用户密码 (默认 dbpass): " DB_PASS
-DB_PASS=${DB_PASS:-dbpass}
+    echo -n "设置 MySQL root 密码 (默认 rootpass): "
+    read mysql_root_pass
+    mysql_root_pass=${mysql_root_pass:-rootpass}
 
-# 6. APP 配置
-read -p "设置 APP 名称 (默认 咕咕的小卖部): " APP_NAME
-APP_NAME=${APP_NAME:-咕咕的小卖部}
+    echo -n "设置数据库名称 (默认 dujiaoka): "
+    read db_name
+    db_name=${db_name:-dujiaoka}
 
-read -p "设置 APP_URL (如 https://yourdomain.com, 默认 http://localhost): " APP_URL
-APP_URL=${APP_URL:-http://localhost}
+    echo -n "设置数据库用户名 (默认 dujiaoka): "
+    read db_user
+    db_user=${db_user:-dujiaoka}
 
-# 7. 生成 docker-compose.yml
-cat > docker-compose.yml <<EOF
-version: "3"
+    echo -n "设置数据库用户密码 (默认 dbpass): "
+    read db_pass
+    db_pass=${db_pass:-dbpass}
+
+    echo -n "设置 APP 名称 (默认 咕咕的小卖部): "
+    read app_name
+    app_name=${app_name:-咕咕的小卖部}
+
+    echo -n "设置 APP_URL (如 https://yourdomain.com, 默认 http://localhost): "
+    read app_url
+    app_url=${app_url:-http://localhost}
+
+    mkdir -p "$install_dir"
+    cd "$install_dir"
+
+    cat > docker-compose.yml <<EOF
+version: '3'
+
 services:
-  web:
-    image: stilleshan/dujiaoka
-    environment:
-      - INSTALL=true
-    volumes:
-      - ./env.conf:/dujiaoka/.env
-      - ./uploads:/dujiaoka/public/uploads
-      - ./storage:/dujiaoka/storage
-    ports:
-      - ${PORT}:80
+  dujiaoka:
+    image: dujiaoka/dujiaoka:latest
+    container_name: dujiaoka
     restart: always
+    ports:
+      - "${web_port}:80"
+    environment:
+      - DB_CONNECTION=mysql
+      - DB_HOST=db
+      - DB_PORT=3306
+      - DB_DATABASE=${db_name}
+      - DB_USERNAME=${db_user}
+      - DB_PASSWORD=${db_pass}
+      - APP_NAME=${app_name}
+      - APP_URL=${app_url}
+    depends_on:
+      - db
 
   db:
-    image: mariadb:focal
+    image: mysql:5.7
+    container_name: dujiaoka-mysql
     restart: always
     environment:
-      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASS}
-      - MYSQL_DATABASE=${DB_NAME}
-      - MYSQL_USER=${DB_USER}
-      - MYSQL_PASSWORD=${DB_PASS}
+      - MYSQL_ROOT_PASSWORD=${mysql_root_pass}
+      - MYSQL_DATABASE=${db_name}
+      - MYSQL_USER=${db_user}
+      - MYSQL_PASSWORD=${db_pass}
     volumes:
-      - ./mysql:/var/lib/mysql
+      - db_data:/var/lib/mysql
 
-  redis:
-    image: redis:alpine
-    restart: always
-    volumes:
-      - ./redis:/data
+volumes:
+  db_data:
 EOF
 
-# 8. 生成 env.conf
-APP_KEY=$(openssl rand -base64 32)
-cat > env.conf <<EOF
-APP_NAME=${APP_NAME}
-APP_ENV=local
-APP_KEY=base64:${APP_KEY}
-APP_DEBUG=true
-APP_URL=${APP_URL}
+    echo "👉 启动容器..."
+    docker-compose up -d
+    echo "✅ 安装完成！"
+    echo "请访问: ${app_url} (或 http://服务器IP:${web_port})"
+}
 
-LOG_CHANNEL=stack
-DB_CONNECTION=mysql
-DB_HOST=db
-DB_PORT=3306
-DB_DATABASE=${DB_NAME}
-DB_USERNAME=${DB_USER}
-DB_PASSWORD=${DB_PASS}
-
-REDIS_HOST=redis
-REDIS_PASSWORD=
-REDIS_PORT=6379
-
-BROADCAST_DRIVER=log
-SESSION_DRIVER=file
-SESSION_LIFETIME=120
-
-CACHE_DRIVER=redis
-QUEUE_CONNECTION=redis
-
-DUJIAO_ADMIN_LANGUAGE=zh_CN
-ADMIN_ROUTE_PREFIX=/admin
-ADMIN_HTTPS=true
-EOF
-
-# 9. 启动容器
-echo "👉 启动容器..."
-docker-compose up -d
-
-SERVER_IP=$(curl -s ifconfig.me || echo "你的服务器IP")
-echo "======================================="
-echo " ✅ 安装完成！"
-echo " 请访问: http://${SERVER_IP}:${PORT} 开始初始化安装"
-echo " 管理后台: http://${SERVER_IP}:${PORT}/admin"
-echo "======================================="
-
-# 10. 是否关闭 INSTALL & DEBUG
-read -p "是否在完成安装后自动关闭 INSTALL & 调试模式? (y/n, 默认 y): " OPTIMIZE
-OPTIMIZE=${OPTIMIZE:-y}
-
-if [[ "$OPTIMIZE" =~ ^[Yy]$ ]]; then
-  docker-compose down
-  sed -i 's/INSTALL=true/INSTALL=false/' docker-compose.yml
-  sed -i 's/APP_DEBUG=true/APP_DEBUG=false/' env.conf
-  docker-compose up -d
-  echo "✅ 已关闭 INSTALL 和 Debug 模式，容器已重启"
-fi
-
-echo "🎉 独角数卡搭建完成！默认后台账号密码：admin / admin"
+# 主流程
+install_base
+install_docker
+install_docker_compose
+run_dujiaoka
