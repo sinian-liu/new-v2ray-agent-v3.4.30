@@ -25,6 +25,31 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
+# 检查并安装依赖
+install_dependencies() {
+    if [ -f /etc/os-release ]; then
+        . /etc/os-release
+        case "$ID" in
+            ubuntu|debian)
+                echo -e "${YELLOW}正在更新 apt 并安装依赖...${NC}"
+                apt-get update
+                apt-get install -y ca-certificates curl gnupg net-tools
+                ;;
+            centos)
+                echo -e "${YELLOW}正在更新 yum 并安装依赖...${NC}"
+                yum install -y yum-utils net-tools curl
+                ;;
+            *)
+                echo -e "${RED}不支持的操作系统：$ID${NC}"
+                exit 1
+                ;;
+        esac
+    else
+        echo -e "${RED}无法识别的操作系统类型。${NC}"
+        exit 1
+    fi
+}
+
 # 检查并安装 Docker
 install_docker() {
     if ! command -v docker &> /dev/null; then
@@ -34,17 +59,14 @@ install_docker() {
             . /etc/os-release
             case "$ID" in
                 ubuntu|debian)
-                    apt-get update
-                    apt-get install -y ca-certificates curl gnupg
                     install -m 0755 -d /etc/apt/keyrings
                     curl -fsSL https://download.docker.com/linux/"$ID"/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
                     chmod a+r /etc/apt/keyrings/docker.gpg
-                    echo "deb [arch=$(dpkg --print-arch) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/"$ID" $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
+                    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/"$ID" $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
                     apt-get update
                     apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
                     ;;
                 centos)
-                    yum install -y yum-utils
                     yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
                     yum install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
                     systemctl start docker
@@ -77,6 +99,13 @@ install_docker() {
         echo -e "${GREEN}Docker Compose 安装完成。${NC}"
     else
         echo -e "${GREEN}Docker Compose 已安装。${NC}"
+    fi
+
+    # 确保 Docker 服务正在运行
+    if ! systemctl is-active --quiet docker; then
+        echo -e "${YELLOW}Docker 服务未运行，正在启动...${NC}"
+        systemctl start docker
+        systemctl enable docker
     fi
 }
 
@@ -140,11 +169,14 @@ EOF
 
 # 运行安装过程
 main() {
+    install_dependencies
     install_docker
     set_port
     create_docker_compose
     echo -e "${YELLOW}正在启动独角数卡...${NC}"
-    docker-compose up -d
+    
+    # 使用 docker-compose 命令，兼容新版本
+    docker compose up -d
 
     if [ $? -eq 0 ]; then
         echo -e "${GREEN}独角数卡已成功安装！${NC}"
@@ -153,7 +185,7 @@ main() {
         echo -e "${GREEN}网站地址：http://$(curl -s http://ipinfo.io/ip):$APP_PORT${NC}"
         echo -e "${GREEN}或本地地址：http://127.0.0.1:$APP_PORT${NC}"
         echo -e "${GREEN}-------------------------------------------${NC}"
-        echo -e "${GREEN}数据库信息（脚本已自动填写）：${NC}"
+        echo -e "${GREEN}数据库信息（脚本已自动填写，无需手动输入）：${NC}"
         echo -e "${GREEN}数据库连接类型：mysql${NC}"
         echo -e "${GREEN}数据库地址：db${NC}"
         echo -e "${GREEN}数据库端口：3306${NC}"
