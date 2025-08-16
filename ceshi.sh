@@ -76,7 +76,6 @@ SERVER_IP=$(curl -s https://api.ipify.org || curl -s https://ipinfo.io/ip || hos
 ############################################
 if [ "$ACTION" = "install" ] && [ ! -f .env ]; then
     echo "⚙️ 生成 .env 和随机密码"
-    # 随机密码统一
     RANDOM_PASS=$(openssl rand -base64 12)
 
     cat > .env <<EOF
@@ -166,11 +165,28 @@ docker compose pull
 docker compose up -d --remove-orphans
 
 ############################################
+# 等待数据库启动
+############################################
+echo "⏳ 等待数据库启动..."
+sleep 15
+
+############################################
+# 运行 Laravel 数据库迁移
+############################################
+echo "⚙️ 初始化数据库表 (运行 migrations)..."
+docker exec -i dujiaoka php artisan migrate --force || true
+docker exec -i dujiaoka php artisan key:generate || true
+docker exec -i dujiaoka php artisan config:cache || true
+docker exec -i dujiaoka php artisan route:cache || true
+docker exec -i dujiaoka php artisan view:clear || true
+
+############################################
 # 显示访问信息
 ############################################
-echo -e "\n🌐 网站地址: http://$SERVER_IP:$APP_PORT"
-echo "🔑 后台登录: http://$SERVER_IP:$APP_PORT/admin"
-echo "后台管理员账户: admin"
-echo "后台管理员密码: $RANDOM_PASS"
-echo "数据库用户: dujiaoka"
-echo "数据库密码: $RANDOM_PASS"
+echo -e "\n✅ 独角数卡安装完成！"
+echo -e "🌐 前台网站: http://$SERVER_IP:$APP_PORT"
+echo -e "🔑 后台登录: http://$SERVER_IP:$APP_PORT/admin"
+echo -e "后台管理员账户: admin"
+echo -e "后台管理员密码: $RANDOM_PASS"
+echo -e "数据库用户: dujiaoka"
+echo -e "数据库密码: $RANDOM_PASS"
