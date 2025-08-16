@@ -1,175 +1,164 @@
 #!/bin/bash
 
-# 定义颜色
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
+# 独角数卡一键安装脚本 (基于 Docker)
+# 支持 Ubuntu, Debian, CentOS
+# 作者：基于 GitHub Apocalypsor/dujiaoka-docker 适配
 
-# 欢迎信息
-echo -e "${GREEN}独角数卡全自动安装脚本 (修复版)${NC}"
-echo "-----------------------------------"
-echo -e "${YELLOW}本脚本将自动检测您的系统，并安装 Nginx, MySQL, PHP，以及独角数卡。${NC}"
-echo "-----------------------------------"
-sleep 2
+set -e
 
-# 询问用户是否自定义域名和端口
-read -p "请输入您要使用的域名 (例如: example.com, 留空则使用服务器 IP): " domain
-read -p "请输入您要使用的端口 (例如: 80, 留空则使用默认端口): " port
+# 颜色输出函数
+echo_green() { echo -e "\033[32m$1\033[0m"; }
+echo_red() { echo -e "\033[31m$1\033[0m"; }
+echo_yellow() { echo -e "\033[33m$1\033[0m"; }
 
-if [ -z "$port" ]; then
-    port="80"
-fi
-
-if [ -z "$domain" ]; then
-    domain=$(hostname -I | awk '{print $1}')
-    echo -e "${YELLOW}未输入域名，将使用服务器 IP: $domain${NC}"
-fi
-
-# 检查是否为 root 用户
-if [[ $EUID -ne 0 ]]; then
-   echo -e "${RED}此脚本必须以 root 用户身份运行。${NC}"
-   exit 1
-fi
-
-# 检查系统发行版并安装依赖
-echo -e "${GREEN}正在检查系统发行版并安装依赖...${NC}"
-
-if command -v apt &> /dev/null; then
-    # Ubuntu 和 Debian
-    echo -e "${YELLOW}检测到系统为 Debian/Ubuntu...${NC}"
-    apt update -y
-    apt install -y nginx mariadb-server php-fpm php-mysql php-mbstring php-xml php-bcmath php-json php-gd php-curl php-zip git unzip curl wget
-    PHPFPM_SERVICE="php$(php -r 'echo substr(phpversion(),0,3);')-fpm.service"
-    PHPFPM_SOCK_PATH="/var/run/php/php$(php -r 'echo substr(phpversion(),0,3);')-fpm.sock"
-    WEB_USER="www-data"
-
-elif command -v yum &> /dev/null; then
-    # CentOS
-    echo -e "${YELLOW}检测到系统为 CentOS...${NC}"
-    yum install -y epel-release
-    yum install -y nginx mariadb-server php-fpm php-mysqlnd php-mbstring php-xml php-bcmath php-json php-gd php-curl php-zip git unzip curl wget
-    systemctl enable mariadb
-    systemctl start mariadb
-    PHPFPM_SERVICE="php-fpm.service"
-    PHPFPM_SOCK_PATH="/var/run/php-fpm/www.sock"
-    WEB_USER="nginx"
+# 检测 OS
+OS=""
+if [ -f /etc/debian_version ]; then
+    OS="debian"
+    PKG_MANAGER="apt-get"
+elif [ -f /etc/redhat-release ]; then
+    OS="centos"
+    if grep -q "CentOS Linux release 8" /etc/redhat-release; then
+        PKG_MANAGER="dnf"
+    else
+        PKG_MANAGER="yum"
+    fi
 else
-    echo -e "${RED}不支持的操作系统。脚本将退出。${NC}"
+    echo_red "不支持的操作系统！仅支持 Ubuntu/Debian/CentOS。"
     exit 1
 fi
 
-# 安装 Composer
-echo -e "${GREEN}正在安装 Composer...${NC}"
-if ! command -v composer &> /dev/null; then
-    curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
+# 安装必要工具
+echo_yellow "更新包管理器并安装必要工具..."
+if [ "$OS" = "debian" ]; then
+    sudo $PKG_MANAGER update -y
+    sudo $PKG_MANAGER install -y curl wget openssl ca-certificates
+else
+    sudo $PKG_MANAGER makecache
+    sudo $PKG_MANAGER install -y curl wget openssl ca-certificates
 fi
 
-# 数据库配置
-echo -e "${GREEN}正在配置数据库...${NC}"
-DB_ROOT_PASSWORD=$(openssl rand -base64 12)
-DB_NAME="unicorn"
-DB_USER="unicorn"
-DB_PASSWORD=$(openssl rand -base64 12)
+# 安装 Docker 如果未安装
+if ! command -v docker &> /dev/null; then
+    echo_yellow "安装 Docker..."
+    curl -fsSL https://get.docker.com -o get-docker.sh
+    sudo sh get-docker.sh
+    sudo systemctl start docker
+    sudo systemctl enable docker
+else
+    echo_green "Docker 已安装。"
+fi
 
-# 检查并清理旧数据库和用户，避免重复创建报错
-mysql -u root -e "DROP DATABASE IF EXISTS $DB_NAME;"
-mysql -u root -e "DROP USER IF EXISTS '$DB_USER'@'localhost';"
+# 安装 docker-compose 如果未安装
+if ! command -v docker-compose &> /dev/null; then
+    echo_yellow "安装 docker-compose..."
+    sudo curl -L "https://github.com/docker/compose/releases/download/v2.29.1/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+    sudo chmod +x /usr/local/bin/docker-compose
+else
+    echo_green "docker-compose 已安装。"
+fi
 
-# 创建新的数据库和用户
-mysql -u root -e "CREATE DATABASE $DB_NAME;"
-mysql -u root -e "CREATE USER '$DB_USER'@'localhost' IDENTIFIED BY '$DB_PASSWORD';"
-mysql -u root -e "GRANT ALL PRIVILEGES ON $DB_NAME.* TO '$DB_USER'@'localhost';"
-mysql -u root -e "FLUSH PRIVILEGES;"
+# 创建工作目录
+INSTALL_DIR="$PWD/dujiaoka"
+mkdir -p "$INSTALL_DIR"
+cd "$INSTALL_DIR"
+mkdir -p storage uploads data redis
+chmod -R 777 storage uploads data redis
 
-echo -e "${GREEN}数据库创建成功！${NC}"
-echo "数据库名: $DB_NAME"
-echo "用户名: $DB_USER"
-echo "密码: $DB_PASSWORD"
-echo "-----------------------------------"
-sleep 2
+# 生成随机密码
+DB_ROOT_PASSWORD=$(openssl rand -base64 16)
+DB_PASSWORD=$(openssl rand -base64 16)
+APP_KEY="base64:$(openssl rand -base64 32)"
+APP_NAME="Dujiaoka"
+APP_URL="http://$(curl -s ifconfig.me)"  # 自动获取公网 IP，如果本地测试用 localhost
 
-# 下载独角数卡源码
-echo -e "${GREEN}正在下载独角数卡源码...${NC}"
-git clone --depth=1 https://github.com/assimon/dujiaoka.git /var/www/dujiaoka
-cd /var/www/dujiaoka
+# 打印密码信息
+echo_green "生成的配置信息（请保存）："
+echo "数据库 Root 密码: $DB_ROOT_PASSWORD"
+echo "数据库用户密码: $DB_PASSWORD"
+echo "应用密钥: $APP_KEY"
+echo "访问 URL: $APP_URL (admin 路径: $APP_URL/admin, 默认账号: admin / admin123)"
 
-# 安装项目依赖 (Composer)
-echo -e "${GREEN}正在安装 Composer 依赖...${NC}"
-composer install --no-dev --optimize-autoloader
+# 创建 .env 文件
+cat > env.conf << EOF
+APP_NAME=$APP_NAME
+APP_ENV=local
+APP_KEY=$APP_KEY
+APP_DEBUG=false
+APP_URL=$APP_URL
 
-# 配置 .env 文件
-echo -e "${GREEN}正在配置 .env 文件...${NC}"
-cp .env.example .env
+LOG_CHANNEL=stack
 
-sed -i "s/DB_DATABASE=.*/DB_DATABASE=$DB_NAME/" .env
-sed -i "s/DB_USERNAME=.*/DB_USERNAME=$DB_USER/" .env
-sed -i "s/DB_PASSWORD=.*/DB_PASSWORD=$DB_PASSWORD/" .env
+DB_CONNECTION=mysql
+DB_HOST=db
+DB_PORT=3306
+DB_DATABASE=dujiaoka
+DB_USERNAME=dujiaoka
+DB_PASSWORD=$DB_PASSWORD
 
-# 生成 APP_KEY
-php artisan key:generate
+REDIS_HOST=redis
+REDIS_PASSWORD=
+REDIS_PORT=6379
 
-# 运行迁移
-php artisan migrate --force
-php artisan dujiao:install
+BROADCAST_DRIVER=log
+SESSION_DRIVER=file
+SESSION_LIFETIME=120
 
-# Nginx 配置
-echo -e "${GREEN}正在配置 Nginx...${NC}"
+CACHE_DRIVER=redis
 
-cat > /etc/nginx/sites-available/dujiaoka << EOF
-server {
-    listen $port;
-    server_name $domain;
-    root /var/www/dujiaoka/public;
+QUEUE_CONNECTION=redis
 
-    add_header X-Frame-Options "SAMEORIGIN";
-    add_header X-XSS-Protection "1; mode=block";
-    add_header X-Content-Type-Options "nosniff";
+DUJIAO_ADMIN_LANGUAGE=zh_CN
 
-    index index.html index.htm index.php;
-
-    charset utf-8;
-
-    location / {
-        try_files \$uri \$uri/ /index.php?\$query_string;
-    }
-
-    location = /favicon.ico { access_log off; log_not_found off; }
-    location = /robots.txt  { access_log off; log_not_found off; }
-
-    error_page 404 /index.php;
-
-    location ~ \.php$ {
-        fastcgi_pass unix:$PHPFPM_SOCK_PATH;
-        fastcgi_index index.php;
-        fastcgi_param SCRIPT_FILENAME \$realpath_root\$fastcgi_script_name;
-        include fastcgi_params;
-    }
-
-    location ~ /\.(?!well-known).* {
-        deny all;
-    }
-}
+ADMIN_ROUTE_PREFIX=/admin
 EOF
 
-# 清理 Nginx 默认配置
-rm -f /etc/nginx/sites-enabled/default
-ln -s /etc/nginx/sites-available/dujiaoka /etc/nginx/sites-enabled/
+# 创建 docker-compose.yml
+cat > docker-compose.yml << EOF
+version: "3"
 
-# 赋予权限
-chown -R $WEB_USER:$WEB_USER /var/www/dujiaoka
-chmod -R 755 /var/www/dujiaoka
+services:
+  faka:
+    image: ghcr.io/apocalypsor/dujiaoka:latest
+    container_name: faka
+    environment:
+      - INSTALL=true
+    volumes:
+      - ./env.conf:/dujiaoka/.env
+      - ./uploads:/dujiaoka/public/uploads
+      - ./storage:/dujiaoka/storage
+    ports:
+      - "80:80"  # 暴露到主机 80 端口
+    restart: always
+    depends_on:
+      - db
+      - redis
 
-# 重启服务
-echo -e "${GREEN}正在重启 Nginx 和 PHP-FPM 服务...${NC}"
-systemctl restart nginx
-systemctl restart $PHPFPM_SERVICE
+  db:
+    image: mariadb:latest
+    container_name: faka-db
+    restart: always
+    environment:
+      - MYSQL_ROOT_PASSWORD=$DB_ROOT_PASSWORD
+      - MYSQL_DATABASE=dujiaoka
+      - MYSQL_USER=dujiaoka
+      - MYSQL_PASSWORD=$DB_PASSWORD
+    volumes:
+      - ./data:/var/lib/mysql
 
-echo "-----------------------------------"
-echo -e "${GREEN}独角数卡安装完成！${NC}"
-echo "您现在可以通过以下地址访问您的网站："
-echo -e "${YELLOW}http://$domain:$port${NC}"
-echo "初始管理员信息："
-echo "用户名: ${DB_USER}"
-echo "密码: ${DB_PASSWORD}"
-echo "-----------------------------------"
+  redis:
+    image: redis:alpine
+    container_name: faka-redis
+    restart: always
+    volumes:
+      - ./redis:/data
+EOF
+
+# 启动服务
+echo_yellow "启动 Docker Compose 服务..."
+sudo docker-compose up -d
+
+# 等待安装完成
+sleep 30  # 等待 30 秒让安装运行
+echo_green "安装完成！访问 $APP_URL 进行进一步配置。"
+echo_yellow "如果需要停止/重启: cd $INSTALL_DIR && sudo docker-compose down / up -d"
