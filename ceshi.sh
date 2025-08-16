@@ -1,10 +1,10 @@
 #!/bin/bash
-# 独角数卡一键安装脚本 (支持 Ubuntu / Debian / CentOS)
+# 独角数卡一键安装脚本 (Ubuntu / Debian / CentOS 通用)
 # 作者：ChatGPT 优化版
 
 set -e
 
-# 颜色输出
+# 颜色
 GREEN="\033[32m"
 RED="\033[31m"
 YELLOW="\033[33m"
@@ -20,7 +20,7 @@ if ! command -v docker &> /dev/null; then
     systemctl start docker
 fi
 
-# 检查并安装 Docker Compose (新版 docker compose 插件)
+# 检查并安装 Docker Compose
 if ! docker compose version &> /dev/null; then
     echo -e "${YELLOW}⚙️ 未检测到 Docker Compose，正在安装...${RESET}"
     DOCKER_COMPOSE_VERSION="2.29.2"
@@ -37,7 +37,7 @@ DB_NAME="halo"
 APP_PORT=80
 
 # 检查端口是否被占用
-if netstat -tuln | grep -q ":80 "; then
+if ss -tuln | grep -q ":80 "; then
     echo -e "${RED}❌ 端口 80 已被占用！${RESET}"
     read -p "请输入一个新的端口号（例如 8080）：" new_port
     APP_PORT=$new_port
@@ -45,10 +45,9 @@ fi
 
 # 生成 docker-compose.yml
 cat <<EOF > docker-compose.yml
-version: "3"
 services:
   app:
-    image: ghcr.io/baijunyao/dujiaoka:v2
+    image: dujiaoka/dujiaoka:latest
     container_name: dujiaoka_app
     restart: always
     ports:
@@ -69,6 +68,7 @@ services:
     image: mysql:5.7
     container_name: dujiaoka_db
     restart: always
+    command: --default-authentication-plugin=mysql_native_password
     volumes:
       - ./mysql:/var/lib/mysql
     environment:
@@ -79,10 +79,15 @@ services:
 EOF
 
 # 启动容器
-docker compose up -d
+echo -e "${YELLOW}⚙️ 正在启动独角数卡...${RESET}"
+docker compose up -d || {
+    echo -e "${RED}❌ 镜像 dujiaoka/dujiaoka 拉取失败，尝试使用备用镜像...${RESET}"
+    sed -i 's#dujiaoka/dujiaoka:latest#registry.cn-hangzhou.aliyuncs.com/dujiaoka/dujiaoka:latest#g' docker-compose.yml
+    docker compose up -d
+}
 
 # 获取服务器公网 IP
-SERVER_IP=$(curl -s http://ipinfo.io/ip)
+SERVER_IP=$(curl -s http://ipinfo.io/ip || echo "你的服务器IP")
 
 echo -e "\n${GREEN}🎉 独角数卡已成功安装！${RESET}"
 echo -e "-------------------------------------------"
