@@ -1,19 +1,19 @@
 #!/bin/bash
 
-# Define colors
+# 定义颜色
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
-# Welcome message
-echo -e "${GREEN}独角数卡全自动安装脚本${NC}"
+# 欢迎信息
+echo -e "${GREEN}独角数卡全自动安装脚本 (修复版)${NC}"
 echo "-----------------------------------"
 echo -e "${YELLOW}本脚本将自动检测您的系统，并安装 Nginx, MySQL, PHP，以及独角数卡。${NC}"
 echo "-----------------------------------"
 sleep 2
 
-# Ask for domain and port, with automatic fallback
+# 询问用户是否自定义域名和端口
 read -p "请输入您要使用的域名 (例如: example.com, 留空则使用服务器 IP): " domain
 read -p "请输入您要使用的端口 (例如: 80, 留空则使用默认端口): " port
 
@@ -26,17 +26,17 @@ if [ -z "$domain" ]; then
     echo -e "${YELLOW}未输入域名，将使用服务器 IP: $domain${NC}"
 fi
 
-# Check for root
+# 检查是否为 root 用户
 if [[ $EUID -ne 0 ]]; then
    echo -e "${RED}此脚本必须以 root 用户身份运行。${NC}"
    exit 1
 fi
 
-# Determine OS and install dependencies
+# 检查系统发行版并安装依赖
 echo -e "${GREEN}正在检查系统发行版并安装依赖...${NC}"
 
 if command -v apt &> /dev/null; then
-    # Ubuntu and Debian
+    # Ubuntu 和 Debian
     echo -e "${YELLOW}检测到系统为 Debian/Ubuntu...${NC}"
     apt update -y
     apt install -y nginx mariadb-server php-fpm php-mysql php-mbstring php-xml php-bcmath php-json php-gd php-curl php-zip git unzip curl wget
@@ -59,13 +59,24 @@ else
     exit 1
 fi
 
-# Database configuration
+# 安装 Composer
+echo -e "${GREEN}正在安装 Composer...${NC}"
+if ! command -v composer &> /dev/null; then
+    curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
+fi
+
+# 数据库配置
 echo -e "${GREEN}正在配置数据库...${NC}"
 DB_ROOT_PASSWORD=$(openssl rand -base64 12)
 DB_NAME="unicorn"
 DB_USER="unicorn"
 DB_PASSWORD=$(openssl rand -base64 12)
 
+# 检查并清理旧数据库和用户，避免重复创建报错
+mysql -u root -e "DROP DATABASE IF EXISTS $DB_NAME;"
+mysql -u root -e "DROP USER IF EXISTS '$DB_USER'@'localhost';"
+
+# 创建新的数据库和用户
 mysql -u root -e "CREATE DATABASE $DB_NAME;"
 mysql -u root -e "CREATE USER '$DB_USER'@'localhost' IDENTIFIED BY '$DB_PASSWORD';"
 mysql -u root -e "GRANT ALL PRIVILEGES ON $DB_NAME.* TO '$DB_USER'@'localhost';"
@@ -78,12 +89,16 @@ echo "密码: $DB_PASSWORD"
 echo "-----------------------------------"
 sleep 2
 
-# Download source code
+# 下载独角数卡源码
 echo -e "${GREEN}正在下载独角数卡源码...${NC}"
 git clone --depth=1 https://github.com/assimon/dujiaoka.git /var/www/dujiaoka
 cd /var/www/dujiaoka
 
-# Configure .env file
+# 安装项目依赖 (Composer)
+echo -e "${GREEN}正在安装 Composer 依赖...${NC}"
+composer install --no-dev --optimize-autoloader
+
+# 配置 .env 文件
 echo -e "${GREEN}正在配置 .env 文件...${NC}"
 cp .env.example .env
 
@@ -91,14 +106,14 @@ sed -i "s/DB_DATABASE=.*/DB_DATABASE=$DB_NAME/" .env
 sed -i "s/DB_USERNAME=.*/DB_USERNAME=$DB_USER/" .env
 sed -i "s/DB_PASSWORD=.*/DB_PASSWORD=$DB_PASSWORD/" .env
 
-# Generate APP_KEY
+# 生成 APP_KEY
 php artisan key:generate
 
-# Run migrations
+# 运行迁移
 php artisan migrate --force
 php artisan dujiao:install
 
-# Nginx configuration
+# Nginx 配置
 echo -e "${GREEN}正在配置 Nginx...${NC}"
 
 cat > /etc/nginx/sites-available/dujiaoka << EOF
@@ -137,15 +152,15 @@ server {
 }
 EOF
 
-# Link Nginx config and clean up default
+# 清理 Nginx 默认配置
 rm -f /etc/nginx/sites-enabled/default
 ln -s /etc/nginx/sites-available/dujiaoka /etc/nginx/sites-enabled/
 
-# Set permissions
+# 赋予权限
 chown -R $WEB_USER:$WEB_USER /var/www/dujiaoka
 chmod -R 755 /var/www/dujiaoka
 
-# Restart services
+# 重启服务
 echo -e "${GREEN}正在重启 Nginx 和 PHP-FPM 服务...${NC}"
 systemctl restart nginx
 systemctl restart $PHPFPM_SERVICE
