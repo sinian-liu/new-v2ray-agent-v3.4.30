@@ -1,192 +1,144 @@
 #!/bin/bash
 set -e
 
-WORKDIR="/opt/dujiaoka"
-DEFAULT_PORT=80
-ACTION=${1:-install}  # 默认 install，可传 upgrade
+echo "🚀 独角数卡增强版一键安装开始..."
 
-echo "🚀 独角数卡脚本开始，模式: $ACTION"
+# 获取公网 IP
+PUBLIC_IP=$(curl -s https://api.ipify.org)
+if [[ -z "$PUBLIC_IP" ]]; then
+    echo "⚠️ 无法获取公网 IP，请确保服务器能访问外网"
+    PUBLIC_IP="127.0.0.1"
+fi
 
-############################################
-# 安装 Docker + Docker Compose
-############################################
-install_docker() {
-    if command -v docker &>/dev/null && command -v docker-compose &>/dev/null; then
-        echo "✅ Docker 和 Docker Compose 已安装"
-        return
-    fi
+# 检测 Docker 是否存在
+if ! command -v docker >/dev/null 2>&1; then
+    echo "⚙️ 未检测到 Docker，正在安装..."
+    curl -fsSL https://get.docker.com | bash
+    # 安装 docker-compose
+    DOCKER_COMPOSE_VERSION="v2.39.2"
+    curl -L "https://github.com/docker/compose/releases/download/${DOCKER_COMPOSE_VERSION}/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+    chmod +x /usr/local/bin/docker-compose
+fi
 
-    echo "⚙️ 安装 Docker..."
-    apt-get update
-    apt-get install -y apt-transport-https ca-certificates curl software-properties-common lsb-release gnupg lsof net-tools
+echo "✅ Docker 安装完成"
+docker --version
+docker-compose version || docker compose version
 
-    install -m 0755 -d /etc/apt/keyrings
-    curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
-    chmod a+r /etc/apt/keyrings/docker.asc
-
-    echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" \
-      > /etc/apt/sources.list.d/docker.list
-    apt-get update
-
-    apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin docker-ce-rootless-extras docker-buildx-plugin || true
-
-    if ! command -v docker-compose &>/dev/null; then
-      curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-      chmod +x /usr/local/bin/docker-compose
-      ln -sf /usr/local/bin/docker-compose /usr/bin/docker-compose
-    fi
-
-    systemctl enable docker
-    systemctl start docker
-}
-
-install_docker
-
-echo "✅ Docker 安装完成: $(docker --version), Docker Compose: $(docker-compose --version)"
-
-############################################
 # 创建工作目录
-############################################
-mkdir -p $WORKDIR
-cd $WORKDIR
+mkdir -p /opt/dujiaoka
+cd /opt/dujiaoka
 
-############################################
-# 端口交互选择
-############################################
-APP_PORT=$DEFAULT_PORT
-while lsof -i:$APP_PORT &>/dev/null; do
-    echo "⚠️ 端口 $APP_PORT 已被占用"
-    read -p "是否更改端口？(y/n)：" yn
-    if [[ "$yn" =~ ^[Yy]$ ]]; then
-        read -p "请输入新端口号（例如 8080）：" APP_PORT
-    else
-        echo "安装取消，请释放端口 $APP_PORT 后再试"
-        exit 1
-    fi
-done
-echo "使用端口: $APP_PORT"
+# 创建 install.lock 避免重复安装
+touch install.lock
 
-############################################
-# 公网 IP 获取
-############################################
-SERVER_IP=$(curl -s https://api.ipify.org || curl -s https://ipinfo.io/ip || hostname -I | awk '{print $1}')
+# 配置默认密码和数据库名
+DB_ROOT_PASS="IKctUskuhV6tJgmd"
+DB_NAME="dujiaoka"
+DB_USER="dujiaoka"
+DB_PASS="IKctUskuhV6tJgmd"
+REDIS_PASS=""
 
-############################################
-# 安装模式: 初始化 .env 和 install.lock
-############################################
-if [ "$ACTION" = "install" ] && [ ! -f .env ]; then
-    echo "⚙️ 生成 .env 和随机密码"
-    RANDOM_PASS=$(openssl rand -base64 12)
+# 下载 docker-compose.yml
+cat > docker-compose.yml << EOF
+version: "3"
+services:
+  app:
+    image: jiangjuhong/dujiaoka:latest
+    container_name: dujiaoka
+    environment:
+      WEB_DOCUMENT_ROOT: /app/public
+      TZ: Asia/Shanghai
+    volumes:
+      - ./storage:/app/storage
+      - ./bootstrap/cache:/app/bootstrap/cache
+      - ./install.lock:/app/install.lock
+      - ./env.env:/app/.env
+    ports:
+      - "80:80"
+      - "9000:9000"
+    depends_on:
+      - db
+      - redis
+    user: root
+    restart: always
 
-    cat > .env <<EOF
+  db:
+    image: mysql:8.0
+    container_name: dujiaoka_db
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASS}
+      MYSQL_DATABASE: ${DB_NAME}
+      MYSQL_USER: ${DB_USER}
+      MYSQL_PASSWORD: ${DB_PASS}
+    volumes:
+      - ./mysql:/var/lib/mysql
+    restart: always
+
+  redis:
+    image: redis:7.0
+    container_name: dujiaoka_redis
+    command: ["redis-server", "--requirepass", "${REDIS_PASS}"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - ./redis:/data
+    restart: always
+EOF
+
+# 生成 .env 文件
+cat > env.env << EOF
 APP_NAME=独角数卡
 APP_ENV=local
-APP_KEY=base64:$(openssl rand -base64 32)
+APP_KEY=
 APP_DEBUG=true
-APP_URL=http://$SERVER_IP:$APP_PORT
+APP_URL=http://${PUBLIC_IP}
 
 LOG_CHANNEL=stack
 
 DB_CONNECTION=mysql
 DB_HOST=db
 DB_PORT=3306
-DB_DATABASE=dujiaoka
-DB_USERNAME=dujiaoka
-DB_PASSWORD=$RANDOM_PASS
+DB_DATABASE=${DB_NAME}
+DB_USERNAME=${DB_USER}
+DB_PASSWORD=${DB_PASS}
 
 REDIS_HOST=redis
-REDIS_PASSWORD=
+REDIS_PASSWORD=${REDIS_PASS}
 REDIS_PORT=6379
 
-BROADCAST_DRIVER=log
-SESSION_DRIVER=file
-SESSION_LIFETIME=120
-
-CACHE_DRIVER=file
+CACHE_DRIVER=redis
 QUEUE_CONNECTION=redis
 
 DUJIAO_ADMIN_LANGUAGE=zh_CN
 ADMIN_ROUTE_PREFIX=/admin
-ADMIN_USER=admin
-ADMIN_PASS=$RANDOM_PASS
 EOF
 
-    touch install.lock
-fi
+echo "🚀 启动 Docker 容器..."
+docker-compose up -d
 
-############################################
-# docker-compose.yml
-############################################
-cat > docker-compose.yml <<EOF
-version: "3"
-services:
-  app:
-    image: jiangjuhong/dujiaoka:latest
-    container_name: dujiaoka
-    restart: always
-    ports:
-      - "$APP_PORT:80"
-    environment:
-      TZ: Asia/Shanghai
-      WEB_DOCUMENT_ROOT: /app/public
-    volumes:
-      - ./install.lock:/app/install.lock
-      - ./.env:/app/.env
-    depends_on:
-      - db
-      - redis
+# 等待数据库和 Redis 启动
+echo "⏳ 等待数据库和 Redis 启动..."
+until docker exec dujiaoka_db mysqladmin ping -h "127.0.0.1" --silent; do
+    echo "⏳ 数据库未就绪，继续等待..."
+    sleep 5
+done
+echo "✅ 数据库已就绪"
 
-  db:
-    image: mysql:5.7
-    restart: always
-    environment:
-      MYSQL_ROOT_PASSWORD: $RANDOM_PASS
-      MYSQL_DATABASE: dujiaoka
-      MYSQL_USER: dujiaoka
-      MYSQL_PASSWORD: $RANDOM_PASS
-    volumes:
-      - db_data:/var/lib/mysql
+# 修复 Laravel 权限
+docker exec -i dujiaoka bash -c "chown -R root:root /app/storage /app/bootstrap/cache && chmod -R 775 /app/storage /app/bootstrap/cache"
 
-  redis:
-    image: redis:alpine
-    restart: always
-    volumes:
-      - redis_data:/data
+# 生成 APP_KEY 并写入 .env
+echo "🔑 生成 Laravel APP_KEY..."
+APP_KEY_VALUE=$(docker exec -i dujiaoka php artisan key:generate --show)
+sed -i "s|APP_KEY=|APP_KEY=${APP_KEY_VALUE}|" env.env
+docker exec -i dujiaoka php artisan config:clear
 
-volumes:
-  db_data:
-  redis_data:
-EOF
+# 运行数据库迁移
+echo "⚙️ 运行数据库迁移..."
+docker exec -i dujiaoka php artisan migrate --force
 
-############################################
-# 启动容器
-############################################
-docker compose pull
-docker compose up -d --remove-orphans
-
-############################################
-# 等待数据库启动
-############################################
-echo "⏳ 等待数据库启动..."
-sleep 15
-
-############################################
-# 运行 Laravel 数据库迁移
-############################################
-echo "⚙️ 初始化数据库表 (运行 migrations)..."
-docker exec -i dujiaoka php artisan migrate --force || true
-docker exec -i dujiaoka php artisan key:generate || true
-docker exec -i dujiaoka php artisan config:cache || true
-docker exec -i dujiaoka php artisan route:cache || true
-docker exec -i dujiaoka php artisan view:clear || true
-
-############################################
-# 显示访问信息
-############################################
-echo -e "\n✅ 独角数卡安装完成！"
-echo -e "🌐 前台网站: http://$SERVER_IP:$APP_PORT"
-echo -e "🔑 后台登录: http://$SERVER_IP:$APP_PORT/admin"
-echo -e "后台管理员账户: admin"
-echo -e "后台管理员密码: $RANDOM_PASS"
-echo -e "数据库用户: dujiaoka"
-echo -e "数据库密码: $RANDOM_PASS"
+echo "✅ 安装完成"
+echo "🌐 前台地址: http://${PUBLIC_IP}"
+echo "🔑 后台登录: http://${PUBLIC_IP}/admin"
+echo "用户名: admin"
+echo "密码: IKctUskuhV6tJgmd"
