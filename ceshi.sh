@@ -7,9 +7,9 @@ YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
 # 欢迎信息
-echo -e "${GREEN}独角数卡一键安装脚本${NC}"
+echo -e "${GREEN}独角数卡全自动安装脚本${NC}"
 echo "-----------------------------------"
-echo -e "${YELLOW}脚本将自动安装 Nginx, MySQL, PHP, 并部署独角数卡。${NC}"
+echo -e "${YELLOW}脚本将自动检测您的系统，并安装 Nginx, MySQL, PHP，部署独角数卡。${NC}"
 echo "-----------------------------------"
 sleep 2
 
@@ -36,22 +36,28 @@ fi
 
 # 检查系统发行版并安装依赖
 echo -e "${GREEN}正在检查系统发行版并安装依赖...${NC}"
-if grep -q "ubuntu" /etc/os-release || grep -q "debian" /etc/os-release; then
+
+if command -v apt &> /dev/null; then
     # Ubuntu 和 Debian
+    echo -e "${YELLOW}检测到系统为 Debian/Ubuntu...${NC}"
     apt update -y
     apt install -y nginx mariadb-server php-fpm php-mysql php-mbstring php-xml php-bcmath php-json php-gd php-curl php-zip git unzip curl wget
     PHPFPM_SERVICE="php$(php -r 'echo substr(phpversion(),0,3);')-fpm.service"
     PHPFPM_SOCK_PATH="/var/run/php/php$(php -r 'echo substr(phpversion(),0,3);')-fpm.sock"
-elif grep -q "centos" /etc/os-release; then
+    WEB_USER="www-data"
+
+elif command -v yum &> /dev/null; then
     # CentOS
+    echo -e "${YELLOW}检测到系统为 CentOS...${NC}"
     yum install -y epel-release
     yum install -y nginx mariadb-server php-fpm php-mysqlnd php-mbstring php-xml php-bcmath php-json php-gd php-curl php-zip git unzip curl wget
     systemctl enable mariadb
     systemctl start mariadb
     PHPFPM_SERVICE="php-fpm.service"
     PHPFPM_SOCK_PATH="/var/run/php-fpm/www.sock"
+    WEB_USER="nginx"
 else
-    echo -e "${RED}不支持的操作系统。${NC}"
+    echo -e "${RED}不支持的操作系统。脚本将退出。${NC}"
     exit 1
 fi
 
@@ -134,10 +140,12 @@ server {
 }
 EOF
 
+# 清理 Nginx 默认配置
+rm -f /etc/nginx/sites-enabled/default
 ln -s /etc/nginx/sites-available/dujiao /etc/nginx/sites-enabled/
 
 # 赋予权限
-chown -R nginx:nginx /var/www/dujiao
+chown -R $WEB_USER:$WEB_USER /var/www/dujiao
 chmod -R 755 /var/www/dujiao
 
 # 重启服务
