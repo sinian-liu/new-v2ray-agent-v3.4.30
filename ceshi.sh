@@ -34,21 +34,22 @@ if [[ $EUID -ne 0 ]]; then
    exit 1
 fi
 
-# 安装依赖
-echo -e "${GREEN}正在安装依赖...${NC}"
-apt update -y
-apt install -y curl wget git unzip
-
-# 检查系统发行版
-if grep -q "ubuntu" /etc/os-release; then
-    # Ubuntu
-    apt install -y nginx mariadb-server php-fpm php-mysql php-mbstring php-xml php-bcmath php-json php-gd php-curl php-zip
+# 检查系统发行版并安装依赖
+echo -e "${GREEN}正在检查系统发行版并安装依赖...${NC}"
+if grep -q "ubuntu" /etc/os-release || grep -q "debian" /etc/os-release; then
+    # Ubuntu 和 Debian
+    apt update -y
+    apt install -y nginx mariadb-server php-fpm php-mysql php-mbstring php-xml php-bcmath php-json php-gd php-curl php-zip git unzip curl wget
+    PHPFPM_SERVICE="php$(php -r 'echo substr(phpversion(),0,3);')-fpm.service"
+    PHPFPM_SOCK_PATH="/var/run/php/php$(php -r 'echo substr(phpversion(),0,3);')-fpm.sock"
 elif grep -q "centos" /etc/os-release; then
     # CentOS
     yum install -y epel-release
-    yum install -y nginx mariadb-server php-fpm php-mysqlnd php-mbstring php-xml php-bcmath php-json php-gd php-curl php-zip
+    yum install -y nginx mariadb-server php-fpm php-mysqlnd php-mbstring php-xml php-bcmath php-json php-gd php-curl php-zip git unzip curl wget
     systemctl enable mariadb
     systemctl start mariadb
+    PHPFPM_SERVICE="php-fpm.service"
+    PHPFPM_SOCK_PATH="/var/run/php-fpm/www.sock"
 else
     echo -e "${RED}不支持的操作系统。${NC}"
     exit 1
@@ -62,10 +63,10 @@ DB_USER="unicorn"
 DB_PASSWORD=$(openssl rand -base64 12)
 
 # 创建数据库和用户
-mysql -u root -p"$DB_ROOT_PASSWORD" -e "CREATE DATABASE $DB_NAME;"
-mysql -u root -p"$DB_ROOT_PASSWORD" -e "CREATE USER '$DB_USER'@'localhost' IDENTIFIED BY '$DB_PASSWORD';"
-mysql -u root -p"$DB_ROOT_PASSWORD" -e "GRANT ALL PRIVILEGES ON $DB_NAME.* TO '$DB_USER'@'localhost';"
-mysql -u root -p"$DB_ROOT_PASSWORD" -e "FLUSH PRIVILEGES;"
+mysql -u root -e "CREATE DATABASE $DB_NAME;"
+mysql -u root -e "CREATE USER '$DB_USER'@'localhost' IDENTIFIED BY '$DB_PASSWORD';"
+mysql -u root -e "GRANT ALL PRIVILEGES ON $DB_NAME.* TO '$DB_USER'@'localhost';"
+mysql -u root -e "FLUSH PRIVILEGES;"
 
 echo -e "${GREEN}数据库创建成功！${NC}"
 echo "数据库名: $DB_NAME"
@@ -121,7 +122,7 @@ server {
     error_page 404 /index.php;
 
     location ~ \.php$ {
-        fastcgi_pass unix:/var/run/php/php8.1-fpm.sock; # 根据您的 PHP 版本修改
+        fastcgi_pass unix:$PHPFPM_SOCK_PATH;
         fastcgi_index index.php;
         fastcgi_param SCRIPT_FILENAME \$realpath_root\$fastcgi_script_name;
         include fastcgi_params;
@@ -136,13 +137,13 @@ EOF
 ln -s /etc/nginx/sites-available/dujiao /etc/nginx/sites-enabled/
 
 # 赋予权限
-chown -R www-data:www-data /var/www/dujiao
+chown -R nginx:nginx /var/www/dujiao
 chmod -R 755 /var/www/dujiao
 
 # 重启服务
 echo -e "${GREEN}正在重启 Nginx 和 PHP-FPM 服务...${NC}"
 systemctl restart nginx
-systemctl restart php8.1-fpm # 根据您的 PHP 版本修改
+systemctl restart $PHPFPM_SERVICE
 
 echo "-----------------------------------"
 echo -e "${GREEN}独角数卡安装完成！${NC}"
