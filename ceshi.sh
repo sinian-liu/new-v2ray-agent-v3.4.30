@@ -1,164 +1,171 @@
 #!/bin/bash
 
-# 独角数卡一键安装脚本 (基于 Docker)
-# 支持 Ubuntu, Debian, CentOS
-# 作者：基于 GitHub Apocalypsor/dujiaoka-docker 适配
+# 定义颜色
+GREEN='\033[0;32m'
+RED='\033[0;31m'
+YELLOW='\033[1;33m'
+NC='\033[0m' # No Color
 
-set -e
+# 自动生成随机密码
+generate_password() {
+    < /dev/urandom tr -dc A-Za-z0-9_ | head -c8
+}
 
-# 颜色输出函数
-echo_green() { echo -e "\033[32m$1\033[0m"; }
-echo_red() { echo -e "\033[31m$1\033[0m"; }
-echo_yellow() { echo -e "\033[33m$1\033[0m"; }
+DB_PASSWORD=$(generate_password)
+ADMIN_PASSWORD=$(generate_password)
+DB_USER="halo"
+DB_NAME="halo"
+APP_PORT=80
 
-# 检测 OS
-OS=""
-if [ -f /etc/debian_version ]; then
-    OS="debian"
-    PKG_MANAGER="apt-get"
-elif [ -f /etc/redhat-release ]; then
-    OS="centos"
-    if grep -q "CentOS Linux release 8" /etc/redhat-release; then
-        PKG_MANAGER="dnf"
-    else
-        PKG_MANAGER="yum"
-    fi
-else
-    echo_red "不支持的操作系统！仅支持 Ubuntu/Debian/CentOS。"
+echo -e "${YELLOW}欢迎使用独角数卡一键安装脚本！${NC}"
+
+# 检查是否以 root 用户运行
+if [ "$EUID" -ne 0 ]; then
+    echo -e "${RED}请以 root 用户身份运行此脚本！${NC}"
     exit 1
 fi
 
-# 安装必要工具
-echo_yellow "更新包管理器并安装必要工具..."
-if [ "$OS" = "debian" ]; then
-    sudo $PKG_MANAGER update -y
-    sudo $PKG_MANAGER install -y curl wget openssl ca-certificates
-else
-    sudo $PKG_MANAGER makecache
-    sudo $PKG_MANAGER install -y curl wget openssl ca-certificates
-fi
+# 检查并安装 Docker
+install_docker() {
+    if ! command -v docker &> /dev/null; then
+        echo -e "${YELLOW}未检测到 Docker，正在自动安装...${NC}"
+        # 不同的系统使用不同的安装方式
+        if [ -f /etc/os-release ]; then
+            . /etc/os-release
+            case "$ID" in
+                ubuntu|debian)
+                    apt-get update
+                    apt-get install -y ca-certificates curl gnupg
+                    install -m 0755 -d /etc/apt/keyrings
+                    curl -fsSL https://download.docker.com/linux/"$ID"/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+                    chmod a+r /etc/apt/keyrings/docker.gpg
+                    echo "deb [arch=$(dpkg --print-arch) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/"$ID" $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
+                    apt-get update
+                    apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+                    ;;
+                centos)
+                    yum install -y yum-utils
+                    yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+                    yum install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+                    systemctl start docker
+                    systemctl enable docker
+                    ;;
+                *)
+                    echo -e "${RED}不支持的操作系统：$ID${NC}"
+                    exit 1
+                    ;;
+            esac
+        else
+            echo -e "${RED}无法识别的操作系统类型。${NC}"
+            exit 1
+        fi
+        echo -e "${GREEN}Docker 安装完成。${NC}"
+    else
+        echo -e "${GREEN}Docker 已安装。${NC}"
+    fi
 
-# 安装 Docker 如果未安装
-if ! command -v docker &> /dev/null; then
-    echo_yellow "安装 Docker..."
-    curl -fsSL https://get.docker.com -o get-docker.sh
-    sudo sh get-docker.sh
-    sudo systemctl start docker
-    sudo systemctl enable docker
-else
-    echo_green "Docker 已安装。"
-fi
+    # 检查并安装 Docker Compose
+    if ! command -v docker-compose &> /dev/null && ! docker compose &> /dev/null; then
+        echo -e "${YELLOW}未检测到 Docker Compose，正在自动安装...${NC}"
+        docker_compose_version=$(curl -s https://api.github.com/repos/docker/compose/releases/latest | grep "tag_name" | cut -d : -f 2,3 | tr -d '", ')
+        curl -L "https://github.com/docker/compose/releases/download/${docker_compose_version}/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+        chmod +x /usr/local/bin/docker-compose
+        if ! command -v docker-compose &> /dev/null; then
+             echo -e "${RED}Docker Compose 安装失败，请手动检查。${NC}"
+             exit 1
+        fi
+        echo -e "${GREEN}Docker Compose 安装完成。${NC}"
+    else
+        echo -e "${GREEN}Docker Compose 已安装。${NC}"
+    fi
+}
 
-# 安装 docker-compose 如果未安装
-if ! command -v docker-compose &> /dev/null; then
-    echo_yellow "安装 docker-compose..."
-    sudo curl -L "https://github.com/docker/compose/releases/download/v2.29.1/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-    sudo chmod +x /usr/local/bin/docker-compose
-else
-    echo_green "docker-compose 已安装。"
-fi
+# 检查端口占用情况
+check_port() {
+    netstat -lnpt | grep -q ":$1 "
+}
 
-# 创建工作目录
-INSTALL_DIR="$PWD/dujiaoka"
-mkdir -p "$INSTALL_DIR"
-cd "$INSTALL_DIR"
-mkdir -p storage uploads data redis
-chmod -R 777 storage uploads data redis
+# 询问并设置端口
+set_port() {
+    while check_port "$APP_PORT"; do
+        echo -e "${YELLOW}端口 $APP_PORT 已被占用。${NC}"
+        read -p "请输入一个新的端口号（例如 8080）：" new_port
+        if [[ "$new_port" =~ ^[0-9]+$ ]] && [ "$new_port" -ge 1 ] && [ "$new_port" -le 65535 ]; then
+            APP_PORT=$new_port
+            echo -e "${GREEN}已将端口设置为 $APP_PORT。${NC}"
+        else
+            echo -e "${RED}无效的端口号。请重新输入。${NC}"
+        fi
+    done
+}
 
-# 生成随机密码
-DB_ROOT_PASSWORD=$(openssl rand -base64 16)
-DB_PASSWORD=$(openssl rand -base64 16)
-APP_KEY="base64:$(openssl rand -base64 32)"
-APP_NAME="Dujiaoka"
-APP_URL="http://$(curl -s ifconfig.me)"  # 自动获取公网 IP，如果本地测试用 localhost
+# 创建 Docker Compose 文件
+create_docker_compose() {
+    echo -e "${YELLOW}正在生成 Docker Compose 文件...${NC}"
 
-# 打印密码信息
-echo_green "生成的配置信息（请保存）："
-echo "数据库 Root 密码: $DB_ROOT_PASSWORD"
-echo "数据库用户密码: $DB_PASSWORD"
-echo "应用密钥: $APP_KEY"
-echo "访问 URL: $APP_URL (admin 路径: $APP_URL/admin, 默认账号: admin / admin123)"
-
-# 创建 .env 文件
-cat > env.conf << EOF
-APP_NAME=$APP_NAME
-APP_ENV=local
-APP_KEY=$APP_KEY
-APP_DEBUG=false
-APP_URL=$APP_URL
-
-LOG_CHANNEL=stack
-
-DB_CONNECTION=mysql
-DB_HOST=db
-DB_PORT=3306
-DB_DATABASE=dujiaoka
-DB_USERNAME=dujiaoka
-DB_PASSWORD=$DB_PASSWORD
-
-REDIS_HOST=redis
-REDIS_PASSWORD=
-REDIS_PORT=6379
-
-BROADCAST_DRIVER=log
-SESSION_DRIVER=file
-SESSION_LIFETIME=120
-
-CACHE_DRIVER=redis
-
-QUEUE_CONNECTION=redis
-
-DUJIAO_ADMIN_LANGUAGE=zh_CN
-
-ADMIN_ROUTE_PREFIX=/admin
-EOF
-
-# 创建 docker-compose.yml
-cat > docker-compose.yml << EOF
+    cat <<EOF > docker-compose.yml
 version: "3"
-
 services:
-  faka:
-    image: ghcr.io/apocalypsor/dujiaoka:latest
-    container_name: faka
-    environment:
-      - INSTALL=true
-    volumes:
-      - ./env.conf:/dujiaoka/.env
-      - ./uploads:/dujiaoka/public/uploads
-      - ./storage:/dujiaoka/storage
-    ports:
-      - "80:80"  # 暴露到主机 80 端口
+  app:
+    image: ghcr.io/baijunyao/dujiaoka:v2
+    container_name: dujiaoka_app
     restart: always
+    ports:
+      - "$APP_PORT:80"
+    volumes:
+      - ./dujiaoka:/www/dujiaoka
+    environment:
+      - DB_CONNECTION=mysql
+      - DB_HOST=db
+      - DB_PORT=3306
+      - DB_DATABASE=$DB_NAME
+      - DB_USERNAME=$DB_USER
+      - DB_PASSWORD=$DB_PASSWORD
     depends_on:
       - db
-      - redis
 
   db:
-    image: mariadb:latest
-    container_name: faka-db
+    image: mysql:5.7
+    container_name: dujiaoka_db
     restart: always
+    volumes:
+      - ./mysql:/var/lib/mysql
     environment:
-      - MYSQL_ROOT_PASSWORD=$DB_ROOT_PASSWORD
-      - MYSQL_DATABASE=dujiaoka
-      - MYSQL_USER=dujiaoka
+      - MYSQL_ROOT_PASSWORD=$DB_PASSWORD
+      - MYSQL_DATABASE=$DB_NAME
+      - MYSQL_USER=$DB_USER
       - MYSQL_PASSWORD=$DB_PASSWORD
-    volumes:
-      - ./data:/var/lib/mysql
-
-  redis:
-    image: redis:alpine
-    container_name: faka-redis
-    restart: always
-    volumes:
-      - ./redis:/data
 EOF
+}
 
-# 启动服务
-echo_yellow "启动 Docker Compose 服务..."
-sudo docker-compose up -d
+# 运行安装过程
+main() {
+    install_docker
+    set_port
+    create_docker_compose
+    echo -e "${YELLOW}正在启动独角数卡...${NC}"
+    docker-compose up -d
 
-# 等待安装完成
-sleep 30  # 等待 30 秒让安装运行
-echo_green "安装完成！访问 $APP_URL 进行进一步配置。"
-echo_yellow "如果需要停止/重启: cd $INSTALL_DIR && sudo docker-compose down / up -d"
+    if [ $? -eq 0 ]; then
+        echo -e "${GREEN}独角数卡已成功安装！${NC}"
+        echo -e "${GREEN}-------------------------------------------${NC}"
+        echo -e "${GREEN}请访问以下地址进行安装配置：${NC}"
+        echo -e "${GREEN}网站地址：http://$(curl -s http://ipinfo.io/ip):$APP_PORT${NC}"
+        echo -e "${GREEN}或本地地址：http://127.0.0.1:$APP_PORT${NC}"
+        echo -e "${GREEN}-------------------------------------------${NC}"
+        echo -e "${GREEN}数据库信息（脚本已自动填写）：${NC}"
+        echo -e "${GREEN}数据库连接类型：mysql${NC}"
+        echo -e "${GREEN}数据库地址：db${NC}"
+        echo -e "${GREEN}数据库端口：3306${NC}"
+        echo -e "${GREEN}数据库名：$DB_NAME${NC}"
+        echo -e "${GREEN}数据库用户名：$DB_USER${NC}"
+        echo -e "${GREEN}数据库密码：$DB_PASSWORD${NC}"
+        echo -e "${GREEN}-------------------------------------------${NC}"
+        echo -e "${GREEN}请保存此信息，用于未来的管理。${NC}"
+    else
+        echo -e "${RED}独角数卡安装失败。请检查日志。${NC}"
+        exit 1
+    fi
+}
+
+main
