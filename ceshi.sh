@@ -3,9 +3,6 @@ set -e
 
 echo "=============================="
 echo " 🚀 独角数卡 (Dujiaoka) 自动安装 "
-echo "  适配: Ubuntu / Debian / CentOS (新旧版通用) "
-echo "  自动安装 Docker + docker-compose "
-echo "  自动获取公网 IP 并配置 APP_URL "
 echo "=============================="
 
 # 检查 root
@@ -22,7 +19,7 @@ else
     apt install -y curl wget tar
 fi
 
-# 安装 Docker (静态二进制)
+# 安装 Docker (如果未安装)
 if ! command -v docker &> /dev/null; then
     echo "👉 安装 Docker..."
     DOCKER_VERSION="24.0.9"
@@ -50,7 +47,7 @@ else
     echo "✅ Docker 已安装"
 fi
 
-# 安装 docker-compose (静态二进制)
+# 安装 docker-compose (如果未安装)
 if ! command -v docker-compose &> /dev/null; then
     echo "👉 安装 Docker Compose..."
     COMPOSE_VERSION="2.20.3"
@@ -62,14 +59,10 @@ else
 fi
 
 # 自动获取公网 IP
-PUB_IP=$(curl -s https://ip.tsinghua.cloud)
-if [[ -z "$PUB_IP" ]]; then
-    PUB_IP="localhost"
-    echo "⚠️ 无法获取公网 IP，默认使用 localhost"
-fi
+PUB_IP=$(curl -s https://ip.tsinghua.cloud || echo "localhost")
 echo "👉 检测到公网 IP: $PUB_IP"
 
-# 默认安装参数
+# 默认参数
 INSTALL_DIR="/root/data/docker_data/shop"
 WEB_PORT=8090
 MYSQL_ROOT_PASS="rootpass"
@@ -79,7 +72,7 @@ DB_PASS="dbpass"
 APP_NAME="咕咕的小卖部"
 APP_URL="http://${PUB_IP}:${WEB_PORT}"
 
-# 创建安装目录
+# 创建目录并进入
 mkdir -p "$INSTALL_DIR"
 cd "$INSTALL_DIR"
 
@@ -126,6 +119,5 @@ EOF
 echo "👉 启动容器..."
 docker-compose up -d
 
-# 输出结果
 echo "✅ 独角数卡安装完成！"
 echo "访问地址: ${APP_URL}"
