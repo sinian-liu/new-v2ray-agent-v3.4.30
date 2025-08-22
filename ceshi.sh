@@ -1,123 +1,40 @@
 #!/bin/bash
-set -e
+# 一键开启 root 密码登录，适用于 Debian/Ubuntu
+# 手动输入密码
 
-echo "=============================="
-echo " 🚀 独角数卡 (Dujiaoka) 自动安装 "
-echo "=============================="
+read -sp "请输入要设置的 root 密码: " PWD
+echo
+read -sp "请再次输入 root 密码: " PWD2
+echo
 
-# 检查 root
-if [ "$(id -u)" != "0" ]; then
-   echo "❌ 请使用 root 用户运行"
-   exit 1
+if [ "$PWD" != "$PWD2" ]; then
+  echo "❌ 两次密码不一致，已退出"
+  exit 1
 fi
 
-# 安装基础工具
-if [ -f /etc/redhat-release ]; then
-    yum install -y curl wget tar
+# 判断 SSH 服务名（Debian/Ubuntu 都是 ssh 或 sshd）
+if systemctl list-units --full -all | grep -qE '^ssh\.service'; then
+  SSH_SERVICE=ssh
 else
-    apt update -y
-    apt install -y curl wget tar
+  SSH_SERVICE=sshd
 fi
 
-# 安装 Docker (如果未安装)
-if ! command -v docker &> /dev/null; then
-    echo "👉 安装 Docker..."
-    DOCKER_VERSION="24.0.9"
-    curl -fsSL https://download.docker.com/linux/static/stable/x86_64/docker-${DOCKER_VERSION}.tgz -o docker.tgz
-    tar xzvf docker.tgz
-    mv docker/* /usr/bin/
-    rm -rf docker docker.tgz
-    cat > /etc/systemd/system/docker.service <<EOF
-[Unit]
-Description=Docker Service
-After=network.target
+# 修改或追加配置
+grep -q "^PasswordAuthentication" /etc/ssh/sshd_config && \
+  sed -i 's/^PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config || \
+  echo "PasswordAuthentication yes" >> /etc/ssh/sshd_config
 
-[Service]
-ExecStart=/usr/bin/dockerd -H unix://
-Restart=always
-LimitNOFILE=infinity
+grep -q "^PermitRootLogin" /etc/ssh/sshd_config && \
+  sed -i 's/^PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config || \
+  echo "PermitRootLogin yes" >> /etc/ssh/sshd_config
 
-[Install]
-WantedBy=multi-user.target
-EOF
-    systemctl daemon-reload
-    systemctl enable docker
-    systemctl start docker
-else
-    echo "✅ Docker 已安装"
-fi
+# 重启 SSH 服务
+systemctl restart $SSH_SERVICE
 
-# 安装 docker-compose (如果未安装)
-if ! command -v docker-compose &> /dev/null; then
-    echo "👉 安装 Docker Compose..."
-    COMPOSE_VERSION="2.20.3"
-    curl -L "https://github.com/docker/compose/releases/download/v${COMPOSE_VERSION}/docker-compose-$(uname -s)-$(uname -m)" \
-      -o /usr/local/bin/docker-compose
-    chmod +x /usr/local/bin/docker-compose
-else
-    echo "✅ Docker Compose 已安装"
-fi
+# 设置 root 密码
+echo "root:$PWD" | chpasswd
 
-# 自动获取公网 IP
-PUB_IP=$(curl -s https://ip.tsinghua.cloud || echo "localhost")
-echo "👉 检测到公网 IP: $PUB_IP"
-
-# 默认参数
-INSTALL_DIR="/root/data/docker_data/shop"
-WEB_PORT=8090
-MYSQL_ROOT_PASS="rootpass"
-DB_NAME="dujiaoka"
-DB_USER="dujiaoka"
-DB_PASS="dbpass"
-APP_NAME="咕咕的小卖部"
-APP_URL="http://${PUB_IP}:${WEB_PORT}"
-
-# 创建目录并进入
-mkdir -p "$INSTALL_DIR"
-cd "$INSTALL_DIR"
-
-# 生成 docker-compose.yml
-cat > docker-compose.yml <<EOF
-version: '3'
-
-services:
-  dujiaoka:
-    image: dujiaoka/dujiaoka:latest
-    container_name: dujiaoka
-    restart: always
-    ports:
-      - "${WEB_PORT}:80"
-    environment:
-      - DB_CONNECTION=mysql
-      - DB_HOST=db
-      - DB_PORT=3306
-      - DB_DATABASE=${DB_NAME}
-      - DB_USERNAME=${DB_USER}
-      - DB_PASSWORD=${DB_PASS}
-      - APP_NAME=${APP_NAME}
-      - APP_URL=${APP_URL}
-    depends_on:
-      - db
-
-  db:
-    image: mysql:5.7
-    container_name: dujiaoka-mysql
-    restart: always
-    environment:
-      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASS}
-      - MYSQL_DATABASE=${DB_NAME}
-      - MYSQL_USER=${DB_USER}
-      - MYSQL_PASSWORD=${DB_PASS}
-    volumes:
-      - db_data:/var/lib/mysql
-
-volumes:
-  db_data:
-EOF
-
-# 启动容器
-echo "👉 启动容器..."
-docker-compose up -d
-
-echo "✅ 独角数卡安装完成！"
-echo "访问地址: ${APP_URL}"
+# 显示登录提示
+IP=$(curl -s ifconfig.me || curl -s ipinfo.io/ip)
+echo -e "\n✅ 已开启 root 密码登录"
+echo "👉 可以用 ssh root@$IP 登录"
