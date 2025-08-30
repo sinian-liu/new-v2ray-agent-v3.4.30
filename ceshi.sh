@@ -19,13 +19,13 @@ declare -A TEST_RESULTS
 declare -A TEST_NODES
 declare -A NODE_CATEGORIES
 
-# 初始化精选DNS节点（50个最常用）
+# 初始化精选DNS节点（30个最常用）
 init_selected_dns_nodes() {
-    echo -e "${PURPLE}📋 加载精选三网DNS服务器（50个最常用）...${NC}"
+    echo -e "${PURPLE}📋 加载精选三网DNS服务器（30个最常用）...${NC}"
     
-    # 定义精选DNS服务器数据
+    # 定义精选DNS服务器数据（三网各10个最热门地区）
     local dns_data=(
-        # 电信DNS（15个）
+        # 电信DNS（10个最热门地区）
         "电信DNS 北京电信 219.141.136.10"
         "电信DNS 上海电信 202.96.209.133"
         "电信DNS 广东电信 202.96.128.86"
@@ -33,16 +33,11 @@ init_selected_dns_nodes() {
         "电信DNS 浙江电信 202.101.172.35"
         "电信DNS 四川电信 61.139.2.69"
         "电信DNS 天津电信 219.150.32.132"
-        "电信DNS 重庆电信 61.128.192.68"
-        "电信DNS 河南电信 222.88.88.88"
-        "电信DNS 湖南电信 59.51.78.211"
-        "电信DNS 湖北电信 202.103.24.68"
         "电信DNS 山东电信 219.146.1.66"
+        "电信DNS 湖北电信 202.103.24.68"
         "电信DNS 陕西电信 218.30.19.40"
-        "电信DNS 辽宁电信 219.148.204.66"
-        "电信DNS 114DNS 114.114.114.114"
 
-        # 联通DNS（15个）
+        # 联通DNS（10个最热门地区）
         "联通DNS 北京联通 123.123.123.123"
         "联通DNS 上海联通 210.22.70.3"
         "联通DNS 广东联通 210.21.196.6"
@@ -50,45 +45,27 @@ init_selected_dns_nodes() {
         "联通DNS 浙江联通 221.12.1.227"
         "联通DNS 四川联通 119.6.6.6"
         "联通DNS 天津联通 202.99.104.68"
-        "联通DNS 重庆联通 221.5.203.98"
-        "联通DNS 河南联通 202.102.224.68"
-        "联通DNS 河北联通 202.99.160.68"
         "联通DNS 山东联通 202.102.128.68"
-        "联通DNS 山西联通 202.99.192.66"
-        "联通DNS 陕西联通 221.11.1.67"
+        "联通DNS 河南联通 202.102.224.68"
         "联通DNS 辽宁联通 202.96.69.38"
-        "联通DNS 阿里DNS 223.5.5.5"
 
-        # 移动DNS（15个）
+        # 移动DNS（10个最热门地区）
         "移动DNS 北京移动 211.138.30.66"
         "移动DNS 上海移动 211.136.112.50"
         "移动DNS 广东移动 211.139.129.222"
         "移动DNS 江苏移动 221.131.143.69"
         "移动DNS 浙江移动 211.140.13.188"
         "移动DNS 四川移动 211.137.82.4"
-        "移动DNS 天津移动 211.137.160.50"
-        "移动DNS 重庆移动 218.201.4.3"
         "移动DNS 山东移动 218.201.96.130"
         "移动DNS 河南移动 211.138.24.66"
         "移动DNS 湖南移动 211.142.210.98"
-        "移动DNS 湖北移动 211.137.58.20"
         "移动DNS 陕西移动 211.137.130.3"
-        "移动DNS 辽宁移动 211.137.32.178"
-        "移动DNS 百度DNS 180.76.76.76"
-
-        # 公共DNS（5个）
-        "公共DNS GoogleDNS 8.8.8.8"
-        "公共DNS CloudflareDNS 1.1.1.1"
-        "公共DNS OpenDNS 208.67.222.222"
-        "公共DNS Quad9DNS 9.9.9.9"
-        "公共DNS DNSPodDNS 119.29.29.29"
     )
 
     # 初始化分类
     NODE_CATEGORIES["电信DNS"]=""
     NODE_CATEGORIES["联通DNS"]=""
     NODE_CATEGORIES["移动DNS"]=""
-    NODE_CATEGORIES["公共DNS"]=""
 
     # 添加所有节点
     for data in "${dns_data[@]}"; do
@@ -103,7 +80,6 @@ init_selected_dns_nodes() {
     echo -e "${YELLOW}📊 电信DNS: $(echo ${NODE_CATEGORIES[电信DNS]} | wc -w) 个节点${NC}"
     echo -e "${YELLOW}📊 联通DNS: $(echo ${NODE_CATEGORIES[联通DNS]} | wc -w) 个节点${NC}"
     echo -e "${YELLOW}📊 移动DNS: $(echo ${NODE_CATEGORIES[移动DNS]} | wc -w) 个节点${NC}"
-    echo -e "${YELLOW}📊 公共DNS: $(echo ${NODE_CATEGORIES[公共DNS]} | wc -w) 个节点${NC}"
 }
 
 # 显示测试进度
@@ -160,7 +136,7 @@ run_all_dns_tests() {
     echo -e "${CYAN}=== 🌐 开始DNS服务器测试 ===${NC}"
     echo -e "${YELLOW}⏰ 正在测试精选DNS服务器，请耐心等待...${NC}"
     echo -e "${YELLOW}📋 总共 ${total_nodes} 个节点需要测试${NC}"
-    echo -e "${YELLOW}🕐 预计需要 1-2 分钟...${NC}"
+    echo -e "${YELLOW}🕐 预计需要 1 分钟...${NC}"
     echo ""
     
     local current=0
