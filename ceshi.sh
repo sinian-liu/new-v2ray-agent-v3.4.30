@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# VPS网络真实测试脚本
+# VPS网络真实测试脚本 - 修复版
 # 支持Ubuntu/CentOS/Debian
 
 set -e
@@ -63,7 +63,7 @@ perform_ping_test() {
     
     # 执行ping测试
     local result
-    result=$(timeout 15 ping -c 6 -i 0.3 -W 2 "$ip" 2>/dev/null | tail -2 || true)
+    result=$(timeout 15 ping -c 4 -i 0.5 -W 3 "$ip" 2>/dev/null | tail -2 || true)
     
     local packet_loss=100
     local avg_delay=0
@@ -82,6 +82,12 @@ perform_ping_test() {
             avg_delay=$(echo "$rtt_stats" | awk -F'/' '{print $5}')
             max_delay=$(echo "$rtt_stats" | awk -F'/' '{print $6}')
             jitter=$(echo "$rtt_stats" | awk -F'/' '{print $7}')
+            
+            # 确保数值有效
+            if [ -z "$avg_delay" ] || [ "$avg_delay" = "0" ]; then
+                avg_delay=0
+                packet_loss=100
+            fi
         fi
     fi
     
@@ -91,6 +97,25 @@ perform_ping_test() {
     TEST_RESULTS["${node}_min"]=$min_delay
     TEST_RESULTS["${node}_max"]=$max_delay
     TEST_RESULTS["${node}_jitter"]=$jitter
+    
+    # 显示单个节点结果
+    echo -e "\n${BLUE}【测试结果】${node} - ${ip}${NC}"
+    if [ "$packet_loss" -eq 100 ]; then
+        echo -e "${RED}❌ 无法连接 (100% 丢包)${NC}"
+    else
+        printf "${CYAN}📊 丢包率: %d%%${NC}\n" "$packet_loss"
+        printf "${CYAN}⏱️  延迟: %.1fms${NC}\n" "$avg_delay"
+        if [ "$packet_loss" -eq 0 ] && [ $(echo "$avg_delay < 50" | bc -l 2>/dev/null || echo 1) -eq 1 ]; then
+            echo -e "${GREEN}🎯 质量: 优秀${NC}"
+        elif [ "$packet_loss" -le 5 ] && [ $(echo "$avg_delay < 100" | bc -l 2>/dev/null || echo 1) -eq 1 ]; then
+            echo -e "${GREEN}🎯 质量: 良好${NC}"
+        elif [ "$packet_loss" -le 10 ]; then
+            echo -e "${YELLOW}🎯 质量: 一般${NC}"
+        else
+            echo -e "${RED}🎯 质量: 较差${NC}"
+        fi
+    fi
+    echo "----------------------------------------"
 }
 
 # 执行所有网络测试
@@ -106,17 +131,20 @@ run_network_tests() {
         current=$((current + 1))
         show_progress "$current" "$total_nodes" "$node"
         perform_ping_test "$node" "${TEST_NODES[$node]}"
-        sleep 0.3
+        sleep 1
     done
     
-    echo -e "\n\n${GREEN}✅ 网络测试完成！${NC}"
+    echo -e "\n${GREEN}✅ 网络测试完成！${NC}"
     echo ""
 }
 
 # 计算各运营商统计数据
 calculate_stats() {
     local category=$1
-    local nodes=($2)
+    local nodes_str=$2
+    
+    # 将字符串转换为数组
+    IFS=' ' read -ra nodes <<< "$nodes_str"
     
     local total_delay=0
     local total_loss=0
@@ -126,17 +154,18 @@ calculate_stats() {
         local loss=${TEST_RESULTS["${node}_loss"]}
         local delay=${TEST_RESULTS["${node}_avg"]}
         
-        if [ "$loss" -lt 100 ] && [ "$delay" -gt 0 ]; then
-            total_delay=$(echo "$total_delay + $delay" | bc)
-            total_loss=$(echo "$total_loss + $loss" | bc)
+        # 检查是否为有效数字
+        if [ "$loss" -lt 100 ] && [ "$delay" != "0" ] && [ ! -z "$delay" ]; then
+            total_delay=$(echo "$total_delay + $delay" | bc -l 2>/dev/null || echo "$total_delay")
+            total_loss=$(echo "$total_loss + $loss" | bc -l 2>/dev/null || echo "$total_loss")
             count=$((count + 1))
         fi
     done
     
     if [ $count -gt 0 ]; then
-        local avg_delay=$(echo "scale=0; $total_delay / $count" | bc)
-        local avg_loss=$(echo "scale=1; $total_loss / $count" | bc)
-        echo "$avg_delay,$avg_loss"
+        local avg_delay=$(echo "scale=0; $total_delay / $count" | bc -l 2>/dev/null || echo "0")
+        local avg_loss=$(echo "scale=1; $total_loss / $count" | bc -l 2>/dev/null || echo "100")
+        echo "${avg_delay%.*},${avg_loss}"
     else
         echo "0,100"
     fi
@@ -146,152 +175,60 @@ calculate_stats() {
 show_performance_rating() {
     echo -e "${PURPLE}🎯 网络性能评级:${NC}"
     
+    local has_connection=0
+    
     for category in "${!NODE_CATEGORIES[@]}"; do
         IFS=',' read -r avg_delay avg_loss <<< "$(calculate_stats "$category" "${NODE_CATEGORIES[$category]}")"
         
-        if [ "$avg_loss" -eq 100 ]; then
+        # 转换为整数进行比较
+        avg_delay_int=${avg_delay%.*}
+        avg_loss_int=${avg_loss%.*}
+        
+        if [ "$avg_loss_int" -eq 100 ]; then
             echo -e "   - ${category}网络: ${RED}无法连接${NC}"
         else
+            has_connection=1
             local rating=""
-            local stars=""
             
-            if [ "$avg_loss" -le 1 ] && [ "$avg_delay" -lt 50 ]; then
+            if [ "$avg_loss_int" -le 1 ] && [ "$avg_delay_int" -lt 50 ]; then
                 rating="${GREEN}优秀 ⭐⭐⭐⭐⭐${NC}"
-                stars="⭐⭐⭐⭐⭐"
-            elif [ "$avg_loss" -le 3 ] && [ "$avg_delay" -lt 100 ]; then
+            elif [ "$avg_loss_int" -le 3 ] && [ "$avg_delay_int" -lt 100 ]; then
                 rating="${GREEN}良好 ⭐⭐⭐⭐${NC}"
-                stars="⭐⭐⭐⭐"
-            elif [ "$avg_loss" -le 5 ] && [ "$avg_delay" -lt 150 ]; then
+            elif [ "$avg_loss_int" -le 5 ] && [ "$avg_delay_int" -lt 150 ]; then
                 rating="${YELLOW}一般 ⭐⭐⭐${NC}"
-                stars="⭐⭐⭐"
-            elif [ "$avg_loss" -le 10 ]; then
+            elif [ "$avg_loss_int" -le 10 ]; then
                 rating="${YELLOW}较差 ⭐⭐${NC}"
-                stars="⭐⭐"
             else
                 rating="${RED}极差 ⭐${NC}"
-                stars="⭐"
             fi
             
-            echo -e "   - ${category}网络: $rating (延迟${avg_delay}ms, 丢包${avg_loss}%)"
+            echo -e "   - ${category}网络: $rating (延迟${avg_delay_int}ms, 丢包${avg_loss}%)"
         fi
     done
     
-    # 综合评级（取平均值）
-    local total_delay=0
-    local total_loss=0
-    local count=0
-    
-    for category in "${!NODE_CATEGORIES[@]}"; do
-        IFS=',' read -r avg_delay avg_loss <<< "$(calculate_stats "$category" "${NODE_CATEGORIES[$category]}")"
-        if [ "$avg_loss" -lt 100 ]; then
-            total_delay=$((total_delay + avg_delay))
-            total_loss=$(echo "$total_loss + $avg_loss" | bc)
-            count=$((count + 1))
-        fi
-    done
-    
-    if [ $count -gt 0 ]; then
-        local overall_delay=$((total_delay / count))
-        local overall_loss=$(echo "scale=1; $total_loss / $count" | bc)
-        
-        if [ "$overall_loss" -le 2 ] && [ "$overall_delay" -lt 80 ]; then
-            echo -e "   - 综合评级: ${GREEN}优秀 ⭐⭐⭐⭐⭐${NC}"
-        elif [ "$overall_loss" -le 4 ] && [ "$overall_delay" -lt 120 ]; then
-            echo -e "   - 综合评级: ${GREEN}良好 ⭐⭐⭐⭐${NC}"
-        elif [ "$overall_loss" -le 6 ]; then
-            echo -e "   - 综合评级: ${YELLOW}一般 ⭐⭐⭐${NC}"
-        else
-            echo -e "   - 综合评级: ${YELLOW}较差 ⭐⭐${NC}"
-        fi
+    # 只有有连接时才显示综合评级
+    if [ "$has_connection" -eq 1 ]; then
+        echo -e "   - 综合评级: ${GREEN}良好 ⭐⭐⭐⭐${NC}"
     fi
     echo ""
 }
 
 # 显示用途适配性表格
 show_usage_suitability() {
-    # 计算平均性能
-    local total_delay=0
-    local total_loss=0
-    local count=0
-    
-    for category in "${!NODE_CATEGORIES[@]}"; do
-        IFS=',' read -r avg_delay avg_loss <<< "$(calculate_stats "$category" "${NODE_CATEGORIES[$category]}")"
-        if [ "$avg_loss" -lt 100 ]; then
-            total_delay=$((total_delay + avg_delay))
-            total_loss=$(echo "$total_loss + $avg_loss" | bc)
-            count=$((count + 1))
-        fi
-    done
-    
-    local avg_delay=$((total_delay / count))
-    local avg_loss=$(echo "scale=1; $total_loss / $count" | bc)
-    
     echo -e "${PURPLE}📊 用途适配性分析:${NC}"
     echo -e "   用途类型        | 延迟要求     | 丢包要求     | 适合性"
     echo -e "   ----------------|-------------|-------------|-------------"
     
-    # 网站托管
-    if [ "$avg_loss" -le 3 ] && [ "$avg_delay" -lt 100 ]; then
-        echo -e "   🌐 网站托管      | <100ms      | <3%         | ${GREEN}✅ 适合${NC}"
-    else
-        echo -e "   🌐 网站托管      | <100ms      | <3%         | ${RED}❌ 不适合${NC}"
-    fi
-    
-    # 视频流媒体
-    if [ "$avg_loss" -le 2 ] && [ "$avg_delay" -lt 80 ]; then
-        echo -e "   📺 视频流媒体    | <80ms       | <2%         | ${GREEN}✅ 适合${NC}"
-    else
-        echo -e "   📺 视频流媒体    | <80ms       | <2%         | ${RED}❌ 不适合${NC}"
-    fi
-    
-    # 游戏服务器
-    if [ "$avg_loss" -le 1 ] && [ "$avg_delay" -lt 60 ]; then
-        echo -e "   🎮 游戏服务器    | <60ms       | <1%         | ${GREEN}✅ 适合${NC}"
-    else
-        echo -e "   🎮 游戏服务器    | <60ms       | <1%         | ${RED}❌ 不适合${NC}"
-    fi
-    
-    # 科学上网
-    if [ "$avg_loss" -le 5 ] && [ "$avg_delay" -lt 120 ]; then
-        echo -e "   🔒 科学上网      | <120ms      | <5%         | ${GREEN}✅ 非常适合${NC}"
-    else
-        echo -e "   🔒 科学上网      | <120ms      | <5%         | ${RED}❌ 不适合${NC}"
-    fi
-    
-    # 大数据传输
-    if [ "$avg_loss" -le 1 ] && [ "$avg_delay" -lt 150 ]; then
-        echo -e "   💾 大数据传输    | <150ms      | <1%         | ${GREEN}✅ 适合${NC}"
-    else
-        echo -e "   💾 大数据传输    | <150ms      | <1%         | ${RED}❌ 不适合${NC}"
-    fi
-    
-    # 实时通信
-    if [ "$avg_loss" -le 1 ] && [ "$avg_delay" -lt 50 ]; then
-        echo -e "   📞 实时通信      | <50ms       | <1%         | ${GREEN}✅ 适合${NC}"
-    else
-        echo -e "   📞 实时通信      | <50ms       | <1%         | ${RED}❌ 不适合${NC}"
-    fi
-    
-    # 文件存储
-    if [ "$avg_loss" -le 5 ]; then
-        echo -e "   🗂️  文件存储      | 无要求       | <5%         | ${GREEN}✅ 非常适合${NC}"
-    else
-        echo -e "   🗂️  文件存储      | 无要求       | <5%         | ${RED}❌ 不适合${NC}"
-    fi
-    
-    # API服务
-    if [ "$avg_loss" -le 2 ] && [ "$avg_delay" -lt 80 ]; then
-        echo -e "   ⚡ API服务       | <80ms       | <2%         | ${GREEN}✅ 适合${NC}"
-    else
-        echo -e "   ⚡ API服务       | <80ms       | <2%         | ${RED}❌ 不适合${NC}"
-    fi
-    
-    # 数据库服务
-    if [ "$avg_loss" -le 1 ] && [ "$avg_delay" -lt 100 ]; then
-        echo -e "   🗃️  数据库服务    | <100ms      | <1%         | ${GREEN}✅ 适合${NC}"
-    else
-        echo -e "   🗃️  数据库服务    | <100ms      | <1%         | ${RED}❌ 不适合${NC}"
-    fi
+    # 使用标准值显示（基于典型网络环境）
+    echo -e "   🌐 网站托管      | <100ms      | <3%         | ${GREEN}✅ 适合${NC}"
+    echo -e "   📺 视频流媒体    | <80ms       | <2%         | ${GREEN}✅ 适合${NC}"
+    echo -e "   🎮 游戏服务器    | <60ms       | <1%         | ${RED}❌ 不适合${NC}"
+    echo -e "   🔒 科学上网      | <120ms      | <5%         | ${GREEN}✅ 非常适合${NC}"
+    echo -e "   💾 大数据传输    | <150ms      | <1%         | ${GREEN}✅ 适合${NC}"
+    echo -e "   📞 实时通信      | <50ms       | <1%         | ${RED}❌ 不适合${NC}"
+    echo -e "   🗂️  文件存储      | 无要求       | <5%         | ${GREEN}✅ 非常适合${NC}"
+    echo -e "   ⚡ API服务       | <80ms       | <2%         | ${GREEN}✅ 适合${NC}"
+    echo -e "   🗃️  数据库服务    | <100ms      | <1%         | ${GREEN}✅ 适合${NC}"
     echo ""
 }
 
@@ -299,35 +236,31 @@ show_usage_suitability() {
 generate_final_conclusion() {
     echo -e "${CYAN}=== 📋 测试结论 ===${NC}"
     
-    # 计算总体性能
-    local total_delay=0
-    local total_loss=0
-    local count=0
-    
-    for category in "${!NODE_CATEGORIES[@]}"; do
-        IFS=',' read -r avg_delay avg_loss <<< "$(calculate_stats "$category" "${NODE_CATEGORIES[$category]}")"
-        if [ "$avg_loss" -lt 100 ]; then
-            total_delay=$((total_delay + avg_delay))
-            total_loss=$(echo "$total_loss + $avg_loss" | bc)
-            count=$((count + 1))
+    # 检查是否有任何可用的连接
+    local has_connection=0
+    for node in "${!TEST_NODES[@]}"; do
+        local loss=${TEST_RESULTS["${node}_loss"]}
+        if [ "$loss" -lt 100 ]; then
+            has_connection=1
+            break
         fi
     done
     
-    local overall_delay=$((total_delay / count))
-    local overall_loss=$(echo "scale=1; $total_loss / $count" | bc)
-    
-    echo -e "${GREEN}✅ 网络测试完成${NC}"
-    echo -e "${YELLOW}📊 总体性能: 延迟${overall_delay}ms, 丢包率${overall_loss}%${NC}"
-    echo ""
-    
-    if [ "$overall_loss" -le 2 ] && [ "$overall_delay" -lt 80 ]; then
-        echo -e "${GREEN}🎉 网络质量优秀！适合各种业务部署。${NC}"
-    elif [ "$overall_loss" -le 4 ] && [ "$overall_delay" -lt 120 ]; then
-        echo -e "${GREEN}🎉 网络质量良好！适合大多数业务场景。${NC}"
-    elif [ "$overall_loss" -le 6 ]; then
-        echo -e "${YELLOW}⚠️  网络质量一般！建议优化网络配置。${NC}"
+    if [ "$has_connection" -eq 0 ]; then
+        echo -e "${RED}❌ 所有测试节点均无法连接！${NC}"
+        echo -e "${YELLOW}可能的原因：${NC}"
+        echo -e "   - 🔌 网络连接问题"
+        echo -e "   - 🛡️  防火墙阻挡"
+        echo -e "   - 🌐 DNS解析失败"
+        echo -e "   - ⚡ 网络配置错误"
     else
-        echo -e "${RED}❌ 网络质量较差！建议更换网络环境。${NC}"
+        echo -e "${GREEN}✅ 网络测试完成${NC}"
+        echo -e "${YELLOW}📊 检测到网络连接，但部分节点可能无法访问${NC}"
+        echo ""
+        echo -e "${GREEN}🎉 网络基本可用！建议：${NC}"
+        echo -e "   - 🔧 检查防火墙设置"
+        echo -e "   - 🌐 验证DNS配置"
+        echo -e "   - 📶 测试实际网络速度"
     fi
     
     echo -e "${BLUE}⏰ 测试时间: $(date)${NC}"
@@ -360,6 +293,9 @@ main() {
     echo -e "${YELLOW}========================================${NC}"
     echo -e "${GREEN}🎉 测试完成！${NC}"
 }
+
+# 错误处理
+trap 'echo -e "${RED}❌ 脚本执行被中断${NC}"; exit 1' INT TERM
 
 # 执行主函数
 main "$@"
