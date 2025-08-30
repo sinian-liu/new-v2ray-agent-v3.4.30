@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# VPS网络综合测试脚本 - 国内三网优化版
+# VPS网络真实测试脚本
 # 支持Ubuntu/CentOS/Debian
 
 set -e
@@ -11,287 +11,354 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
+PURPLE='\033[0;35m'
 NC='\033[0m'
 
-# 检测系统类型
-detect_os() {
-    if [ -f /etc/os-release ]; then
-        . /etc/os-release
-        OS=$NAME
+# 全局变量
+declare -A TEST_RESULTS
+declare -A TEST_NODES
+declare -A NODE_CATEGORIES
+
+# 初始化节点
+init_nodes() {
+    # 电信节点
+    NODE_CATEGORIES["电信"]="上海电信 广东电信 江苏电信"
+    TEST_NODES["上海电信"]="202.96.209.133"
+    TEST_NODES["广东电信"]="202.96.128.86"
+    TEST_NODES["江苏电信"]="218.2.2.2"
+    
+    # 联通节点
+    NODE_CATEGORIES["联通"]="北京联通 上海联通 浙江联通"
+    TEST_NODES["北京联通"]="123.123.123.123"
+    TEST_NODES["上海联通"]="210.22.70.3"
+    TEST_NODES["浙江联通"]="221.12.1.227"
+    
+    # 移动节点
+    NODE_CATEGORIES["移动"]="上海移动 广东移动 江苏移动"
+    TEST_NODES["上海移动"]="211.136.112.50"
+    TEST_NODES["广东移动"]="211.139.129.222"
+    TEST_NODES["江苏移动"]="221.131.143.69"
+}
+
+# 显示测试进度
+show_progress() {
+    local current=$1
+    local total=$2
+    local node=$3
+    local width=30
+    local percentage=$((current * 100 / total))
+    local completed=$((current * width / total))
+    local remaining=$((width - completed))
+    
+    printf "\r${BLUE}[%3d%%]${NC} [" "$percentage"
+    printf "%${completed}s" | tr ' ' '='
+    printf "%${remaining}s" | tr ' ' ' '
+    printf "] ${YELLOW}%s${NC}" "$node"
+}
+
+# 执行ping测试
+perform_ping_test() {
+    local node=$1
+    local ip=$2
+    
+    # 执行ping测试
+    local result
+    result=$(timeout 15 ping -c 6 -i 0.3 -W 2 "$ip" 2>/dev/null | tail -2 || true)
+    
+    local packet_loss=100
+    local avg_delay=0
+    local min_delay=0
+    local max_delay=0
+    local jitter=0
+    
+    if echo "$result" | grep -q "100% packet loss" || [ -z "$result" ]; then
+        packet_loss=100
     else
-        OS=$(uname -s)
-    fi
-    echo -e "${BLUE}🏢 系统检测: $OS${NC}"
-}
-
-# 安装必要工具
-install_tools() {
-    echo -e "${YELLOW}🔧 检查必要工具...${NC}"
-    
-    if ! command -v ping &> /dev/null; then
-        echo -e "${RED}❌ ping命令未找到${NC}"
-        exit 1
-    fi
-    
-    if ! command -v curl &> /dev/null; then
-        echo -e "${YELLOW}📦 安装curl...${NC}"
-        if command -v apt-get &> /dev/null; then
-            apt-get update && apt-get install -y curl
-        elif command -v yum &> /dev/null; then
-            yum install -y curl
+        packet_loss=$(echo "$result" | grep -oP '\d+(?=% packet loss)' || echo "100")
+        local rtt_stats=$(echo "$result" | grep 'rtt' || echo "")
+        
+        if [ -n "$rtt_stats" ]; then
+            min_delay=$(echo "$rtt_stats" | awk -F'/' '{print $4}')
+            avg_delay=$(echo "$rtt_stats" | awk -F'/' '{print $5}')
+            max_delay=$(echo "$rtt_stats" | awk -F'/' '{print $6}')
+            jitter=$(echo "$rtt_stats" | awk -F'/' '{print $7}')
         fi
     fi
     
-    if ! command -v bc &> /dev/null; then
-        echo -e "${YELLOW}📦 安装bc计算器...${NC}"
-        if command -v apt-get &> /dev/null; then
-            apt-get install -y bc
-        elif command -v yum &> /dev/null; then
-            yum install -y bc
+    # 保存测试结果
+    TEST_RESULTS["${node}_avg"]=$avg_delay
+    TEST_RESULTS["${node}_loss"]=$packet_loss
+    TEST_RESULTS["${node}_min"]=$min_delay
+    TEST_RESULTS["${node}_max"]=$max_delay
+    TEST_RESULTS["${node}_jitter"]=$jitter
+}
+
+# 执行所有网络测试
+run_network_tests() {
+    echo -e "${CYAN}=== 🌐 开始实时网络测试 ===${NC}"
+    echo -e "${YELLOW}⏰ 正在进行网络测试，请耐心等待...${NC}"
+    echo ""
+    
+    local total_nodes=${#TEST_NODES[@]}
+    local current=0
+    
+    for node in "${!TEST_NODES[@]}"; do
+        current=$((current + 1))
+        show_progress "$current" "$total_nodes" "$node"
+        perform_ping_test "$node" "${TEST_NODES[$node]}"
+        sleep 0.3
+    done
+    
+    echo -e "\n\n${GREEN}✅ 网络测试完成！${NC}"
+    echo ""
+}
+
+# 计算各运营商统计数据
+calculate_stats() {
+    local category=$1
+    local nodes=($2)
+    
+    local total_delay=0
+    local total_loss=0
+    local count=0
+    
+    for node in "${nodes[@]}"; do
+        local loss=${TEST_RESULTS["${node}_loss"]}
+        local delay=${TEST_RESULTS["${node}_avg"]}
+        
+        if [ "$loss" -lt 100 ] && [ "$delay" -gt 0 ]; then
+            total_delay=$(echo "$total_delay + $delay" | bc)
+            total_loss=$(echo "$total_loss + $loss" | bc)
+            count=$((count + 1))
         fi
+    done
+    
+    if [ $count -gt 0 ]; then
+        local avg_delay=$(echo "scale=0; $total_delay / $count" | bc)
+        local avg_loss=$(echo "scale=1; $total_loss / $count" | bc)
+        echo "$avg_delay,$avg_loss"
+    else
+        echo "0,100"
     fi
 }
 
-# 获取VPS信息
-get_vps_info() {
-    echo -e "${CYAN}🔍 获取VPS信息...${NC}"
-    VPS_IP=$(curl -s --connect-timeout 5 icanhazip.com || hostname -I | awk '{print $1}' || echo "未知")
-    echo -e "📡 VPS IP: ${GREEN}$VPS_IP${NC}"
-}
-
-# 定义国内三网测试节点
-setup_test_nodes() {
-    declare -gA TEST_NODES=(
-        # 电信节点
-        ["上海电信"]="202.96.209.133"
-        ["广东电信"]="202.96.128.86"
-        ["江苏电信"]="218.2.2.2"
-        ["浙江电信"]="60.191.244.5"
+# 显示网络性能评级
+show_performance_rating() {
+    echo -e "${PURPLE}🎯 网络性能评级:${NC}"
+    
+    for category in "${!NODE_CATEGORIES[@]}"; do
+        IFS=',' read -r avg_delay avg_loss <<< "$(calculate_stats "$category" "${NODE_CATEGORIES[$category]}")"
         
-        # 联通节点
-        ["北京联通"]="123.123.123.123"
-        ["上海联通"]="210.22.70.3"
-        ["广东联通"]="210.21.196.6"
-        ["浙江联通"]="221.12.1.227"
+        if [ "$avg_loss" -eq 100 ]; then
+            echo -e "   - ${category}网络: ${RED}无法连接${NC}"
+        else
+            local rating=""
+            local stars=""
+            
+            if [ "$avg_loss" -le 1 ] && [ "$avg_delay" -lt 50 ]; then
+                rating="${GREEN}优秀 ⭐⭐⭐⭐⭐${NC}"
+                stars="⭐⭐⭐⭐⭐"
+            elif [ "$avg_loss" -le 3 ] && [ "$avg_delay" -lt 100 ]; then
+                rating="${GREEN}良好 ⭐⭐⭐⭐${NC}"
+                stars="⭐⭐⭐⭐"
+            elif [ "$avg_loss" -le 5 ] && [ "$avg_delay" -lt 150 ]; then
+                rating="${YELLOW}一般 ⭐⭐⭐${NC}"
+                stars="⭐⭐⭐"
+            elif [ "$avg_loss" -le 10 ]; then
+                rating="${YELLOW}较差 ⭐⭐${NC}"
+                stars="⭐⭐"
+            else
+                rating="${RED}极差 ⭐${NC}"
+                stars="⭐"
+            fi
+            
+            echo -e "   - ${category}网络: $rating (延迟${avg_delay}ms, 丢包${avg_loss}%)"
+        fi
+    done
+    
+    # 综合评级（取平均值）
+    local total_delay=0
+    local total_loss=0
+    local count=0
+    
+    for category in "${!NODE_CATEGORIES[@]}"; do
+        IFS=',' read -r avg_delay avg_loss <<< "$(calculate_stats "$category" "${NODE_CATEGORIES[$category]}")"
+        if [ "$avg_loss" -lt 100 ]; then
+            total_delay=$((total_delay + avg_delay))
+            total_loss=$(echo "$total_loss + $avg_loss" | bc)
+            count=$((count + 1))
+        fi
+    done
+    
+    if [ $count -gt 0 ]; then
+        local overall_delay=$((total_delay / count))
+        local overall_loss=$(echo "scale=1; $total_loss / $count" | bc)
         
-        # 移动节点
-        ["上海移动"]="211.136.112.50"
-        ["广东移动"]="211.139.129.222"
-        ["江苏移动"]="221.131.143.69"
-        ["浙江移动"]="211.140.13.188"
-    )
-    echo -e "${GREEN}✅ 已设置 ${#TEST_NODES[@]} 个国内测试节点${NC}"
+        if [ "$overall_loss" -le 2 ] && [ "$overall_delay" -lt 80 ]; then
+            echo -e "   - 综合评级: ${GREEN}优秀 ⭐⭐⭐⭐⭐${NC}"
+        elif [ "$overall_loss" -le 4 ] && [ "$overall_delay" -lt 120 ]; then
+            echo -e "   - 综合评级: ${GREEN}良好 ⭐⭐⭐⭐${NC}"
+        elif [ "$overall_loss" -le 6 ]; then
+            echo -e "   - 综合评级: ${YELLOW}一般 ⭐⭐⭐${NC}"
+        else
+            echo -e "   - 综合评级: ${YELLOW}较差 ⭐⭐${NC}"
+        fi
+    fi
+    echo ""
 }
 
-# 根据延迟判断适用性
-check_usage_suitability() {
-    local delay=$1
-    local loss=$2
-    local usage=$3
+# 显示用途适配性表格
+show_usage_suitability() {
+    # 计算平均性能
+    local total_delay=0
+    local total_loss=0
+    local count=0
     
-    case $usage in
-        "网站托管")
-            if [ "$loss" -le 3 ] && [ $(echo "$delay < 100" | bc) -eq 1 ]; then
-                echo -e "${GREEN}✅ 非常适合${NC}"
-            elif [ "$loss" -le 8 ] && [ $(echo "$delay < 200" | bc) -eq 1 ]; then
-                echo -e "${YELLOW}✅ 适合${NC}"
-            else
-                echo -e "${RED}❌ 不适合${NC}"
-            fi
-            ;;
-        "视频流媒体")
-            if [ "$loss" -le 2 ] && [ $(echo "$delay < 80" | bc) -eq 1 ]; then
-                echo -e "${GREEN}✅ 非常适合${NC}"
-            elif [ "$loss" -le 5 ] && [ $(echo "$delay < 150" | bc) -eq 1 ]; then
-                echo -e "${YELLOW}✅ 适合${NC}"
-            else
-                echo -e "${RED}❌ 不适合${NC}"
-            fi
-            ;;
-        "游戏服务器")
-            if [ "$loss" -le 1 ] && [ $(echo "$delay < 60" | bc) -eq 1 ]; then
-                echo -e "${GREEN}✅ 非常适合${NC}"
-            elif [ "$loss" -le 3 ] && [ $(echo "$delay < 100" | bc) -eq 1 ]; then
-                echo -e "${YELLOW}✅ 适合${NC}"
-            else
-                echo -e "${RED}❌ 不适合${NC}"
-            fi
-            ;;
-        "科学上网")
-            if [ "$loss" -le 5 ] && [ $(echo "$delay < 120" | bc) -eq 1 ]; then
-                echo -e "${GREEN}✅ 非常适合${NC}"
-            elif [ "$loss" -le 10 ] && [ $(echo "$delay < 200" | bc) -eq 1 ]; then
-                echo -e "${YELLOW}✅ 适合${NC}"
-            else
-                echo -e "${RED}❌ 不适合${NC}"
-            fi
-            ;;
-        "大数据传输")
-            if [ "$loss" -le 1 ] && [ $(echo "$delay < 150" | bc) -eq 1 ]; then
-                echo -e "${GREEN}✅ 非常适合${NC}"
-            elif [ "$loss" -le 3 ]; then
-                echo -e "${YELLOW}✅ 适合${NC}"
-            else
-                echo -e "${RED}❌ 不适合${NC}"
-            fi
-            ;;
-        "实时通信")
-            if [ "$loss" -le 1 ] && [ $(echo "$delay < 50" | bc) -eq 1 ]; then
-                echo -e "${GREEN}✅ 非常适合${NC}"
-            elif [ "$loss" -le 3 ] && [ $(echo "$delay < 80" | bc) -eq 1 ]; then
-                echo -e "${YELLOW}✅ 适合${NC}"
-            else
-                echo -e "${RED}❌ 不适合${NC}"
-            fi
-            ;;
-        "文件存储")
-            if [ "$loss" -le 5 ]; then
-                echo -e "${GREEN}✅ 非常适合${NC}"
-            elif [ "$loss" -le 10 ]; then
-                echo -e "${YELLOW}✅ 适合${NC}"
-            else
-                echo -e "${RED}❌ 不适合${NC}"
-            fi
-            ;;
-        "API服务")
-            if [ "$loss" -le 2 ] && [ $(echo "$delay < 80" | bc) -eq 1 ]; then
-                echo -e "${GREEN}✅ 非常适合${NC}"
-            elif [ "$loss" -le 5 ] && [ $(echo "$delay < 120" | bc) -eq 1 ]; then
-                echo -e "${YELLOW}✅ 适合${NC}"
-            else
-                echo -e "${RED}❌ 不适合${NC}"
-            fi
-            ;;
-        "数据库服务")
-            if [ "$loss" -le 1 ] && [ $(echo "$delay < 100" | bc) -eq 1 ]; then
-                echo -e "${GREEN}✅ 非常适合${NC}"
-            elif [ "$loss" -le 3 ]; then
-                echo -e "${YELLOW}✅ 适合${NC}"
-            else
-                echo -e "${RED}❌ 不适合${NC}"
-            fi
-            ;;
-    esac
-}
-
-# 生成详细测试结论
-generate_detailed_conclusion() {
-    echo -e "${CYAN}=== 📊 详细测试结论 ===${NC}"
-    echo -e "${GREEN}✅ 国内三网测试完成${NC}"
-    echo -e ""
+    for category in "${!NODE_CATEGORIES[@]}"; do
+        IFS=',' read -r avg_delay avg_loss <<< "$(calculate_stats "$category" "${NODE_CATEGORIES[$category]}")"
+        if [ "$avg_loss" -lt 100 ]; then
+            total_delay=$((total_delay + avg_delay))
+            total_loss=$(echo "$total_loss + $avg_loss" | bc)
+            count=$((count + 1))
+        fi
+    done
     
-    echo -e "${YELLOW}📋 测试概要:${NC}"
-    echo -e "   - 测试节点: 国内三大运营商12个节点"
-    echo -e "   - 测试类型: 去程网络质量分析"
-    echo -e "   - 测试时间: $(date)"
-    echo -e "   - VPS IP: $VPS_IP"
-    echo -e "   - 操作系统: $OS"
-    echo -e ""
+    local avg_delay=$((total_delay / count))
+    local avg_loss=$(echo "scale=1; $total_loss / $count" | bc)
     
-    echo -e "${GREEN}🎯 网络性能评级:${NC}"
-    echo -e "   - 电信网络: ${GREEN}优秀 ⭐⭐⭐⭐⭐${NC} (延迟85ms, 丢包0%)"
-    echo -e "   - 移动网络: ${GREEN}良好 ⭐⭐⭐⭐${NC} (延迟125ms, 丢包2%)"
-    echo -e "   - 联通网络: ${GREEN}良好 ⭐⭐⭐⭐${NC} (延迟105ms, 丢包3%)"
-    echo -e "   - 综合评级: ${GREEN}良好 ⭐⭐⭐⭐${NC}"
-    echo -e ""
-    
-    echo -e "${GREEN}📈 详细用途适配性:${NC}"
+    echo -e "${PURPLE}📊 用途适配性分析:${NC}"
     echo -e "   用途类型        | 延迟要求     | 丢包要求     | 适合性"
     echo -e "   ----------------|-------------|-------------|-------------"
     
-    # 基于平均性能进行评估
-    local avg_delay=105
-    local avg_loss=2
+    # 网站托管
+    if [ "$avg_loss" -le 3 ] && [ "$avg_delay" -lt 100 ]; then
+        echo -e "   🌐 网站托管      | <100ms      | <3%         | ${GREEN}✅ 适合${NC}"
+    else
+        echo -e "   🌐 网站托管      | <100ms      | <3%         | ${RED}❌ 不适合${NC}"
+    fi
     
-    echo -e "   🌐 网站托管      | <100ms      | <3%         | $(check_usage_suitability $avg_delay $avg_loss "网站托管")"
-    echo -e "   📺 视频流媒体    | <80ms       | <2%         | $(check_usage_suitability $avg_delay $avg_loss "视频流媒体")"
-    echo -e "   🎮 游戏服务器    | <60ms       | <1%         | $(check_usage_suitability $avg_delay $avg_loss "游戏服务器")"
-    echo -e "   🔒 科学上网      | <120ms      | <5%         | $(check_usage_suitability $avg_delay $avg_loss "科学上网")"
-    echo -e "   💾 大数据传输    | <150ms      | <1%         | $(check_usage_suitability $avg_delay $avg_loss "大数据传输")"
-    echo -e "   📞 实时通信      | <50ms       | <1%         | $(check_usage_suitability $avg_delay $avg_loss "实时通信")"
-    echo -e "   🗂️  文件存储      | 无要求       | <5%         | $(check_usage_suitability $avg_delay $avg_loss "文件存储")"
-    echo -e "   ⚡ API服务       | <80ms       | <2%         | $(check_usage_suitability $avg_delay $avg_loss "API服务")"
-    echo -e "   🗃️  数据库服务    | <100ms      | <1%         | $(check_usage_suitability $avg_delay $avg_loss "数据库服务")"
-    echo -e ""
+    # 视频流媒体
+    if [ "$avg_loss" -le 2 ] && [ "$avg_delay" -lt 80 ]; then
+        echo -e "   📺 视频流媒体    | <80ms       | <2%         | ${GREEN}✅ 适合${NC}"
+    else
+        echo -e "   📺 视频流媒体    | <80ms       | <2%         | ${RED}❌ 不适合${NC}"
+    fi
     
-    echo -e "${GREEN}🎯 最佳适用场景:${NC}"
-    echo -e "   - 🔒 科学上网代理"
-    echo -e "   - 🌐 企业网站托管"
-    echo -e "   - 🗂️  文件存储服务"
-    echo -e "   - ⚡ API接口服务"
-    echo -e ""
+    # 游戏服务器
+    if [ "$avg_loss" -le 1 ] && [ "$avg_delay" -lt 60 ]; then
+        echo -e "   🎮 游戏服务器    | <60ms       | <1%         | ${GREEN}✅ 适合${NC}"
+    else
+        echo -e "   🎮 游戏服务器    | <60ms       | <1%         | ${RED}❌ 不适合${NC}"
+    fi
     
-    echo -e "${YELLOW}⚠️  性能限制场景:${NC}"
-    echo -e "   - 🎮 在线游戏服务器 (延迟偏高)"
-    echo -e "   - 📞 实时音视频通信 (抖动较大)"
-    echo -e "   - 🔢 高频交易系统 (稳定性要求极高)"
-    echo -e ""
+    # 科学上网
+    if [ "$avg_loss" -le 5 ] && [ "$avg_delay" -lt 120 ]; then
+        echo -e "   🔒 科学上网      | <120ms      | <5%         | ${GREEN}✅ 非常适合${NC}"
+    else
+        echo -e "   🔒 科学上网      | <120ms      | <5%         | ${RED}❌ 不适合${NC}"
+    fi
     
-    echo -e "${CYAN}📊 网络稳定性分析:${NC}"
-    echo -e "   - 电信网络: 极其稳定，适合关键业务"
-    echo -e "   - 移动网络: 稳定性良好，偶有波动"
-    echo -e "   - 联通网络: 稳定性一般，建议作为备用"
-    echo -e ""
+    # 大数据传输
+    if [ "$avg_loss" -le 1 ] && [ "$avg_delay" -lt 150 ]; then
+        echo -e "   💾 大数据传输    | <150ms      | <1%         | ${GREEN}✅ 适合${NC}"
+    else
+        echo -e "   💾 大数据传输    | <150ms      | <1%         | ${RED}❌ 不适合${NC}"
+    fi
     
-    echo -e "${BLUE}💡 业务部署建议:${NC}"
-    echo -e "   - 主业务部署: 电信线路优先"
-    echo -e "   - 备用线路: 移动/联通线路"
-    echo -e "   - CDN加速: 推荐使用多线BGP网络"
-    echo -e "   - 监控建议: 部署网络质量监控"
-    echo -e ""
+    # 实时通信
+    if [ "$avg_loss" -le 1 ] && [ "$avg_delay" -lt 50 ]; then
+        echo -e "   📞 实时通信      | <50ms       | <1%         | ${GREEN}✅ 适合${NC}"
+    else
+        echo -e "   📞 实时通信      | <50ms       | <1%         | ${RED}❌ 不适合${NC}"
+    fi
     
-    echo -e "${GREEN}🎉 测试完成！网络质量总体良好，适合大多数业务场景。${NC}"
+    # 文件存储
+    if [ "$avg_loss" -le 5 ]; then
+        echo -e "   🗂️  文件存储      | 无要求       | <5%         | ${GREEN}✅ 非常适合${NC}"
+    else
+        echo -e "   🗂️  文件存储      | 无要求       | <5%         | ${RED}❌ 不适合${NC}"
+    fi
+    
+    # API服务
+    if [ "$avg_loss" -le 2 ] && [ "$avg_delay" -lt 80 ]; then
+        echo -e "   ⚡ API服务       | <80ms       | <2%         | ${GREEN}✅ 适合${NC}"
+    else
+        echo -e "   ⚡ API服务       | <80ms       | <2%         | ${RED}❌ 不适合${NC}"
+    fi
+    
+    # 数据库服务
+    if [ "$avg_loss" -le 1 ] && [ "$avg_delay" -lt 100 ]; then
+        echo -e "   🗃️  数据库服务    | <100ms      | <1%         | ${GREEN}✅ 适合${NC}"
+    else
+        echo -e "   🗃️  数据库服务    | <100ms      | <1%         | ${RED}❌ 不适合${NC}"
+    fi
+    echo ""
 }
 
-# 显示测试预览
-show_test_preview() {
-    echo -e "${CYAN}=== 🔍 测试预览 ===${NC}"
-    echo -e "${YELLOW}📋 即将测试以下国内节点:${NC}"
-    echo -e ""
+# 生成最终结论
+generate_final_conclusion() {
+    echo -e "${CYAN}=== 📋 测试结论 ===${NC}"
     
-    echo -e "${BLUE}🏢 电信网络节点:${NC}"
-    echo -e "   - 上海电信 (202.96.209.133)"
-    echo -e "   - 广东电信 (202.96.128.86)"
-    echo -e "   - 江苏电信 (218.2.2.2)"
-    echo -e "   - 浙江电信 (60.191.244.5)"
-    echo -e ""
+    # 计算总体性能
+    local total_delay=0
+    local total_loss=0
+    local count=0
     
-    echo -e "${BLUE}🏢 联通网络节点:${NC}"
-    echo -e "   - 北京联通 (123.123.123.123)"
-    echo -e "   - 上海联通 (210.22.70.3)"
-    echo -e "   - 广东联通 (210.21.196.6)"
-    echo -e "   - 浙江联通 (221.12.1.227)"
-    echo -e ""
+    for category in "${!NODE_CATEGORIES[@]}"; do
+        IFS=',' read -r avg_delay avg_loss <<< "$(calculate_stats "$category" "${NODE_CATEGORIES[$category]}")"
+        if [ "$avg_loss" -lt 100 ]; then
+            total_delay=$((total_delay + avg_delay))
+            total_loss=$(echo "$total_loss + $avg_loss" | bc)
+            count=$((count + 1))
+        fi
+    done
     
-    echo -e "${BLUE}🏢 移动网络节点:${NC}"
-    echo -e "   - 上海移动 (211.136.112.50)"
-    echo -e "   - 广东移动 (211.139.129.222)"
-    echo -e "   - 江苏移动 (221.131.143.69)"
-    echo -e "   - 浙江移动 (211.140.13.188)"
-    echo -e ""
+    local overall_delay=$((total_delay / count))
+    local overall_loss=$(echo "scale=1; $total_loss / $count" | bc)
     
-    echo -e "${GREEN}✅ 共12个测试节点，覆盖国内三大运营商${NC}"
-    echo -e "${YELLOW}⏰ 预计测试时间: 2-3分钟${NC}"
-    echo -e "----------------------------------------"
+    echo -e "${GREEN}✅ 网络测试完成${NC}"
+    echo -e "${YELLOW}📊 总体性能: 延迟${overall_delay}ms, 丢包率${overall_loss}%${NC}"
+    echo ""
+    
+    if [ "$overall_loss" -le 2 ] && [ "$overall_delay" -lt 80 ]; then
+        echo -e "${GREEN}🎉 网络质量优秀！适合各种业务部署。${NC}"
+    elif [ "$overall_loss" -le 4 ] && [ "$overall_delay" -lt 120 ]; then
+        echo -e "${GREEN}🎉 网络质量良好！适合大多数业务场景。${NC}"
+    elif [ "$overall_loss" -le 6 ]; then
+        echo -e "${YELLOW}⚠️  网络质量一般！建议优化网络配置。${NC}"
+    else
+        echo -e "${RED}❌ 网络质量较差！建议更换网络环境。${NC}"
+    fi
+    
+    echo -e "${BLUE}⏰ 测试时间: $(date)${NC}"
 }
 
 # 主函数
 main() {
-    echo -e "${GREEN}🚀 开始VPS国内三网网络测试...${NC}"
+    echo -e "${GREEN}🚀 开始VPS网络性能测试...${NC}"
     echo -e "${YELLOW}========================================${NC}"
     
-    detect_os
-    install_tools
-    get_vps_info
-    setup_test_nodes
+    # 初始化
+    init_nodes
+    
+    # 执行真实网络测试
+    run_network_tests
     
     echo -e "${YELLOW}========================================${NC}"
     
-    # 显示测试预览而不是模拟结果
-    show_test_preview
+    # 显示性能评级
+    show_performance_rating
+    
+    # 显示用途适配性
+    show_usage_suitability
     
     echo -e "${YELLOW}========================================${NC}"
-    generate_detailed_conclusion
+    
+    # 生成最终结论
+    generate_final_conclusion
+    
+    echo -e "${YELLOW}========================================${NC}"
+    echo -e "${GREEN}🎉 测试完成！${NC}"
 }
 
 # 执行主函数
