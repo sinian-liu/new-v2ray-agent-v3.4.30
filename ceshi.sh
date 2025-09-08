@@ -3,34 +3,30 @@ set -e
 
 echo "====== ProjectSend 一键安装脚本 ======"
 
-# 默认参数，可自行修改
+# 默认参数，可修改
 DB_NAME=projectsend
 DB_USER=projectsend_user
-DB_PASS="P@ssw0rd123"       # 数据库密码
+DB_PASS="P@ssw0rd123"
 ADMIN_USER=admin
-ADMIN_PASS="Admin@123"       # 管理员密码
+ADMIN_PASS="Admin@123"
 
-# 更新系统
+# 更新系统并安装必要软件
 sudo apt update && sudo apt upgrade -y
-
-# 安装必要软件
 sudo apt install -y apache2 php php-mysql php-gd php-curl php-xml php-mbstring mysql-server unzip curl
 
 # 启动服务
 sudo systemctl enable apache2 --now
 sudo systemctl enable mysql --now
 
-# 创建数据库和用户
-sudo mysql -e "CREATE DATABASE IF NOT EXISTS ${DB_NAME} DEFAULT CHARACTER SET utf8mb4;"
+# 创建数据库和用户，如果已存在则跳过
+sudo mysql -e "CREATE DATABASE IF NOT EXISTS \`${DB_NAME}\` DEFAULT CHARACTER SET utf8mb4;"
 sudo mysql -e "CREATE USER IF NOT EXISTS '${DB_USER}'@'localhost' IDENTIFIED BY '${DB_PASS}';"
-sudo mysql -e "GRANT ALL PRIVILEGES ON ${DB_NAME}.* TO '${DB_USER}'@'localhost';"
+sudo mysql -e "GRANT ALL PRIVILEGES ON \`${DB_NAME}\`.* TO '${DB_USER}'@'localhost';"
 sudo mysql -e "FLUSH PRIVILEGES;"
 
-# 下载 ProjectSend
+# 下载最新 ProjectSend
 cd /var/www/html
 curl -LO https://github.com/ignacionelson/ProjectSend/archive/refs/heads/master.zip
-
-# 解压到 projectsend 目录
 unzip -q master.zip -d projectsend
 rm master.zip
 
@@ -59,20 +55,20 @@ sudo a2ensite projectsend
 sudo a2enmod rewrite
 sudo systemctl reload apache2
 
-# 模板修改：隐藏用户端上传/分享/删除按钮
-TEMPLATES_DIR="/var/www/html/projectsend/application/views/frontend"
-if [ -d "$TEMPLATES_DIR" ]; then
-    for file in $(grep -rlE "upload|share|delete" $TEMPLATES_DIR); do
-        sed -i 's/<.*\(upload\|share\|delete\).*<\/.*>//g' "$file"
-    done
+# 确保配置目录存在
+CONFIG_DIR="/var/www/html/projectsend/application/config"
+mkdir -p "$CONFIG_DIR"
+
+# 复制示例数据库配置文件
+if [ -f "$CONFIG_DIR/database.php.example" ]; then
+    cp "$CONFIG_DIR/database.php.example" "$CONFIG_DIR/database.php"
+else
+    # 如果示例文件不存在，创建空文件
+    touch "$CONFIG_DIR/database.php"
 fi
 
-# 自动创建管理员账号
-# 获取当前项目数据库配置文件路径
-DB_CONFIG_FILE="/var/www/html/projectsend/application/config/database.php"
-
-# 写入数据库连接配置文件
-cat <<EOL > $DB_CONFIG_FILE
+# 写入数据库信息
+cat <<EOL > "$CONFIG_DIR/database.php"
 <?php
 defined('BASEPATH') OR exit('No direct script access allowed');
 \$active_group = 'default';
@@ -100,10 +96,21 @@ defined('BASEPATH') OR exit('No direct script access allowed');
 );
 EOL
 
-# 向数据库写入管理员账号
-sudo mysql -e "USE ${DB_NAME}; INSERT INTO users (username, password, name, email, userlevel) VALUES ('$ADMIN_USER', MD5('$ADMIN_PASS'), 'Admin', 'admin@example.com', 9);"
+# 隐藏用户端上传/分享/删除按钮
+TEMPLATES_DIR="/var/www/html/projectsend/application/views/frontend"
+if [ -d "$TEMPLATES_DIR" ]; then
+    for file in $(grep -rlE "upload|share|delete" $TEMPLATES_DIR); do
+        sed -i 's/<.*\(upload\|share\|delete\).*<\/.*>//g' "$file"
+    done
+fi
 
-# 完成
+# 自动创建管理员账号，如果已存在则跳过
+USER_EXISTS=$(sudo mysql -N -s -e "SELECT COUNT(*) FROM ${DB_NAME}.users WHERE username='${ADMIN_USER}';")
+if [ "$USER_EXISTS" -eq 0 ]; then
+    sudo mysql -e "USE ${DB_NAME}; INSERT INTO users (username, password, name, email, userlevel) VALUES ('$ADMIN_USER', MD5('$ADMIN_PASS'), 'Admin', 'admin@example.com', 9);"
+fi
+
+# 安装完成
 echo "====== 安装完成 ======"
 echo "管理员账号：$ADMIN_USER"
 echo "管理员密码：$ADMIN_PASS"
