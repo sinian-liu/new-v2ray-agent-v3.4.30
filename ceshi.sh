@@ -27,8 +27,15 @@ sudo mysql -e "FLUSH PRIVILEGES;"
 # 下载最新 ProjectSend
 cd /var/www/html
 curl -LO https://github.com/ignacionelson/ProjectSend/archive/refs/heads/master.zip
-unzip -q master.zip -d projectsend
+
+# 解压非交互模式
+mkdir -p projectsend
+unzip -o -q master.zip -d projectsend
 rm master.zip
+
+# 修正目录（master.zip 解压后是 ProjectSend-master）
+mv -f projectsend/ProjectSend-master/* projectsend/
+rm -rf projectsend/ProjectSend-master
 
 # 设置权限
 sudo chown -R www-data:www-data projectsend
@@ -63,7 +70,6 @@ mkdir -p "$CONFIG_DIR"
 if [ -f "$CONFIG_DIR/database.php.example" ]; then
     cp "$CONFIG_DIR/database.php.example" "$CONFIG_DIR/database.php"
 else
-    # 如果示例文件不存在，创建空文件
     touch "$CONFIG_DIR/database.php"
 fi
 
