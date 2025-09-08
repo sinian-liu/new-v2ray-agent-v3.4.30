@@ -28,14 +28,15 @@ sudo mysql -e "FLUSH PRIVILEGES;"
 cd /var/www/html
 curl -LO https://github.com/ignacionelson/ProjectSend/archive/refs/heads/master.zip
 
-# 解压非交互模式
+# 创建目录并非交互解压
 mkdir -p projectsend
 unzip -o -q master.zip -d projectsend
 rm master.zip
 
-# 修正目录（master.zip 解压后是 ProjectSend-master）
-mv -f projectsend/ProjectSend-master/* projectsend/
-rm -rf projectsend/ProjectSend-master
+# 自动获取解压后的子目录并移动文件
+DIR=$(find projectsend -mindepth 1 -maxdepth 1 -type d)
+mv -f "$DIR"/* projectsend/
+rm -rf "$DIR"
 
 # 设置权限
 sudo chown -R www-data:www-data projectsend
