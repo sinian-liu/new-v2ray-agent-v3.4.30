@@ -1,17 +1,12 @@
 #!/bin/bash
 
-# FileBrowser 一键安装脚本（修复版）
+# FileBrowser 一键安装脚本（无SQL操作版）
 set -e
 
 echo "正在安装 FileBrowser（管理员和用户端分离）..."
 
-# 更新系统并安装依赖
-apt update && apt install -y docker.io net-tools
-systemctl start docker
-systemctl enable docker
-
-# 确保root用户在docker组
-usermod -aG docker root
+# 清理旧容器
+docker rm -f filebrowser filebrowser-user 2>/dev/null || true
 
 # 创建目录结构
 mkdir -p /srv/files /srv/filebrowser /srv/filebrowser-user
@@ -34,10 +29,7 @@ mkdir -p /srv/files/公开目录
 echo "这个目录可以被分享" > /srv/files/公开目录/README.txt
 chown -R 1000:1000 /srv/files
 
-# 清理旧容器
-docker rm -f filebrowser filebrowser-user 2>/dev/null || true
-
-# 运行管理员端FileBrowser容器（先不配置，等启动后再设置）
+# 第一步：先启动管理员端并等待完全初始化
 echo "启动管理员端（端口8082）..."
 docker run -d \
   --name filebrowser \
@@ -50,8 +42,8 @@ docker run -d \
   --restart unless-stopped \
   filebrowser/filebrowser:latest
 
-echo "等待管理员端启动..."
-sleep 10
+echo "等待管理员端初始化（30秒）..."
+sleep 30
 
 # 检查管理员端是否正常运行
 if ! docker ps | grep -q filebrowser; then
@@ -60,27 +52,34 @@ if ! docker ps | grep -q filebrowser; then
     exit 1
 fi
 
-# 运行用户端FileBrowser容器（只读模式）
-echo "启动用户端（端口8083）..."
-docker run -d \
-  --name filebrowser-user \
-  -v /srv/files:/srv \
-  -v /srv/filebrowser-user:/database \
-  -p 8083:80 \
-  -e FB_BASEURL="/" \
-  -e FB_ROOT="/srv" \
-  --restart unless-stopped \
-  filebrowser/filebrowser:latest
-
-echo "等待用户端启动..."
-sleep 8
-
-# 配置用户端为只读免登录模式（通过API）
-USER_CONTAINER_IP=$(docker inspect -f '{{range.NetworkSettings.Networks}}{{.IPAddress}}{{end}}' filebrowser-user)
-
-# 使用curl配置用户端设置
-curl -X POST -H "Content-Type: application/json" \
-  -d '{
+# 第二步：使用配置文件创建用户端
+echo "创建用户端配置文件..."
+cat > /srv/filebrowser-user/settings.json << 'EOF'
+{
+  "auth": {
+    "method": "noauth"
+  },
+  "users": [
+    {
+      "username": "guest",
+      "password": "",
+      "scope": "/srv",
+      "perm": {
+        "admin": false,
+        "execute": false,
+        "create": false,
+        "rename": false,
+        "modify": false,
+        "delete": false,
+        "share": false,
+        "download": true
+      },
+      "commands": [],
+      "lockPassword": false
+    }
+  ],
+  "settings": {
+    "key": "",
     "allowCommands": false,
     "allowEdit": false,
     "allowNew": false,
@@ -88,9 +87,27 @@ curl -X POST -H "Content-Type: application/json" \
     "allowShare": false,
     "allowRm": false,
     "authMethod": "noauth",
-    "username": "guest",
+    "baseURL": "",
+    "branding": {
+      "name": "文件分享",
+      "disableExternal": false,
+      "disableUsedPercentage": false,
+      "files": "/srv"
+    },
     "commands": [],
-    "perm": {
+    "defaultUserScope": "/srv",
+    "enableThumbnails": false,
+    "hideDotFiles": false,
+    "jwtSecret": "",
+    "log": "",
+    "port": 80,
+    "root": "/srv",
+    "shell": [],
+    "signup": false,
+    "tlsKey": "",
+    "tlsCert": "",
+    "userHomeBasePath": "",
+    "userPerm": {
       "admin": false,
       "execute": false,
       "create": false,
@@ -100,12 +117,32 @@ curl -X POST -H "Content-Type: application/json" \
       "share": false,
       "download": true
     }
-  }' \
-  http://$USER_CONTAINER_IP:80/api/settings || echo "配置可能部分失败，但服务已启动"
+  }
+}
+EOF
 
-# 重启用户端应用配置
-docker restart filebrowser-user
-sleep 5
+chown 1000:1000 /srv/filebrowser-user/settings.json
+
+# 第三步：启动用户端（使用配置文件）
+echo "启动用户端（端口8083）..."
+docker run -d \
+  --name filebrowser-user \
+  -v /srv/files:/srv \
+  -v /srv/filebrowser-user:/database \
+  -p 8083:80 \
+  -e FB_CONFIG=/database/settings.json \
+  --restart unless-stopped \
+  filebrowser/filebrowser:latest
+
+echo "等待用户端启动..."
+sleep 15
+
+# 检查用户端是否正常运行
+if ! docker ps | grep -q filebrowser-user; then
+    echo "❌ 用户端启动失败，查看日志："
+    docker logs filebrowser-user
+    exit 1
+fi
 
 # 开放防火墙端口
 if command -v ufw >/dev/null 2>&1; then
@@ -145,5 +182,8 @@ echo "   - 用户端完全只读，无法修改、删除或上传文件"
 echo "   - 用户端免登录，但只能访问被分享的特定链接"
 echo "   - 管理员端需要密码认证，拥有完整权限"
 echo ""
-echo "🔄 如果需要重置："
-echo "   ./reset-filebrowser.sh"
+echo "🔄 如果需要重置：运行以下命令："
+echo "   docker stop filebrowser filebrowser-user"
+echo "   docker rm filebrowser filebrowser-user"
+echo "   rm -rf /srv/filebrowser/* /srv/filebrowser-user/*"
+echo "   然后重新运行此脚本"
