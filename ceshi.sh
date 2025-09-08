@@ -27,7 +27,7 @@ mkdir -p "$ADMIN_DIR"
 
 # 固定管理员账号和密码
 ADMIN_USER="admin"
-ADMIN_PASS="3766700949"
+ADMIN_PASS="3766700949aabb"
 echo "管理员账号: $ADMIN_USER"
 echo "管理员密码: $ADMIN_PASS"
 
