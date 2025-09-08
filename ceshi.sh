@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# 更新系统并安装Docker
-apt update && apt install -y docker.io
+# 更新系统并安装Docker和net-tools
+apt update && apt install -y docker.io net-tools
 systemctl start docker
 systemctl enable docker
 
@@ -10,12 +10,13 @@ usermod -aG docker root
 
 # 创建文件和配置目录
 mkdir -p /srv/files /srv/filebrowser
-chown -R root:root /srv/files /srv/filebrowser
+chown -R 1000:1000 /srv/files /srv/filebrowser
+chmod -R 775 /srv/files /srv/filebrowser
 
 # 生成随机管理员密码
 ADMIN_PASS=$(openssl rand -hex 12)
 
-# 获取磁盘剩余空间（/srv/files所在磁盘，单位GB）
+# 获取磁盘剩余空间
 DISK_FREE=$(df -h /srv/files | tail -1 | awk '{print $4}')
 DISK_TOTAL=$(df -h /srv/files | tail -1 | awk '{print $2}')
 DISK_USED=$(df -h /srv/files | tail -1 | awk '{print $3}')
@@ -44,7 +45,7 @@ cat << EOF > /srv/files/disk_info.html
 EOF
 
 # 设置HTML文件权限
-chown root:root /srv/files/disk_info.html
+chown 1000:1000 /srv/files/disk_info.html
 chmod 644 /srv/files/disk_info.html
 
 # 运行FileBrowser容器
@@ -52,7 +53,7 @@ docker run -d \
   --name filebrowser \
   -v /srv/files:/srv \
   -v /srv/filebrowser:/database \
-  -p 8080:80 \
+  -p 8082:80 \
   -e FB_ADMIN_USER=admin \
   -e FB_ADMIN_PASSWORD=$ADMIN_PASS \
   --restart unless-stopped \
@@ -64,7 +65,7 @@ sleep 5
 # 检查容器状态
 if docker ps | grep -q filebrowser; then
   echo "FileBrowser安装成功！容器运行中。"
-  echo "访问地址: http://$(hostname -I | awk '{print $1}'):8080"
+  echo "访问地址: http://$(hostname -I | awk '{print $1}'):8082"
   echo "管理员用户名: admin"
   echo "管理员密码: $ADMIN_PASS (请立即在Web界面修改！)"
   echo "文件存储路径: /srv/files"
@@ -77,9 +78,13 @@ else
   exit 1
 fi
 
+# 开放防火墙
+ufw allow 8082
+ufw enable
+
 # 可选：HTTPS配置提示
 echo "安全建议："
 echo "1. 安装Nginx和Certbot: apt install nginx certbot python3-certbot-nginx"
-echo "2. 配置Nginx反向代理到localhost:8080"
+echo "2. 配置Nginx反向代理到localhost:8082"
 echo "3. 获取HTTPS证书: certbot --nginx"
-echo "4. 防火墙只开80/443: ufw allow 80,443 && ufw enable"
+echo "4. 防火墙只开80/443: ufw allow 80,443 && ufw deny 8082 && ufw enable"
