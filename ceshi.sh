@@ -1,5 +1,7 @@
 #!/bin/bash
-# FileBrowser 安装脚本（固定密码 + 管理员查看磁盘空间 + 分享链接访问限制）
+# FileBrowser 一键安装脚本（修正版）
+# 管理员密码固定，支持分享链接，硬盘空间查看，避免报错
+
 set -e
 
 INSTALL_DIR="/opt/filebrowser"
@@ -9,11 +11,8 @@ SERVICE_FILE="/etc/systemd/system/filebrowser.service"
 PORT=8080
 
 echo "==== 更新系统并安装依赖 ===="
-if command -v apt >/dev/null 2>&1; then
-    apt update -y && apt install -y curl unzip
-elif command -v yum >/dev/null 2>&1; then
-    yum install -y curl unzip
-fi
+apt update -y
+apt install -y curl unzip
 
 echo "==== 下载并安装 FileBrowser ===="
 curl -fsSL https://raw.githubusercontent.com/filebrowser/get/master/get.sh | bash
@@ -27,8 +26,10 @@ ADMIN_PASS="3766700949"
 echo "管理员账号: $ADMIN_USER"
 echo "管理员密码: $ADMIN_PASS"
 
+echo "==== 初始化 FileBrowser 配置（避免数据库不存在报错） ===="
+filebrowser config init --database "$INSTALL_DIR/filebrowser.db" --root "$ADMIN_DIR"
+
 echo "==== 创建管理员账号 ===="
-rm -f "$INSTALL_DIR/filebrowser.db"
 filebrowser users add $ADMIN_USER $ADMIN_PASS --perm.admin
 filebrowser users update $ADMIN_USER --scope "$ADMIN_DIR"
 
@@ -98,10 +99,8 @@ echo "管理员端登录地址: http://$IP:$PORT"
 echo "管理员账号: $ADMIN_USER"
 echo "管理员密码: $ADMIN_PASS"
 echo "管理员目录: $ADMIN_DIR"
-echo "管理员端网页可查看磁盘剩余空间: http://$IP:$PORT/admin/disk.html"
+echo "管理员端网页可查看硬盘剩余空间: http://$IP:$PORT/admin/disk.html"
 echo "用户端访问必须通过管理员生成的分享链接"
 echo "用户端无法浏览其他文件，也无法再次分享"
-
 echo "==== 临时分享链接使用方法（管理员操作示例） ===="
 echo "filebrowser shares add /path/to/file --expire 24h --perm.read"
-echo "上述命令可创建一个24小时后过期的分享链接，用户访问后只能下载"
