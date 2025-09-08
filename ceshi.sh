@@ -1,5 +1,5 @@
 #!/bin/bash
-# FileBrowser 完整安装脚本
+# FileBrowser 完整安装脚本（最新版本支持，管理员密码自动生成 12+ 位）
 # 管理员端：上传/下载/删除/分享 + 网页查看磁盘剩余空间
 # 用户端：免登录只读下载分享
 # 系统：Debian / Ubuntu / CentOS
@@ -27,9 +27,13 @@ curl -fsSL https://raw.githubusercontent.com/filebrowser/get/master/get.sh | bas
 echo "==== 创建目录结构 ===="
 mkdir -p "$ADMIN_DIR" "$USER_DIR"
 
-echo "==== 创建管理员账号 ===="
+echo "==== 生成安全随机管理员密码（12+ 位） ===="
 ADMIN_USER="admin"
-ADMIN_PASS="123456"
+ADMIN_PASS=$(head /dev/urandom | tr -dc A-Za-z0-9@#%^&*_ | head -c 16)
+echo "管理员账号: $ADMIN_USER"
+echo "管理员密码: $ADMIN_PASS"
+
+echo "==== 创建管理员账号 ===="
 filebrowser users add $ADMIN_USER $ADMIN_PASS --perm.admin
 filebrowser users update $ADMIN_USER --scope "$ADMIN_DIR"
 
@@ -74,10 +78,10 @@ echo "</pre>" >> $DISK_FILE
 EOF
 chmod +x "$ADMIN_DIR/update_disk.sh"
 
-# 首次生成
+# 首次生成磁盘信息页面
 bash "$ADMIN_DIR/update_disk.sh"
 
-# 可选：每 5 分钟更新一次
+# 每 5 分钟更新一次磁盘信息
 (crontab -l 2>/dev/null; echo "*/5 * * * * $ADMIN_DIR/update_disk.sh") | crontab -
 
 echo "==== 创建 systemd 服务 ===="
@@ -103,8 +107,10 @@ systemctl restart filebrowser
 IP=$(curl -s ifconfig.me)
 
 echo "==== 安装完成！===="
-echo "管理员端登录地址: http://$IP:$PORT  (用户名: $ADMIN_USER, 密码: $ADMIN_PASS)"
+echo "管理员端登录地址: http://$IP:$PORT"
+echo "管理员账号: $ADMIN_USER"
+echo "管理员密码: $ADMIN_PASS"
 echo "管理员端目录: $ADMIN_DIR"
-echo "管理员端可直接访问网页查看磁盘剩余空间: http://$IP:$PORT/admin/disk.html"
+echo "管理员端网页可直接查看磁盘剩余空间: http://$IP:$PORT/admin/disk.html"
 echo "用户端免登录访问: http://$IP:$PORT/shared"
 echo "用户端只读下载分享目录: $USER_DIR"
