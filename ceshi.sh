@@ -10,6 +10,7 @@ usermod -aG docker root
 
 # 创建目录并设置权限
 mkdir -p /srv/files /srv/filebrowser
+rm -rf /srv/filebrowser/*  # 清理旧数据库
 chown -R 1000:1000 /srv/files /srv/filebrowser
 chmod -R 775 /srv/files /srv/filebrowser
 
