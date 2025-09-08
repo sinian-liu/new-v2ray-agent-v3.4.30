@@ -10,7 +10,7 @@ usermod -aG docker root
 
 # 创建目录并设置权限
 mkdir -p /srv/files /srv/filebrowser
-rm -rf /srv/filebrowser/*  # 清理旧数据库
+rm -rf /srv/filebrowser/*
 chown -R 1000:1000 /srv/files /srv/filebrowser
 chmod -R 775 /srv/files /srv/filebrowser
 
@@ -26,22 +26,8 @@ DISK_USED=$(df -h /srv/files | tail -1 | awk '{print $3}')
 cat << EOF > /srv/files/disk_info.html
 <!DOCTYPE html>
 <html>
-<head>
-  <title>Disk Space Information</title>
-  <style>
-    body { font-family: Arial, sans-serif; padding: 20px; }
-    h1 { color: #333; }
-    .info { font-size: 18px; margin-top: 20px; }
-  </style>
-</head>
-<body>
-  <h1>Disk Space Information</h1>
-  <div class="info">
-    <p>Total Space: $DISK_TOTAL</p>
-    <p>Used Space: $DISK_USED</p>
-    <p>Free Space: $DISK_FREE</p>
-  </div>
-</body>
+<head><title>Disk Space Information</title><style>body{font-family:Arial;padding:20px;}h1{color:#333;}.info{font-size:18px;margin-top:20px;}</style></head>
+<body><h1>Disk Space Information</h1><div class=info><p>Total Space: $DISK_TOTAL</p><p>Used Space: $DISK_USED</p><p>Free Space: $DISK_FREE</p></div></body>
 </html>
 EOF
 chown 1000:1000 /srv/files/disk_info.html
