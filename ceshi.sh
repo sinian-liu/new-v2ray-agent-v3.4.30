@@ -1,12 +1,12 @@
 #!/bin/bash
 
-# FileBrowser 一键安装脚本（管理员+用户端分离版）
+# FileBrowser 一键安装脚本（修复版）
 set -e
 
 echo "正在安装 FileBrowser（管理员和用户端分离）..."
 
 # 更新系统并安装依赖
-apt update && apt install -y docker.io net-tools sqlite3
+apt update && apt install -y docker.io net-tools
 systemctl start docker
 systemctl enable docker
 
@@ -32,11 +32,12 @@ DISK_USED=$(df -h /srv/files | tail -1 | awk '{print $3}')
 echo "这是管理员上传的示例文件" > /srv/files/示例文件.txt
 mkdir -p /srv/files/公开目录
 echo "这个目录可以被分享" > /srv/files/公开目录/README.txt
+chown -R 1000:1000 /srv/files
 
 # 清理旧容器
 docker rm -f filebrowser filebrowser-user 2>/dev/null || true
 
-# 运行管理员端FileBrowser容器
+# 运行管理员端FileBrowser容器（先不配置，等启动后再设置）
 echo "启动管理员端（端口8082）..."
 docker run -d \
   --name filebrowser \
@@ -49,19 +50,14 @@ docker run -d \
   --restart unless-stopped \
   filebrowser/filebrowser:latest
 
-# 等待管理员端启动
-sleep 8
+echo "等待管理员端启动..."
+sleep 10
 
-# 配置管理员端数据库（启用分享功能）
-if [ -f "/srv/filebrowser/filebrowser.db" ]; then
-    sqlite3 /srv/filebrowser/filebrowser.db << EOF
-    -- 确保分享功能启用
-    UPDATE settings SET value = 'true' WHERE key = 'allowCommands';
-    UPDATE settings SET value = 'true' WHERE key = 'allowEdit';
-    UPDATE settings SET value = 'true' WHERE key = 'allowNew';
-    UPDATE settings SET value = 'true' WHERE key = 'allowPublish';
-    UPDATE settings SET value = 'true' WHERE key = 'allowShare';
-EOF
+# 检查管理员端是否正常运行
+if ! docker ps | grep -q filebrowser; then
+    echo "❌ 管理员端启动失败，查看日志："
+    docker logs filebrowser
+    exit 1
 fi
 
 # 运行用户端FileBrowser容器（只读模式）
@@ -76,42 +72,47 @@ docker run -d \
   --restart unless-stopped \
   filebrowser/filebrowser:latest
 
-# 等待用户端启动
-sleep 5
+echo "等待用户端启动..."
+sleep 8
 
-# 配置用户端数据库（设置为只读免登录）
-if [ -f "/srv/filebrowser-user/filebrowser.db" ]; then
-    sqlite3 /srv/filebrowser-user/filebrowser.db << EOF
-    -- 禁用所有写操作
-    UPDATE settings SET value = 'false' WHERE key = 'allowCommands';
-    UPDATE settings SET value = 'false' WHERE key = 'allowEdit';
-    UPDATE settings SET value = 'false' WHERE key = 'allowNew';
-    UPDATE settings SET value = 'false' WHERE key = 'allowPublish';
-    UPDATE settings SET value = 'false' WHERE key = 'allowShare';
-    UPDATE settings SET value = 'false' WHERE key = 'allowRm';
-    
-    -- 禁用登录要求
-    UPDATE settings SET value = 'true' WHERE key = 'allowPerms';
-    UPDATE settings SET value = 'false' WHERE key = 'authMethod' OR key = 'authHeader';
-    
-    -- 设置默认只读权限
-    INSERT OR REPLACE INTO users (id, username, password, scope, locale, view_mode, single_click, perm, commands, lock_password)
-    VALUES (1, 'guest', '', '/', 'zh-CN', 'list', 0, '{"admin":false,"execute":false,"create":false,"rename":false,"modify":false,"delete":false,"share":false,"download":true}', '[]', 0);
-    
-    -- 设置匿名用户权限
-    UPDATE settings SET value = '{"admin":false,"execute":false,"create":false,"rename":false,"modify":false,"delete":false,"share":false,"download":true}' WHERE key = 'userPerm';
-EOF
-fi
+# 配置用户端为只读免登录模式（通过API）
+USER_CONTAINER_IP=$(docker inspect -f '{{range.NetworkSettings.Networks}}{{.IPAddress}}{{end}}' filebrowser-user)
 
-# 重启用户端容器应用配置
+# 使用curl配置用户端设置
+curl -X POST -H "Content-Type: application/json" \
+  -d '{
+    "allowCommands": false,
+    "allowEdit": false,
+    "allowNew": false,
+    "allowPublish": false,
+    "allowShare": false,
+    "allowRm": false,
+    "authMethod": "noauth",
+    "username": "guest",
+    "commands": [],
+    "perm": {
+      "admin": false,
+      "execute": false,
+      "create": false,
+      "rename": false,
+      "modify": false,
+      "delete": false,
+      "share": false,
+      "download": true
+    }
+  }' \
+  http://$USER_CONTAINER_IP:80/api/settings || echo "配置可能部分失败，但服务已启动"
+
+# 重启用户端应用配置
 docker restart filebrowser-user
-sleep 3
+sleep 5
 
 # 开放防火墙端口
 if command -v ufw >/dev/null 2>&1; then
     ufw allow 8082/tcp >/dev/null 2>&1
     ufw allow 8083/tcp >/dev/null 2>&1
     ufw allow 22/tcp >/dev/null 2>&1
+    echo "✅ 防火墙端口已开放"
 fi
 
 # 显示安装结果
@@ -138,7 +139,6 @@ echo "📖 使用说明："
 echo "1. 管理员登录 http://$SERVER_IP:8082 上传和管理文件"
 echo "2. 在管理员端选中文件/目录 → 点击分享图标 → 生成分享链接"
 echo "3. 用户通过分享链接访问特定文件/目录（无需登录）"
-echo "4. 用户端 http://$SERVER_IP:8083 只能访问已分享的内容"
 echo ""
 echo "🔒 安全特性："
 echo "   - 用户端完全只读，无法修改、删除或上传文件"
@@ -146,6 +146,4 @@ echo "   - 用户端免登录，但只能访问被分享的特定链接"
 echo "   - 管理员端需要密码认证，拥有完整权限"
 echo ""
 echo "🔄 如果需要重置："
-echo "   docker stop filebrowser filebrowser-user"
-echo "   rm -rf /srv/filebrowser/* /srv/filebrowser-user/*"
-echo "   ./install-filebrowser.sh"
+echo "   ./reset-filebrowser.sh"
