@@ -1,11 +1,7 @@
 #!/bin/bash
-# FileBrowser 安装脚本（兼容最新版本，管理员密码安全，支持分享链接+硬盘空间查看）
-# 管理员端：上传/下载/删除/分享 + 查看硬盘剩余空间
-# 用户端：免登录访问，只能访问分享链接
-
+# FileBrowser 安装脚本（固定密码 + 管理员查看磁盘空间 + 分享链接访问限制）
 set -e
 
-# 目录和端口设置
 INSTALL_DIR="/opt/filebrowser"
 ADMIN_DIR="$INSTALL_DIR/admin"
 CONFIG_FILE="$INSTALL_DIR/filebrowser.json"
@@ -25,14 +21,14 @@ curl -fsSL https://raw.githubusercontent.com/filebrowser/get/master/get.sh | bas
 echo "==== 创建管理员目录 ===="
 mkdir -p "$ADMIN_DIR"
 
-echo "==== 生成安全随机管理员密码（16 位，避免 bcrypt 超长问题） ===="
+# 固定管理员账号和密码
 ADMIN_USER="admin"
-ADMIN_PASS=$(head /dev/urandom | tr -dc A-Za-z0-9@#%^&*_ | head -c 16)
+ADMIN_PASS="3766700949"
 echo "管理员账号: $ADMIN_USER"
 echo "管理员密码: $ADMIN_PASS"
 
 echo "==== 创建管理员账号 ===="
-rm -f "$INSTALL_DIR/filebrowser.db"  # 删除旧数据库，确保重装成功
+rm -f "$INSTALL_DIR/filebrowser.db"
 filebrowser users add $ADMIN_USER $ADMIN_PASS --perm.admin
 filebrowser users update $ADMIN_USER --scope "$ADMIN_DIR"
 
@@ -62,7 +58,7 @@ cat > "$CONFIG_FILE" <<EOF
 }
 EOF
 
-echo "==== 为管理员创建网页显示硬盘剩余空间功能 ===="
+echo "==== 创建管理员硬盘空间查看功能 ===="
 cat > "$ADMIN_DIR/update_disk.sh" <<'EOF'
 #!/bin/bash
 DISK_FILE="$PWD/disk.html"
@@ -72,11 +68,7 @@ df -h "$PWD/.." >> $DISK_FILE
 echo "</pre>" >> $DISK_FILE
 EOF
 chmod +x "$ADMIN_DIR/update_disk.sh"
-
-# 首次生成磁盘信息页面
 bash "$ADMIN_DIR/update_disk.sh"
-
-# 每 5 分钟自动更新磁盘空间页面
 (crontab -l 2>/dev/null; echo "*/5 * * * * $ADMIN_DIR/update_disk.sh") | crontab -
 
 echo "==== 创建 systemd 服务 ===="
@@ -106,6 +98,10 @@ echo "管理员端登录地址: http://$IP:$PORT"
 echo "管理员账号: $ADMIN_USER"
 echo "管理员密码: $ADMIN_PASS"
 echo "管理员目录: $ADMIN_DIR"
-echo "管理员端网页可查看硬盘剩余空间: http://$IP:$PORT/admin/disk.html"
+echo "管理员端网页可查看磁盘剩余空间: http://$IP:$PORT/admin/disk.html"
 echo "用户端访问必须通过管理员生成的分享链接"
 echo "用户端无法浏览其他文件，也无法再次分享"
+
+echo "==== 临时分享链接使用方法（管理员操作示例） ===="
+echo "filebrowser shares add /path/to/file --expire 24h --perm.read"
+echo "上述命令可创建一个24小时后过期的分享链接，用户访问后只能下载"
