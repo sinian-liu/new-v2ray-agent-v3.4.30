@@ -1,6 +1,6 @@
 #!/bin/bash
 # FileBrowser 完整安装脚本
-# 管理员端：上传/下载/删除/分享
+# 管理员端：上传/下载/删除/分享 + 网页查看磁盘剩余空间
 # 用户端：免登录只读下载分享
 # 系统：Debian / Ubuntu / CentOS
 
@@ -33,6 +33,10 @@ ADMIN_PASS="123456"
 filebrowser users add $ADMIN_USER $ADMIN_PASS --perm.admin
 filebrowser users update $ADMIN_USER --scope "$ADMIN_DIR"
 
+echo "==== 创建用户端免登录只读账户 ===="
+filebrowser users add "guest" "" --perm.create=false --perm.rename=false --perm.modify=false --perm.delete=false --perm.share=true
+filebrowser users update "guest" --scope "$USER_DIR"
+
 echo "==== 生成配置文件 ===="
 cat > "$CONFIG_FILE" <<EOF
 {
@@ -59,10 +63,22 @@ cat > "$CONFIG_FILE" <<EOF
 }
 EOF
 
-echo "==== 设置用户端匿名访问（只读） ===="
-# 创建匿名访问用户，scope 指向 /shared
-filebrowser users add "guest" "" --perm.create=false --perm.rename=false --perm.modify=false --perm.delete=false --perm.share=true
-filebrowser users update "guest" --scope "$USER_DIR"
+echo "==== 为管理员创建网页显示磁盘剩余空间功能 ===="
+cat > "$ADMIN_DIR/update_disk.sh" <<'EOF'
+#!/bin/bash
+DISK_FILE="$PWD/disk.html"
+echo "<h3>管理员磁盘剩余空间</h3>" > $DISK_FILE
+echo "<pre>" >> $DISK_FILE
+df -h "$PWD/.." >> $DISK_FILE
+echo "</pre>" >> $DISK_FILE
+EOF
+chmod +x "$ADMIN_DIR/update_disk.sh"
+
+# 首次生成
+bash "$ADMIN_DIR/update_disk.sh"
+
+# 可选：每 5 分钟更新一次
+(crontab -l 2>/dev/null; echo "*/5 * * * * $ADMIN_DIR/update_disk.sh") | crontab -
 
 echo "==== 创建 systemd 服务 ===="
 cat > "$SERVICE_FILE" <<EOF
@@ -88,6 +104,7 @@ IP=$(curl -s ifconfig.me)
 
 echo "==== 安装完成！===="
 echo "管理员端登录地址: http://$IP:$PORT  (用户名: $ADMIN_USER, 密码: $ADMIN_PASS)"
-echo "管理员端可上传/下载/删除/分享文件: $ADMIN_DIR"
+echo "管理员端目录: $ADMIN_DIR"
+echo "管理员端可直接访问网页查看磁盘剩余空间: http://$IP:$PORT/admin/disk.html"
 echo "用户端免登录访问: http://$IP:$PORT/shared"
-echo "用户只能下载或使用分享链接，不可上传/删除: $USER_DIR"
+echo "用户端只读下载分享目录: $USER_DIR"
