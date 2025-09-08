@@ -1,12 +1,32 @@
 #!/bin/bash
 
-# FileBrowser 一键安装脚本（无SQL操作版）
+# FileBrowser 完整安装脚本（包含Docker安装）
 set -e
 
-echo "正在安装 FileBrowser（管理员和用户端分离）..."
+echo "正在安装 Docker 和 FileBrowser..."
 
-# 清理旧容器
-docker rm -f filebrowser filebrowser-user 2>/dev/null || true
+# 检查并安装 Docker
+if ! command -v docker &> /dev/null; then
+    echo "安装 Docker..."
+    apt update
+    apt install -y apt-transport-https ca-certificates curl software-properties-common
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+    echo "deb [arch=amd64 signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+    apt update
+    apt install -y docker-ce docker-ce-cli containerd.io
+else
+    echo "Docker 已安装"
+fi
+
+# 启动并启用 Docker
+systemctl start docker
+systemctl enable docker
+
+# 将当前用户添加到 docker 组（避免权限问题）
+if ! groups $USER | grep -q '\bdocker\b'; then
+    usermod -aG docker $USER
+    echo "⚠️  请重新登录或运行 'newgrp docker' 使权限生效"
+fi
 
 # 创建目录结构
 mkdir -p /srv/files /srv/filebrowser /srv/filebrowser-user
@@ -29,7 +49,10 @@ mkdir -p /srv/files/公开目录
 echo "这个目录可以被分享" > /srv/files/公开目录/README.txt
 chown -R 1000:1000 /srv/files
 
-# 第一步：先启动管理员端并等待完全初始化
+# 清理旧容器
+docker rm -f filebrowser filebrowser-user 2>/dev/null || true
+
+# 第一步：启动管理员端
 echo "启动管理员端（端口8082）..."
 docker run -d \
   --name filebrowser \
@@ -123,7 +146,7 @@ EOF
 
 chown 1000:1000 /srv/filebrowser-user/settings.json
 
-# 第三步：启动用户端（使用配置文件）
+# 第三步：启动用户端
 echo "启动用户端（端口8083）..."
 docker run -d \
   --name filebrowser-user \
@@ -182,7 +205,7 @@ echo "   - 用户端完全只读，无法修改、删除或上传文件"
 echo "   - 用户端免登录，但只能访问被分享的特定链接"
 echo "   - 管理员端需要密码认证，拥有完整权限"
 echo ""
-echo "🔄 如果需要重置：运行以下命令："
+echo "🔄 如果需要重置："
 echo "   docker stop filebrowser filebrowser-user"
 echo "   docker rm filebrowser filebrowser-user"
 echo "   rm -rf /srv/filebrowser/* /srv/filebrowser-user/*"
