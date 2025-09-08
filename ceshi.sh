@@ -1,112 +1,59 @@
 #!/bin/bash
 
-# FileBrowser 修复安装脚本
-set -e
+# FileBrowser 一键安装脚本
+CONTAINER_NAME="filebrowser"
+DATA_DIR="/srv/filebrowser"
+CONFIG_FILE="$DATA_DIR/config/filebrowser.json"
+DATABASE_FILE="$DATA_DIR/database.db"
 
-echo "修复 FileBrowser 安装..."
+# 检测系统架构
+ARCH=$(uname -m)
+case $ARCH in
+    x86_64) IMAGE_ARCH="amd64" ;;
+    aarch64) IMAGE_ARCH="arm64" ;;
+    armv7l) IMAGE_ARCH="armv7" ;;
+    *) echo "不支持的架构: $ARCH"; exit 1 ;;
+esac
 
-# 停止并删除所有容器
-docker stop filebrowser filebrowser-user 2>/dev/null || true
-docker rm filebrowser filebrowser-user 2>/dev/null || true
+# 创建数据目录
+sudo mkdir -p $DATA_DIR/{config,data}
+sudo chmod -R 755 $DATA_DIR
 
-# 彻底清理数据库
-rm -rf /srv/filebrowser/* /srv/filebrowser-user/*
+# 拉取合适的镜像
+docker pull filebrowser/filebrowser:$IMAGE_ARCH
 
-# 使用简单密码（避免特殊字符问题）
-ADMIN_PASS="Admin123456"  # 使用简单密码确保能登录
+# 停止并删除现有容器（如果存在）
+docker stop $CONTAINER_NAME 2>/dev/null
+docker rm $CONTAINER_NAME 2>/dev/null
 
-# 获取服务器IP
-SERVER_IP=$(hostname -I | awk '{print $1}')
-
-# 方法1：使用docker命令参数设置密码（最可靠）
-echo "方法1：使用docker参数设置管理员端..."
+# 运行容器
 docker run -d \
-  --name filebrowser \
-  -v /srv/files:/srv \
-  -v /srv/filebrowser:/database \
-  -p 8082:80 \
+  --name $CONTAINER_NAME \
   --restart unless-stopped \
-  filebrowser/filebrowser:latest \
-  --username admin \
-  --password "$ADMIN_PASS"
+  -v $DATA_DIR/config:/config \
+  -v $DATA_DIR/data:/srv \
+  -v $DATABASE_FILE:/database.db \
+  -e PUID=$(id -u) \
+  -e PGID=$(id -g) \
+  -p 8080:80 \
+  filebrowser/filebrowser:$IMAGE_ARCH
 
-echo "等待管理员端启动..."
-sleep 20
+# 等待服务启动
+sleep 3
 
-# 检查管理员端是否正常运行
-if docker ps | grep -q filebrowser; then
-    echo "✅ 管理员端启动成功"
-else
-    echo "❌ 管理员端启动失败，尝试方法2..."
-    docker logs filebrowser
-    
-    # 方法2：使用环境变量
-    docker rm -f filebrowser 2>/dev/null || true
-    docker run -d \
-      --name filebrowser \
-      -v /srv/files:/srv \
-      -v /srv/filebrowser:/database \
-      -p 8082:80 \
-      -e FB_ADMIN_USER=admin \
-      -e FB_ADMIN_PASSWORD="$ADMIN_PASS" \
-      --restart unless-stopped \
-      filebrowser/filebrowser:latest
-      
-    sleep 15
-fi
+# 获取本机IP地址
+IP=$(hostname -I | awk '{print $1}')
 
-# 配置用户端为免登录只读模式
-echo "配置用户端..."
-docker run -d \
-  --name filebrowser-user \
-  -v /srv/files:/srv \
-  -v /srv/filebrowser-user:/database \
-  -p 8083:80 \
-  --restart unless-stopped \
-  filebrowser/filebrowser:latest
-
-sleep 10
-
-# 通过exec命令配置用户端设置
-docker exec filebrowser-user filebrowser users update admin --perm.download=true --perm.execute=false --perm.create=false --perm.rename=false --perm.modify=false --perm.delete=false --perm.share=false 2>/dev/null || true
-
-# 重启用户端应用配置
-docker restart filebrowser-user
-sleep 5
-
-# 显示修复结果
+echo "=================================================="
+echo "FileBrowser 安装完成！"
+echo "访问地址: http://$IP:8080"
 echo ""
-echo "================================================"
-echo "✅ FileBrowser 修复完成！"
-echo "================================================"
-echo "管理员端（完全权限）："
-echo "  - 访问地址: http://$SERVER_IP:8082"
-echo "  - 用户名: admin"
-echo "  - 密码: $ADMIN_PASS"
+echo "默认用户名: admin"
+echo "默认密码: admin"
 echo ""
-echo "用户端（只读免登录）："
-echo "  - 访问地址: http://$SERVER_IP:8083"
-echo "  - 无需登录"
-echo "================================================"
+echo "数据目录: $DATA_DIR/data"
+echo "配置文件: $CONFIG_FILE"
+echo "=================================================="
 
-# 测试登录
-echo ""
-echo "测试登录..."
-echo "如果仍然无法登录，请尝试以下步骤："
-
-# 查看密码是否正确设置
-echo "1. 查看容器日志中的密码信息："
-docker logs filebrowser 2>&1 | grep -i "admin\|password\|user" | head -5
-
-echo ""
-echo "2. 手动重置密码："
-echo "   docker exec filebrowser filebrowser users update admin --password \"NewPassword123\""
-
-echo ""
-echo "3. 或者进入容器查看用户信息："
-echo "   docker exec filebrowser filebrowser users ls"
-
-echo ""
-echo "4. 如果问题依旧，尝试使用默认密码："
-echo "   用户名: admin"
-echo "   密码: admin"
+# 显示初始登录提示
+echo "请注意：首次登录后请立即修改默认密码！"
