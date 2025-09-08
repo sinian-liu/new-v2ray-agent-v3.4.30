@@ -1,32 +1,31 @@
 #!/bin/bash
 
-# FileBrowser 权限修复脚本
+# FileBrowser 一键安装脚本（自定义密码版）
 CONTAINER_NAME="filebrowser"
 DATA_DIR="/srv/filebrowser"
+CUSTOM_PASSWORD="Admin12345678"
 
-echo "=== 修复 FileBrowser 权限问题 ==="
+echo "=== FileBrowser 安装脚本（密码: $CUSTOM_PASSWORD）==="
 
-# 停止并删除现有容器
-echo "清理现有容器..."
+# 清理现有容器
+echo "1. 清理现有容器..."
 docker stop $CONTAINER_NAME 2>/dev/null
 docker rm $CONTAINER_NAME 2>/dev/null
 
-# 重新创建数据目录并设置正确权限
-echo "重新设置目录权限..."
+# 创建数据目录并设置权限
+echo "2. 创建数据目录..."
 sudo rm -rf $DATA_DIR
 sudo mkdir -p $DATA_DIR/data
 sudo mkdir -p $DATA_DIR/config
-
-# 设置正确的权限（容器内用户UID为1000）
 sudo chown -R 1000:1000 $DATA_DIR
 sudo chmod -R 775 $DATA_DIR
 
-# 检查目录权限
-echo "检查目录权限:"
-ls -la $DATA_DIR/
+# 拉取最新镜像
+echo "3. 拉取 Docker 镜像..."
+docker pull filebrowser/filebrowser:latest
 
-# 启动容器（使用明确的用户ID）
-echo "启动容器..."
+# 启动容器（先不设置密码）
+echo "4. 启动容器..."
 docker run -d \
   --name $CONTAINER_NAME \
   --restart unless-stopped \
@@ -37,41 +36,40 @@ docker run -d \
   -e PGID=1000 \
   filebrowser/filebrowser:latest
 
-# 等待启动
-sleep 5
+# 等待服务启动
+echo "5. 等待服务启动..."
+sleep 8
 
-# 检查状态
-echo "检查容器状态..."
+# 设置自定义密码
+echo "6. 设置自定义密码..."
+docker exec $CONTAINER_NAME filebrowser users update admin --password "$CUSTOM_PASSWORD"
+
+# 检查安装结果
+echo "7. 检查安装结果..."
 if docker ps | grep -q $CONTAINER_NAME; then
-    echo "✅ 容器运行成功！"
-    
-    # 显示访问信息
-    IP=$(hostname -I | awk '{print $1}')
-    echo "=================================================="
-    echo "🌐 访问地址: http://$IP:8080"
-    echo "🔑 用户名: admin"
-    echo "🔒 密码: admin"
-    echo "📁 数据目录: $DATA_DIR/data"
-    echo "=================================================="
+    echo "✅ 容器状态: 运行成功"
 else
-    echo "❌ 容器启动失败，查看详细日志："
+    echo "❌ 容器启动失败，查看日志:"
     docker logs $CONTAINER_NAME
-    
-    # 备用方案：使用内部存储
-    echo "尝试备用方案（使用容器内部存储）..."
-    docker stop $CONTAINER_NAME 2>/dev/null
-    docker rm $CONTAINER_NAME 2>/dev/null
-    
-    docker run -d \
-      --name $CONTAINER_NAME \
-      -p 8080:80 \
-      filebrowser/filebrowser:latest
-      
-    sleep 3
-    if docker ps | grep -q $CONTAINER_NAME; then
-        echo "✅ 容器运行成功（使用内部存储）"
-        echo "注意：数据将保存在容器内部，重启容器会丢失数据！"
-    else
-        echo "❌ 所有方案都失败，请检查Docker环境"
-    fi
+    exit 1
 fi
+
+# 显示访问信息
+IP=$(hostname -I | awk '{print $1}')
+echo "=================================================="
+echo "🌐 访问地址: http://$IP:8080"
+echo "🔑 用户名: admin"
+echo "🔒 密码: $CUSTOM_PASSWORD"
+echo "📁 数据目录: $DATA_DIR/data"
+echo "⚙️  配置目录: $DATA_DIR/config"
+echo "=================================================="
+
+# 测试连接
+echo "8. 测试连接..."
+if curl -s http://localhost:8080 > /dev/null; then
+    echo "✅ 连接测试: 成功"
+else
+    echo "⚠️  连接测试: 失败，服务可能还在启动中"
+fi
+
+echo "安装完成！请使用密码 $CUSTOM_PASSWORD 登录"
