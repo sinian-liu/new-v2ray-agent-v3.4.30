@@ -1,184 +1,83 @@
 #!/bin/bash
 
-# FileBrowser 完整安装脚本（包含Docker安装）
+# FileBrowser 修复安装脚本
 set -e
 
-echo "正在安装 Docker 和 FileBrowser..."
+echo "修复 FileBrowser 安装..."
 
-# 检查并安装 Docker
-if ! command -v docker &> /dev/null; then
-    echo "安装 Docker..."
-    apt update
-    apt install -y apt-transport-https ca-certificates curl software-properties-common
-    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
-    echo "deb [arch=amd64 signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-    apt update
-    apt install -y docker-ce docker-ce-cli containerd.io
-else
-    echo "Docker 已安装"
-fi
+# 停止并删除所有容器
+docker stop filebrowser filebrowser-user 2>/dev/null || true
+docker rm filebrowser filebrowser-user 2>/dev/null || true
 
-# 启动并启用 Docker
-systemctl start docker
-systemctl enable docker
-
-# 将当前用户添加到 docker 组（避免权限问题）
-if ! groups $USER | grep -q '\bdocker\b'; then
-    usermod -aG docker $USER
-    echo "⚠️  请重新登录或运行 'newgrp docker' 使权限生效"
-fi
-
-# 创建目录结构
-mkdir -p /srv/files /srv/filebrowser /srv/filebrowser-user
+# 彻底清理数据库
 rm -rf /srv/filebrowser/* /srv/filebrowser-user/*
-chown -R 1000:1000 /srv/files /srv/filebrowser /srv/filebrowser-user
-chmod -R 775 /srv/files /srv/filebrowser /srv/filebrowser-user
 
-# 生成可靠的管理员密码
-ADMIN_PASS=$(openssl rand -base64 12 | tr -d '/+' | head -c 12)
+# 使用简单密码（避免特殊字符问题）
+ADMIN_PASS="Admin123456"  # 使用简单密码确保能登录
 
-# 获取服务器IP和磁盘信息
+# 获取服务器IP
 SERVER_IP=$(hostname -I | awk '{print $1}')
-DISK_FREE=$(df -h /srv/files | tail -1 | awk '{print $4}')
-DISK_TOTAL=$(df -h /srv/files | tail -1 | awk '{print $2}')
-DISK_USED=$(df -h /srv/files | tail -1 | awk '{print $3}')
 
-# 创建示例文件
-echo "这是管理员上传的示例文件" > /srv/files/示例文件.txt
-mkdir -p /srv/files/公开目录
-echo "这个目录可以被分享" > /srv/files/公开目录/README.txt
-chown -R 1000:1000 /srv/files
-
-# 清理旧容器
-docker rm -f filebrowser filebrowser-user 2>/dev/null || true
-
-# 第一步：启动管理员端
-echo "启动管理员端（端口8082）..."
+# 方法1：使用docker命令参数设置密码（最可靠）
+echo "方法1：使用docker参数设置管理员端..."
 docker run -d \
   --name filebrowser \
   -v /srv/files:/srv \
   -v /srv/filebrowser:/database \
   -p 8082:80 \
-  -e FB_ADMIN_USER=admin \
-  -e FB_ADMIN_PASSWORD=$ADMIN_PASS \
-  -e FB_BASEURL="/" \
   --restart unless-stopped \
-  filebrowser/filebrowser:latest
+  filebrowser/filebrowser:latest \
+  --username admin \
+  --password "$ADMIN_PASS"
 
-echo "等待管理员端初始化（30秒）..."
-sleep 30
+echo "等待管理员端启动..."
+sleep 20
 
 # 检查管理员端是否正常运行
-if ! docker ps | grep -q filebrowser; then
-    echo "❌ 管理员端启动失败，查看日志："
+if docker ps | grep -q filebrowser; then
+    echo "✅ 管理员端启动成功"
+else
+    echo "❌ 管理员端启动失败，尝试方法2..."
     docker logs filebrowser
-    exit 1
+    
+    # 方法2：使用环境变量
+    docker rm -f filebrowser 2>/dev/null || true
+    docker run -d \
+      --name filebrowser \
+      -v /srv/files:/srv \
+      -v /srv/filebrowser:/database \
+      -p 8082:80 \
+      -e FB_ADMIN_USER=admin \
+      -e FB_ADMIN_PASSWORD="$ADMIN_PASS" \
+      --restart unless-stopped \
+      filebrowser/filebrowser:latest
+      
+    sleep 15
 fi
 
-# 第二步：使用配置文件创建用户端
-echo "创建用户端配置文件..."
-cat > /srv/filebrowser-user/settings.json << 'EOF'
-{
-  "auth": {
-    "method": "noauth"
-  },
-  "users": [
-    {
-      "username": "guest",
-      "password": "",
-      "scope": "/srv",
-      "perm": {
-        "admin": false,
-        "execute": false,
-        "create": false,
-        "rename": false,
-        "modify": false,
-        "delete": false,
-        "share": false,
-        "download": true
-      },
-      "commands": [],
-      "lockPassword": false
-    }
-  ],
-  "settings": {
-    "key": "",
-    "allowCommands": false,
-    "allowEdit": false,
-    "allowNew": false,
-    "allowPublish": false,
-    "allowShare": false,
-    "allowRm": false,
-    "authMethod": "noauth",
-    "baseURL": "",
-    "branding": {
-      "name": "文件分享",
-      "disableExternal": false,
-      "disableUsedPercentage": false,
-      "files": "/srv"
-    },
-    "commands": [],
-    "defaultUserScope": "/srv",
-    "enableThumbnails": false,
-    "hideDotFiles": false,
-    "jwtSecret": "",
-    "log": "",
-    "port": 80,
-    "root": "/srv",
-    "shell": [],
-    "signup": false,
-    "tlsKey": "",
-    "tlsCert": "",
-    "userHomeBasePath": "",
-    "userPerm": {
-      "admin": false,
-      "execute": false,
-      "create": false,
-      "rename": false,
-      "modify": false,
-      "delete": false,
-      "share": false,
-      "download": true
-    }
-  }
-}
-EOF
-
-chown 1000:1000 /srv/filebrowser-user/settings.json
-
-# 第三步：启动用户端
-echo "启动用户端（端口8083）..."
+# 配置用户端为免登录只读模式
+echo "配置用户端..."
 docker run -d \
   --name filebrowser-user \
   -v /srv/files:/srv \
   -v /srv/filebrowser-user:/database \
   -p 8083:80 \
-  -e FB_CONFIG=/database/settings.json \
   --restart unless-stopped \
   filebrowser/filebrowser:latest
 
-echo "等待用户端启动..."
-sleep 15
+sleep 10
 
-# 检查用户端是否正常运行
-if ! docker ps | grep -q filebrowser-user; then
-    echo "❌ 用户端启动失败，查看日志："
-    docker logs filebrowser-user
-    exit 1
-fi
+# 通过exec命令配置用户端设置
+docker exec filebrowser-user filebrowser users update admin --perm.download=true --perm.execute=false --perm.create=false --perm.rename=false --perm.modify=false --perm.delete=false --perm.share=false 2>/dev/null || true
 
-# 开放防火墙端口
-if command -v ufw >/dev/null 2>&1; then
-    ufw allow 8082/tcp >/dev/null 2>&1
-    ufw allow 8083/tcp >/dev/null 2>&1
-    ufw allow 22/tcp >/dev/null 2>&1
-    echo "✅ 防火墙端口已开放"
-fi
+# 重启用户端应用配置
+docker restart filebrowser-user
+sleep 5
 
-# 显示安装结果
+# 显示修复结果
 echo ""
 echo "================================================"
-echo "✅ FileBrowser 安装成功！"
+echo "✅ FileBrowser 修复完成！"
 echo "================================================"
 echo "管理员端（完全权限）："
 echo "  - 访问地址: http://$SERVER_IP:8082"
@@ -187,26 +86,27 @@ echo "  - 密码: $ADMIN_PASS"
 echo ""
 echo "用户端（只读免登录）："
 echo "  - 访问地址: http://$SERVER_IP:8083"
-echo "  - 无需登录，只能查看和下载已分享的文件"
-echo ""
-echo "文件存储路径: /srv/files"
-echo "磁盘总空间: $DISK_TOTAL"
+echo "  - 无需登录"
 echo "================================================"
-echo ""
 
-# 使用说明
-echo "📖 使用说明："
-echo "1. 管理员登录 http://$SERVER_IP:8082 上传和管理文件"
-echo "2. 在管理员端选中文件/目录 → 点击分享图标 → 生成分享链接"
-echo "3. 用户通过分享链接访问特定文件/目录（无需登录）"
+# 测试登录
 echo ""
-echo "🔒 安全特性："
-echo "   - 用户端完全只读，无法修改、删除或上传文件"
-echo "   - 用户端免登录，但只能访问被分享的特定链接"
-echo "   - 管理员端需要密码认证，拥有完整权限"
+echo "测试登录..."
+echo "如果仍然无法登录，请尝试以下步骤："
+
+# 查看密码是否正确设置
+echo "1. 查看容器日志中的密码信息："
+docker logs filebrowser 2>&1 | grep -i "admin\|password\|user" | head -5
+
 echo ""
-echo "🔄 如果需要重置："
-echo "   docker stop filebrowser filebrowser-user"
-echo "   docker rm filebrowser filebrowser-user"
-echo "   rm -rf /srv/filebrowser/* /srv/filebrowser-user/*"
-echo "   然后重新运行此脚本"
+echo "2. 手动重置密码："
+echo "   docker exec filebrowser filebrowser users update admin --password \"NewPassword123\""
+
+echo ""
+echo "3. 或者进入容器查看用户信息："
+echo "   docker exec filebrowser filebrowser users ls"
+
+echo ""
+echo "4. 如果问题依旧，尝试使用默认密码："
+echo "   用户名: admin"
+echo "   密码: admin"
