@@ -103,18 +103,26 @@ defined('BASEPATH') OR exit('No direct script access allowed');
 );
 EOL
 
-# 隐藏用户端上传/分享/删除按钮
-TEMPLATES_DIR="/var/www/html/projectsend/application/views/frontend"
-if [ -d "$TEMPLATES_DIR" ]; then
-    for file in $(grep -rlE "upload|share|delete" $TEMPLATES_DIR); do
-        sed -i 's/<.*\(upload\|share\|delete\).*<\/.*>//g' "$file"
-    done
+# 初始化数据库表
+if [ -f /var/www/html/projectsend/sql/ProjectSend.sql ]; then
+    sudo mysql "$DB_NAME" < /var/www/html/projectsend/sql/ProjectSend.sql
+else
+    echo "ERROR: ProjectSend.sql 文件不存在，无法初始化数据库表"
+    exit 1
 fi
 
 # 自动创建管理员账号，如果已存在则跳过
 USER_EXISTS=$(sudo mysql -N -s -e "SELECT COUNT(*) FROM ${DB_NAME}.users WHERE username='${ADMIN_USER}';")
 if [ "$USER_EXISTS" -eq 0 ]; then
     sudo mysql -e "USE ${DB_NAME}; INSERT INTO users (username, password, name, email, userlevel) VALUES ('$ADMIN_USER', MD5('$ADMIN_PASS'), 'Admin', 'admin@example.com', 9);"
+fi
+
+# 隐藏用户端上传/分享/删除按钮
+TEMPLATES_DIR="/var/www/html/projectsend/application/views/frontend"
+if [ -d "$TEMPLATES_DIR" ]; then
+    for file in $(grep -rlE "upload|share|delete" $TEMPLATES_DIR); do
+        sed -i 's/<.*\(upload\|share\|delete\).*<\/.*>//g' "$file"
+    done
 fi
 
 # 安装完成
