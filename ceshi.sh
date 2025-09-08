@@ -1,56 +1,55 @@
 #!/bin/bash
-# Nextcloud 一键安装脚本 (基于 Docker)
-# 访问方式：http://你的VPS_IP:8080
+# FileBrowser 一键安装脚本
+# 功能：上传 / 下载 / 分享，支持免登录
 
 set -e
 
-echo "==== 更新系统并安装 Docker 环境 ===="
-apt update -y
-apt install -y curl sudo
-curl -fsSL https://get.docker.com | sh
-systemctl enable docker
-systemctl start docker
+echo "==== 更新系统 ===="
+apt update -y && apt install -y curl unzip
 
-echo "==== 创建 Nextcloud + MariaDB + Redis 容器 ===="
-docker network create nextcloud-net || true
+echo "==== 下载并安装 FileBrowser ===="
+curl -fsSL https://raw.githubusercontent.com/filebrowser/get/master/get.sh | bash
 
-# 数据库
-docker run -d \
-  --name nextcloud-mariadb \
-  --network nextcloud-net \
-  -e MYSQL_ROOT_PASSWORD=123456 \
-  -e MYSQL_DATABASE=nextcloud \
-  -e MYSQL_USER=nextcloud \
-  -e MYSQL_PASSWORD=123456 \
-  -v /opt/nextcloud/db:/var/lib/mysql \
-  mariadb:10.11 \
-  --transaction-isolation=READ-COMMITTED \
-  --binlog-format=ROW
+# 创建共享目录
+mkdir -p /opt/filebrowser
+cd /opt/filebrowser
 
-# Redis (缓存/加速)
-docker run -d \
-  --name nextcloud-redis \
-  --network nextcloud-net \
-  redis:alpine
+# 创建配置文件 (允许匿名访问)
+cat > filebrowser.json <<EOF
+{
+  "port": 8080,
+  "baseURL": "",
+  "address": "0.0.0.0",
+  "log": "stdout",
+  "database": "/opt/filebrowser/filebrowser.db",
+  "root": "/opt/filebrowser/data",
+  "noAuth": true
+}
+EOF
 
-# Nextcloud 主程序
-docker run -d \
-  --name nextcloud \
-  --network nextcloud-net \
-  -p 8080:80 \
-  -v /opt/nextcloud/html:/var/www/html \
-  -v /opt/nextcloud/data:/var/www/html/data \
-  -e MYSQL_HOST=nextcloud-mariadb \
-  -e MYSQL_DATABASE=nextcloud \
-  -e MYSQL_USER=nextcloud \
-  -e MYSQL_PASSWORD=123456 \
-  -e REDIS_HOST=nextcloud-redis \
-  nextcloud:apache
+# 创建数据目录
+mkdir -p /opt/filebrowser/data
 
-echo "==== Nextcloud 已启动 ===="
+# 创建 systemd 服务
+cat > /etc/systemd/system/filebrowser.service <<EOF
+[Unit]
+Description=File Browser
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/filebrowser -c /opt/filebrowser/filebrowser.json
+Restart=always
+User=root
+WorkingDirectory=/opt/filebrowser
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable filebrowser
+systemctl restart filebrowser
+
+echo "==== FileBrowser 已安装并运行 ===="
 echo "请访问: http://$(curl -s ifconfig.me):8080"
-echo "首次进入请设置管理员账号和密码"
-echo "数据库信息如下："
-echo "  数据库: nextcloud"
-echo "  用户: nextcloud"
-echo "  密码: 123456"
+echo "无需登录，直接上传/下载/分享文件"
