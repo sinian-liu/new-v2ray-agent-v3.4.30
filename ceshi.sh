@@ -1,6 +1,11 @@
 #!/bin/bash
 # FileBrowser 一键安装脚本（修正版）
-# 管理员密码固定，支持分享链接，硬盘空间查看，避免报错
+# 功能：
+# 1. 管理员端上传/下载/删除/分享文件
+# 2. 管理员可查看磁盘剩余空间
+# 3. 用户端免登录，只能通过分享链接访问文件
+# 4. 管理员密码固定为 3766700949
+# 5. 自动初始化数据库，避免报错
 
 set -e
 
@@ -26,7 +31,7 @@ ADMIN_PASS="3766700949"
 echo "管理员账号: $ADMIN_USER"
 echo "管理员密码: $ADMIN_PASS"
 
-echo "==== 初始化 FileBrowser 配置（避免数据库不存在报错） ===="
+echo "==== 初始化 FileBrowser 配置 ===="
 filebrowser config init --database "$INSTALL_DIR/filebrowser.db" --root "$ADMIN_DIR"
 
 echo "==== 创建管理员账号 ===="
@@ -59,7 +64,7 @@ cat > "$CONFIG_FILE" <<EOF
 }
 EOF
 
-echo "==== 创建管理员硬盘空间查看功能 ===="
+echo "==== 创建管理员硬盘空间查看页面 ===="
 cat > "$ADMIN_DIR/update_disk.sh" <<'EOF'
 #!/bin/bash
 DISK_FILE="$PWD/disk.html"
@@ -99,7 +104,7 @@ echo "管理员端登录地址: http://$IP:$PORT"
 echo "管理员账号: $ADMIN_USER"
 echo "管理员密码: $ADMIN_PASS"
 echo "管理员目录: $ADMIN_DIR"
-echo "管理员端网页可查看硬盘剩余空间: http://$IP:$PORT/admin/disk.html"
+echo "管理员端网页可查看磁盘剩余空间: http://$IP:$PORT/admin/disk.html"
 echo "用户端访问必须通过管理员生成的分享链接"
 echo "用户端无法浏览其他文件，也无法再次分享"
 echo "==== 临时分享链接使用方法（管理员操作示例） ===="
