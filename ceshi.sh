@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# 更新系统并安装Docker和net-tools
+# 更新系统并安装依赖
 apt update && apt install -y docker.io net-tools
 systemctl start docker
 systemctl enable docker
@@ -8,7 +8,7 @@ systemctl enable docker
 # 确保root用户在docker组
 usermod -aG docker root
 
-# 创建文件和配置目录
+# 创建目录并设置权限
 mkdir -p /srv/files /srv/filebrowser
 chown -R 1000:1000 /srv/files /srv/filebrowser
 chmod -R 775 /srv/files /srv/filebrowser
@@ -21,7 +21,7 @@ DISK_FREE=$(df -h /srv/files | tail -1 | awk '{print $4}')
 DISK_TOTAL=$(df -h /srv/files | tail -1 | awk '{print $2}')
 DISK_USED=$(df -h /srv/files | tail -1 | awk '{print $3}')
 
-# 生成HTML文件显示磁盘空间
+# 生成HTML文件
 cat << EOF > /srv/files/disk_info.html
 <!DOCTYPE html>
 <html>
@@ -43,12 +43,13 @@ cat << EOF > /srv/files/disk_info.html
 </body>
 </html>
 EOF
-
-# 设置HTML文件权限
 chown 1000:1000 /srv/files/disk_info.html
 chmod 644 /srv/files/disk_info.html
 
-# 运行FileBrowser容器
+# 清理旧容器
+docker rm -f filebrowser
+
+# 运行新容器
 docker run -d \
   --name filebrowser \
   -v /srv/files:/srv \
@@ -59,11 +60,11 @@ docker run -d \
   --restart unless-stopped \
   filebrowser/filebrowser:latest
 
-# 等待容器启动
+# 等待启动
 sleep 5
 
-# 检查容器状态
-if docker ps | grep -q filebrowser; then
+# 检查状态
+if docker ps | grep -q filebrowser && netstat -tuln | grep -q 8082; then
   echo "FileBrowser安装成功！容器运行中。"
   echo "访问地址: http://$(hostname -I | awk '{print $1}'):8082"
   echo "管理员用户名: admin"
@@ -80,9 +81,10 @@ fi
 
 # 开放防火墙
 ufw allow 8082
+ufw allow 22
 ufw enable
 
-# 可选：HTTPS配置提示
+# HTTPS提示
 echo "安全建议："
 echo "1. 安装Nginx和Certbot: apt install nginx certbot python3-certbot-nginx"
 echo "2. 配置Nginx反向代理到localhost:8082"
