@@ -1,22 +1,16 @@
 #!/bin/bash
 
-# 检查是否以非root用户运行（需sudo权限）
-if [ "$EUID" -eq 0 ]; then
-  echo "请以非root用户运行此脚本（需sudo权限）"
-  exit 1
-fi
-
 # 更新系统并安装Docker
-sudo apt update && sudo apt install -y docker.io
-sudo systemctl start docker
-sudo systemctl enable docker
+apt update && apt install -y docker.io
+systemctl start docker
+systemctl enable docker
 
-# 确保用户在docker组（避免每次sudo）
-sudo usermod -aG docker $USER
+# 确保root用户在docker组
+usermod -aG docker root
 
 # 创建文件和配置目录
-sudo mkdir -p /srv/files /srv/filebrowser
-sudo chown -R $USER:$USER /srv/files /srv/filebrowser
+mkdir -p /srv/files /srv/filebrowser
+chown -R root:root /srv/files /srv/filebrowser
 
 # 生成随机管理员密码
 ADMIN_PASS=$(openssl rand -hex 12)
@@ -50,8 +44,8 @@ cat << EOF > /srv/files/disk_info.html
 EOF
 
 # 设置HTML文件权限
-sudo chown $USER:$USER /srv/files/disk_info.html
-sudo chmod 644 /srv/files/disk_info.html
+chown root:root /srv/files/disk_info.html
+chmod 644 /srv/files/disk_info.html
 
 # 运行FileBrowser容器
 docker run -d \
@@ -85,7 +79,7 @@ fi
 
 # 可选：HTTPS配置提示
 echo "安全建议："
-echo "1. 安装Nginx和Certbot: sudo apt install nginx certbot python3-certbot-nginx"
+echo "1. 安装Nginx和Certbot: apt install nginx certbot python3-certbot-nginx"
 echo "2. 配置Nginx反向代理到localhost:8080"
-echo "3. 获取HTTPS证书: sudo certbot --nginx"
-echo "4. 防火墙只开80/443: sudo ufw allow 80,443 && sudo ufw enable"
+echo "3. 获取HTTPS证书: certbot --nginx"
+echo "4. 防火墙只开80/443: ufw allow 80,443 && ufw enable"
