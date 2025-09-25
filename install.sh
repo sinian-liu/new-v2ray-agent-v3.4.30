@@ -6316,7 +6316,7 @@ aliasInstall() {
 
     if [[ -f "$HOME/install.sh" ]] && [[ -d "/etc/v2ray-agent" ]] && grep <"$HOME/install.sh" -q "作者:mack-a"; then
         mv "$HOME/install.sh" /etc/v2ray-agent/install.sh
-        local vasinianType=
+        local sinianType=
         if [[ -d "/usr/bin/" ]]; then
             if [[ ! -f "/usr/bin/sinian" ]]; then
                 ln -s /etc/v2ray-agent/install.sh /usr/bin/sinian
