@@ -9431,18 +9431,17 @@ singBoxVersionManageMenu() {
 menu() {
     cd "$HOME" || exit
     echoContent red "\n=============================================================="
-    echoContent green "作者：mack-a"
+    echoContent green "作者：sinian-liu"
     echoContent green "当前版本：v3.4.30"
-    echoContent green "Github：https://github.com/mack-a/v2ray-agent"
+    echoContent green "Github：https://github.com/sinian-liu/new-v2ray-agent-v3.4.30"
     echoContent green "描述：八合一共存脚本\c"
     showInstallStatus
     checkWgetShowProgress
     echoContent red "\n=========================== 推广区============================"
     echoContent red "                                              "
-    echoContent green "VPS选购攻略：https://www.v2ray-agent.com/archives/1679975663984"
-    echoContent green "年付10美金低价VPS AS4837：https://www.v2ray-agent.com/archives/racknerdtao-can-zheng-li-nian-fu-10mei-yuan"
-    echoContent green "优质常驻套餐DMIT CN2-GIA：https://www.v2ray-agent.com/archives/186cee7b-9459-4e57-b9b2-b07a4f36931c"
-    echoContent green "VPS探针：https://ping.v2ray-agent.com/"
+	echoContent green "服务器推荐：https://my.frantech.ca/aff.php?aff=4337"
+	echoContent red "37VPS主机评测：https://www.1373737.xyz"
+	echoContent green "YouTube频道：https://www.youtube.com/@cyndiboy7881"
     echoContent red "=============================================================="
     if [[ -n "${coreInstallType}" ]]; then
         echoContent yellow "1.重新安装"
@@ -9470,6 +9469,9 @@ menu() {
     echoContent yellow "18.安装BBR、DD脚本"
     echoContent skyBlue "-------------------------脚本管理-----------------------------"
     echoContent yellow "20.卸载脚本"
+    echoContent red "=============================================================="
+	echoContent yellow "37VPS主机评测：https://www.1373737.xyz"
+    echoContent yellow "低价VPS ：https://my.frantech.ca/aff.php?aff=4337"
     echoContent red "=============================================================="
     mkdirTools
     aliasInstall
